@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,78 @@ def log_json(event_type: str, data: dict[str, Any]) -> None:
         "data": data,
     }
     print(json.dumps(log_entry), flush=True)
+
+
+def send_notification(
+    message: str,
+    title: str | None = None,
+    priority: str = "default",
+    tags: list[str] | None = None
+) -> bool:
+    """Send notification to ntfy.sh topic
+
+    Args:
+        message: Notification message body
+        title: Optional notification title
+        priority: Priority level (min, low, default, high, urgent)
+        tags: Optional list of tags/emojis
+
+    Returns:
+        True if notification sent successfully, False otherwise
+    """
+    topic_url = "https://ntfy.sh/merge-god-sez"
+
+    try:
+        headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+        }
+
+        if title:
+            headers["Title"] = title
+
+        if priority:
+            headers["Priority"] = priority
+
+        if tags:
+            headers["Tags"] = ",".join(tags)
+
+        req = urllib.request.Request(
+            topic_url,
+            data=message.encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status == 200:
+                log_json("notification", {
+                    "action": "sent",
+                    "title": title,
+                    "message_length": len(message)
+                })
+                return True
+            else:
+                log_json("notification", {
+                    "action": "failed",
+                    "status": response.status,
+                    "title": title
+                })
+                return False
+
+    except urllib.error.URLError as e:
+        log_json("notification", {
+            "action": "error",
+            "error": str(e),
+            "title": title
+        })
+        return False
+    except Exception as e:
+        log_json("notification", {
+            "action": "exception",
+            "error": str(e),
+            "title": title
+        })
+        return False
 
 
 def run_command(
@@ -89,8 +163,15 @@ def run_command(
         return -1, "", f"Command failed: {str(e)}"
 
 
-def get_open_prs() -> list[dict[str, Any]]:
-    """Fetch open PRs excluding drafts and WIP labels"""
+def get_open_prs() -> dict[str, list[dict[str, Any]]]:
+    """Fetch open PRs and categorize by processing mode labels
+
+    Returns:
+        Dictionary with keys:
+        - "for-review": PRs labeled for code review (comprehensive review + improvements)
+        - "for-landing": PRs labeled for landing (basic processing to merge)
+        - "untagged": PRs without processing labels (skipped)
+    """
     log_json("fetch_prs", {"action": "start"})
 
     returncode, stdout, stderr = run_command([
@@ -101,25 +182,30 @@ def get_open_prs() -> list[dict[str, Any]]:
 
     if returncode != 0:
         log_json("fetch_prs", {"action": "error", "stderr": stderr})
-        return []
+        return {"for-review": [], "for-landing": [], "untagged": []}
 
     if not stdout or not stdout.strip():
         log_json("fetch_prs", {"action": "empty_response"})
-        return []
+        return {"for-review": [], "for-landing": [], "untagged": []}
 
     try:
         all_prs = json.loads(stdout)
     except json.JSONDecodeError as e:
         log_json("fetch_prs", {"action": "parse_error", "error": str(e), "stdout": stdout[:200]})
-        return []
+        return {"for-review": [], "for-landing": [], "untagged": []}
 
     # Validate it's a list
     if not isinstance(all_prs, list):
         log_json("fetch_prs", {"action": "invalid_type", "type": type(all_prs).__name__})
-        return []
+        return {"for-review": [], "for-landing": [], "untagged": []}
 
-    # Filter out draft PRs and those with WIP/work-in-process labels
-    filtered_prs = []
+    # Categorize PRs by labels
+    categorized: dict[str, list[dict[str, Any]]] = {
+        "for-review": [],
+        "for-landing": [],
+        "untagged": []
+    }
+
     for pr in all_prs:
         if not isinstance(pr, dict):
             continue
@@ -129,6 +215,7 @@ def get_open_prs() -> list[dict[str, Any]]:
             log_json("fetch_prs", {"action": "invalid_pr", "pr": pr})
             continue
 
+        # Skip draft PRs
         if pr.get("isDraft", False):
             continue
 
@@ -138,18 +225,28 @@ def get_open_prs() -> list[dict[str, Any]]:
             if isinstance(label, dict) and "name" in label:
                 labels.append(label["name"].lower())
 
+        # Skip WIP PRs
         if any(wip in label for label in labels for wip in ["wip", "work-in-process", "work in process"]):
             continue
 
-        filtered_prs.append(pr)
+        # Categorize by processing mode labels
+        if "for-review" in labels:
+            categorized["for-review"].append(pr)
+        elif "for-landing" in labels:
+            categorized["for-landing"].append(pr)
+        else:
+            # PRs without processing labels are untagged (will be skipped)
+            categorized["untagged"].append(pr)
 
     log_json("fetch_prs", {
         "action": "complete",
         "total": len(all_prs),
-        "filtered": len(filtered_prs),
+        "for_review": len(categorized["for-review"]),
+        "for_landing": len(categorized["for-landing"]),
+        "untagged": len(categorized["untagged"]),
     })
 
-    return filtered_prs
+    return categorized
 
 
 def validate_git_ref(ref: str) -> bool:
@@ -1096,7 +1193,7 @@ def process_pr(
     guidelines: str,
     commit_examples: str,
     default_branch: str = "main",
-    review_enabled: bool = False
+    mode: str = "for-landing"
 ) -> bool:
     """Process a single PR using bob with comprehensive context
 
@@ -1105,7 +1202,7 @@ def process_pr(
         guidelines: Project contribution guidelines
         commit_examples: Example commit messages
         default_branch: Default branch of the repository
-        review_enabled: If True, run a second agent pass for code review
+        mode: Processing mode - "for-review" for comprehensive review, "for-landing" for basic merge
 
     Returns:
         True if processing successful, False otherwise
@@ -1166,6 +1263,13 @@ def process_pr(
         "head_branch": head_branch,
         "base_branch": base_branch,
     })
+
+    # Send notification that PR processing has started
+    send_notification(
+        f"Processing PR #{pr_number}: {title}\nMode: {mode}\nBranch: {head_branch} → {base_branch}",
+        title=f"PR #{pr_number} - Processing Started",
+        tags=["robot", "arrows_clockwise"]
+    )
 
     # Gather comprehensive PR context
     try:
@@ -1235,10 +1339,19 @@ def process_pr(
             "success": False,
             "reason": "initial_pass_failed"
         })
+
+        # Send failure notification
+        send_notification(
+            f"PR #{pr_number} processing failed: {title}\nMode: {mode}\nReason: Initial pass failed",
+            title=f"PR #{pr_number} - Failed",
+            priority="high",
+            tags=["x", "warning"]
+        )
+
         return False
 
-    # If review enabled, run second pass for code review
-    if review_enabled:
+    # If mode is "for-review", run second pass for code review
+    if mode == "for-review":
         log_json("process_pr", {
             "action": "review_pass_start",
             "pr_number": pr_number,
@@ -1307,12 +1420,35 @@ def process_pr(
                     "success": review_success,
                 })
 
+                # Send notification about review pass
+                if review_success:
+                    send_notification(
+                        f"PR #{pr_number} code review completed: {title}\nReview pass finished successfully",
+                        title=f"PR #{pr_number} - Review Complete",
+                        tags=["white_check_mark", "mag"]
+                    )
+                else:
+                    send_notification(
+                        f"PR #{pr_number} code review failed: {title}\nReview pass encountered errors",
+                        title=f"PR #{pr_number} - Review Failed",
+                        priority="high",
+                        tags=["x", "mag"]
+                    )
+
     log_json("process_pr", {
         "action": "complete",
         "pr_number": pr_number,
         "success": success,
-        "review_enabled": review_enabled,
+        "mode": mode,
     })
+
+    # Send final success notification (only if initial pass succeeded)
+    if success:
+        send_notification(
+            f"PR #{pr_number} processing completed: {title}\nMode: {mode}\nAll processing steps finished successfully",
+            title=f"PR #{pr_number} - Complete",
+            tags=["white_check_mark", "rocket"]
+        )
 
     return success
 
@@ -1375,11 +1511,16 @@ def parse_args() -> argparse.Namespace:
         epilog="""
 Examples:
   ./pr-loop.py /path/to/repo
-  ./pr-loop.py ~/projects/my-repo --review
+  ./pr-loop.py ~/projects/my-repo
   ./pr-loop.py .
 
 The script will continuously process open PRs in the repository,
 excluding draft PRs and those labeled with WIP/work-in-process.
+
+Use GitHub labels to control processing mode:
+  - Add 'for-landing' label for basic processing (conflicts, reviews, CI)
+  - Add 'for-review' label for comprehensive code review
+  - No label = PR is skipped
         """
     )
 
@@ -1387,12 +1528,6 @@ excluding draft PRs and those labeled with WIP/work-in-process.
         "repo_path",
         type=Path,
         help="Path to the git repository to process"
-    )
-
-    parser.add_argument(
-        "--review",
-        action="store_true",
-        help="Enable code review pass: after initial PR processing, run a second agent session to review all diffs and make targeted improvements"
     )
 
     return parser.parse_args()
@@ -1414,7 +1549,6 @@ def main() -> None:
         "repo_path": str(repo_path),
         "cwd": str(Path.cwd()),
         "python_version": sys.version,
-        "review_enabled": args.review,
     })
 
     # Detect default branch
@@ -1449,13 +1583,17 @@ def main() -> None:
             time.sleep(60)
             continue
 
-        # Get open PRs
-        prs = get_open_prs()
+        # Get open PRs categorized by labels
+        categorized_prs = get_open_prs()
 
-        if not prs:
+        # Count total processable PRs (excluding untagged)
+        total_processable = len(categorized_prs["for-review"]) + len(categorized_prs["for-landing"])
+
+        if total_processable == 0:
             log_json("iteration", {
                 "number": iteration,
-                "action": "no_prs",
+                "action": "no_processable_prs",
+                "untagged_count": len(categorized_prs["untagged"]),
                 "sleep_seconds": 300,
             })
             # Clear processing set when no PRs
@@ -1463,46 +1601,60 @@ def main() -> None:
             time.sleep(300)  # Wait 5 minutes if no PRs
             continue
 
-        # Process each PR
-        for pr in prs:
-            pr_number = pr.get("number")
+        # Log categorization results
+        log_json("iteration", {
+            "number": iteration,
+            "action": "prs_categorized",
+            "for_review": len(categorized_prs["for-review"]),
+            "for_landing": len(categorized_prs["for-landing"]),
+            "untagged": len(categorized_prs["untagged"]),
+        })
 
-            # Skip if already being processed in this iteration
-            if pr_number and pr_number in processing_prs:
-                log_json("process_pr", {
-                    "action": "skip_duplicate",
-                    "pr_number": pr_number
-                })
-                continue
+        # Process PRs by mode
+        total_processed = 0
+        for mode in ["for-review", "for-landing"]:
+            for pr in categorized_prs[mode]:
+                pr_number = pr.get("number")
 
-            if pr_number:
-                processing_prs.add(pr_number)
+                # Skip if already being processed in this iteration
+                if pr_number and pr_number in processing_prs:
+                    log_json("process_pr", {
+                        "action": "skip_duplicate",
+                        "pr_number": pr_number,
+                        "mode": mode
+                    })
+                    continue
 
-            try:
-                success = process_pr(pr, guidelines, commit_examples, default_branch, args.review)
-                if success and pr_number:
-                    # Remove from processing set after successful completion
-                    processing_prs.discard(pr_number)
-            except KeyboardInterrupt:
-                log_json("shutdown", {"reason": "keyboard_interrupt"})
-                sys.exit(0)
-            except Exception as e:
-                log_json("process_pr", {
-                    "action": "exception",
-                    "pr_number": pr_number,
-                    "error": str(e),
-                })
-                # Remove from processing set on exception
                 if pr_number:
-                    processing_prs.discard(pr_number)
+                    processing_prs.add(pr_number)
 
-            # Small delay between PRs
-            time.sleep(10)
+                try:
+                    success = process_pr(pr, guidelines, commit_examples, default_branch, mode)
+                    if success and pr_number:
+                        # Remove from processing set after successful completion
+                        processing_prs.discard(pr_number)
+                    total_processed += 1
+                except KeyboardInterrupt:
+                    log_json("shutdown", {"reason": "keyboard_interrupt"})
+                    sys.exit(0)
+                except Exception as e:
+                    log_json("process_pr", {
+                        "action": "exception",
+                        "pr_number": pr_number,
+                        "mode": mode,
+                        "error": str(e),
+                    })
+                    # Remove from processing set on exception
+                    if pr_number:
+                        processing_prs.discard(pr_number)
+
+                # Small delay between PRs
+                time.sleep(10)
 
         log_json("iteration", {
             "number": iteration,
             "action": "complete",
-            "prs_processed": len(prs),
+            "prs_processed": total_processed,
             "sleep_seconds": 300,
         })
 

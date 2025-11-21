@@ -21,13 +21,18 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 - **Review Response**: Provides agent with all review comments to address
 - **CI/CD Fixes**: Identifies failing checks and instructs agent to fix them
 - **Guideline Adherence**: Follows PR guidelines or learns from commit history
-- **Optional Code Review Pass** (`--review` flag): After initial processing, runs a second agent pass that:
-  - Reviews all code changes for quality, security, and performance
-  - Identifies bugs, vulnerabilities, and best practice violations
-  - Makes targeted improvements with focused commits
-  - Applies comprehensive review guidelines (SOLID, DRY, security, performance)
+- **Label-Based Processing Control**: Use GitHub labels to control how PRs are processed:
+  - `for-review` label: Comprehensive review with code quality improvements
+  - `for-landing` label: Basic processing to merge (conflicts, reviews, CI fixes)
+  - No label: PR is skipped (will not be processed)
+- **Two-Pass Processing for Review**: PRs labeled `for-review` get:
+  - Initial pass: Resolve conflicts, address reviews, fix CI
+  - Second pass: Code review for quality, security, performance, best practices
+  - Targeted improvements with focused commits
+  - Comprehensive review guidelines (SOLID, DRY, security, performance)
 - **Structured Logging**: Emits all inputs/outputs in JSON format
 - **Rich Prompt Generation**: Creates comprehensive prompts with all context for optimal agent understanding
+- **Real-time Notifications**: Sends updates to ntfy.sh for PR processing events (start, complete, errors)
 
 ## Requirements
 
@@ -122,9 +127,6 @@ The comprehensive prompt is passed to `bob --json`, which processes the PR auton
 # Process PRs in a specific repository
 ./pr-loop.py /path/to/repo
 
-# Process PRs with code review pass
-./pr-loop.py /path/to/repo --review
-
 # Process PRs in current directory
 ./pr-loop.py .
 
@@ -132,13 +134,18 @@ The comprehensive prompt is passed to `bob --json`, which processes the PR auton
 ./pr-loop.py --help
 ```
 
-#### Standard Mode (without --review)
+**Note**: Processing mode is now controlled by GitHub labels, not command-line flags. Add the `for-review` or `for-landing` label to your PRs.
+
+#### How It Works
 
 The script will:
 1. Validate the repository (git repo, GitHub CLI authenticated)
 2. Change to the repository directory
-3. Fetch all open PRs (excluding drafts and WIP-labeled)
-4. For each PR:
+3. Fetch all open PRs and categorize by labels:
+   - `for-review`: Comprehensive review + improvements
+   - `for-landing`: Basic processing to merge
+   - No label: Skipped (not processed)
+4. For each labeled PR:
    - Sync the repository with origin/main
    - Gather comprehensive PR context (see above)
    - Generate rich prompt with all context
@@ -148,14 +155,23 @@ The script will:
      - Read and address code review comments
      - Fix CI/CD failures
      - Push changes back to the PR
+   - **If labeled `for-review`**: Run second agent pass for code review
 5. Wait 5 minutes between cycles
 6. Loop forever
 
-#### Review Mode (with --review)
+#### Label-Based Processing Modes
 
-When `--review` flag is enabled, after the initial PR processing succeeds, a **second agent pass** is automatically triggered:
+**`for-landing` Label** (Basic Mode):
+- Resolve merge conflicts with base branch
+- Address code review comments
+- Fix failing CI/CD checks
+- Push changes to get PR ready to merge
+- ✅ Use for: Routine PRs, bug fixes, simple features
 
-1. **Fresh diff fetched** - Gets the current state of the PR after initial processing
+**`for-review` Label** (Comprehensive Mode):
+After initial processing succeeds, runs a **second agent pass**:
+
+1. **Fresh diff fetched** - Gets current PR state after initial processing
 2. **Code review prompt generated** with:
    - Complete diff of all changes
    - List of changed files with statistics
@@ -170,7 +186,7 @@ When `--review` flag is enabled, after the initial PR processing succeeds, a **s
    - Make targeted improvements with focused commits
    - Fix code quality issues and apply best practices
 
-**Use Cases for --review**:
+✅ **Use `for-review` for**:
 - High-stakes PRs requiring thorough code review
 - PRs from junior developers or external contributors
 - Security-sensitive changes
@@ -294,15 +310,70 @@ The script automatically looks for PR guidelines in these locations (in order):
 
 If no guidelines are found, it uses the last 20 commit messages from `origin/main` as examples.
 
-### Filtering PRs
+### Filtering and Controlling PRs
 
 PRs are automatically excluded if they:
 - Are marked as draft
 - Have labels containing: `wip`, `work-in-process`, or `work in process` (case-insensitive)
+- Don't have a processing mode label (`for-review` or `for-landing`)
 
-To skip a PR, simply:
+To control PR processing:
+- Add `for-landing` label: Basic processing (conflicts, reviews, CI)
+- Add `for-review` label: Comprehensive review + improvements
+- No label: PR is skipped
+
+To skip a PR entirely:
 - Mark it as draft, OR
-- Add a label with "WIP" in the name
+- Add a label with "WIP" in the name, OR
+- Don't add `for-review` or `for-landing` label
+
+## Real-time Notifications
+
+The script sends real-time notifications to ntfy.sh for key PR processing events:
+
+### Notification Types
+
+- **Processing Started**: When PR processing begins
+  - Tags: 🤖 ⏳
+  - Includes: PR number, title, mode, branch info
+
+- **Processing Complete**: When PR processing succeeds
+  - Tags: ✅ 🚀
+  - Includes: PR number, title, mode
+
+- **Processing Failed**: When initial processing fails
+  - Tags: ❌ ⚠️
+  - Priority: High
+  - Includes: PR number, title, failure reason
+
+- **Review Complete**: When code review pass succeeds
+  - Tags: ✅ 🔍
+  - Includes: PR number, title
+
+- **Review Failed**: When code review pass fails
+  - Tags: ❌ 🔍
+  - Priority: High
+  - Includes: PR number, title
+
+### Receiving Notifications
+
+Subscribe to notifications using the ntfy.sh app or web interface:
+- **Topic**: `merge-god-sez`
+- **URL**: https://ntfy.sh/merge-god-sez
+
+**Mobile App**:
+1. Install ntfy from App Store (iOS) or Play Store (Android)
+2. Subscribe to topic: `merge-god-sez`
+3. Receive push notifications on your phone
+
+**Web**:
+- Visit https://ntfy.sh/merge-god-sez in your browser
+
+**Desktop**:
+- Install ntfy desktop app from https://ntfy.sh
+- Subscribe to topic: `merge-god-sez`
+
+**Note**: The topic name `merge-god-sez` is public. For production use, consider using a private topic with authentication.
 
 ## JSON Log Format
 
@@ -333,6 +404,7 @@ All logs are emitted as JSON with this structure:
 - `get_pr_diff` - Fetching PR diff
 - `check_merge_conflicts` - Detecting merge conflicts
 - `process_pr` - PR processing steps
+- `notification` - Notification sent to ntfy.sh
 - `shutdown` - Clean shutdown
 - `fatal_error` - Unrecoverable error
 
