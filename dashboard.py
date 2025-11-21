@@ -61,6 +61,45 @@ class RepoMonitor:
             "iteration": 0,
         }
 
+    def load_doormat_credentials(self) -> bool:
+        """Load doormat credentials if doormat is available"""
+        try:
+            # Check if doormat command exists
+            result = subprocess.run(
+                ["which", "doormat"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                # doormat not installed, skip
+                return True
+
+            # Run doormat to load credentials
+            # Common doormat commands: doormat refresh, doormat login
+            self.logs.append("Loading doormat credentials...")
+            result = subprocess.run(
+                ["doormat", "refresh"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                self.logs.append("✓ Doormat credentials loaded")
+                return True
+            else:
+                self.logs.append(f"⚠ Doormat refresh failed: {result.stderr[:100]}")
+                return True  # Non-fatal, continue anyway
+
+        except subprocess.TimeoutExpired:
+            self.logs.append("⚠ Doormat refresh timed out")
+            return True  # Non-fatal
+        except Exception as e:
+            self.logs.append(f"⚠ Doormat error: {str(e)[:100]}")
+            return True  # Non-fatal
+
     def start(self) -> bool:
         """Start pr-loop.py subprocess for this repo"""
         if not self.enabled:
@@ -69,6 +108,9 @@ class RepoMonitor:
 
         if self.process and self.process.poll() is None:
             return True  # Already running
+
+        # Load doormat credentials before starting
+        self.load_doormat_credentials()
 
         try:
             self.process = subprocess.Popen(
@@ -199,9 +241,10 @@ class RepoMonitor:
 class Dashboard:
     """Main dashboard that manages multiple repository monitors"""
 
-    def __init__(self, config_path: Path, script_path: Path):
+    def __init__(self, config_path: Path, script_path: Path, dry_run: bool = False):
         self.config_path = config_path
         self.script_path = script_path
+        self.dry_run = dry_run
         self.monitors: list[RepoMonitor] = []
         self.console = Console()
         self.start_time = datetime.now(timezone.utc)
@@ -383,8 +426,161 @@ class Dashboard:
 
         return Panel(content, title=title, border_style=border_style)
 
+    def validate_repo(self, monitor: RepoMonitor) -> dict[str, Any]:
+        """Validate a repository configuration and return status"""
+        result = {
+            "name": monitor.name,
+            "path": monitor.path,
+            "enabled": monitor.enabled,
+            "valid": True,
+            "warnings": [],
+            "errors": []
+        }
+
+        if not monitor.enabled:
+            result["warnings"].append("Repository is disabled")
+            return result
+
+        # Check if path exists
+        repo_path = Path(monitor.path)
+        if not repo_path.exists():
+            result["valid"] = False
+            result["errors"].append(f"Path does not exist: {monitor.path}")
+            return result
+
+        if not repo_path.is_dir():
+            result["valid"] = False
+            result["errors"].append(f"Path is not a directory: {monitor.path}")
+            return result
+
+        # Check if it's a git repository
+        git_dir = repo_path / ".git"
+        if not git_dir.exists():
+            result["valid"] = False
+            result["errors"].append("Not a git repository (no .git directory)")
+            return result
+
+        # Check if gh CLI is available
+        import subprocess
+        try:
+            subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True,
+                timeout=5
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            result["warnings"].append("GitHub CLI (gh) may not be authenticated")
+
+        return result
+
+    def perform_dry_run(self):
+        """Validate configuration and display what would be launched"""
+        from rich.table import Table
+        from rich.panel import Panel
+
+        self.console.print("\n[bold cyan]Dry Run Mode[/bold cyan]")
+        self.console.print(f"Config file: [cyan]{self.config_path}[/cyan]\n")
+
+        # Validate configuration loaded
+        if not self.monitors:
+            self.console.print("[red]✗ No repositories configured[/red]")
+            return False
+
+        # Validate pr-loop.py
+        if not self.script_path.exists():
+            self.console.print(f"[red]✗ pr-loop.py not found at {self.script_path}[/red]")
+            return False
+
+        if not self.script_path.is_file():
+            self.console.print(f"[red]✗ {self.script_path} is not a file[/red]")
+            return False
+
+        # Check if executable
+        import os
+        if not os.access(self.script_path, os.X_OK):
+            self.console.print(f"[yellow]⚠ {self.script_path} is not executable (run: chmod +x pr-loop.py)[/yellow]")
+
+        self.console.print(f"[green]✓ Found pr-loop.py at {self.script_path}[/green]\n")
+
+        # Create summary table
+        table = Table(title="Repository Configuration", show_header=True, header_style="bold magenta")
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Name", style="cyan")
+        table.add_column("Path", style="white")
+        table.add_column("Enabled", justify="center")
+        table.add_column("Status", justify="center")
+
+        enabled_count = 0
+        disabled_count = 0
+        error_count = 0
+
+        for i, monitor in enumerate(self.monitors, 1):
+            validation = self.validate_repo(monitor)
+
+            # Determine status icon and style
+            if not monitor.enabled:
+                status = "[dim]⊘ Disabled[/dim]"
+                disabled_count += 1
+            elif not validation["valid"]:
+                status = "[red]✗ Invalid[/red]"
+                error_count += 1
+            elif validation["warnings"]:
+                status = "[yellow]⚠ Warning[/yellow]"
+                enabled_count += 1
+            else:
+                status = "[green]✓ Valid[/green]"
+                enabled_count += 1
+
+            enabled_display = "[green]Yes[/green]" if monitor.enabled else "[dim]No[/dim]"
+
+            table.add_row(
+                str(i),
+                monitor.name,
+                monitor.path,
+                enabled_display,
+                status
+            )
+
+        self.console.print(table)
+        self.console.print()
+
+        # Show detailed errors and warnings
+        has_issues = False
+        for i, monitor in enumerate(self.monitors, 1):
+            validation = self.validate_repo(monitor)
+
+            if validation["errors"] or validation["warnings"]:
+                has_issues = True
+                self.console.print(f"[bold]{i}. {monitor.name}[/bold]")
+
+                for error in validation["errors"]:
+                    self.console.print(f"  [red]✗ {error}[/red]")
+
+                for warning in validation["warnings"]:
+                    self.console.print(f"  [yellow]⚠ {warning}[/yellow]")
+
+                self.console.print()
+
+        # Summary
+        summary = Panel(
+            f"[bold]Summary[/bold]\n\n"
+            f"Total repositories: [white]{len(self.monitors)}[/white]\n"
+            f"Enabled: [green]{enabled_count}[/green]\n"
+            f"Disabled: [dim]{disabled_count}[/dim]\n"
+            f"Errors: [red]{error_count}[/red]\n\n"
+            f"{'[yellow]⚠ Issues detected - review above[/yellow]' if has_issues else '[green]✓ All enabled repos valid[/green]'}\n\n"
+            f"[dim]To run: ./dashboard.py {self.config_path}[/dim]",
+            border_style="cyan"
+        )
+        self.console.print(summary)
+
+        return error_count == 0
+
     def run(self):
         """Run the dashboard"""
+        if self.dry_run:
+            return self.perform_dry_run()
+
         try:
             with Live(self.generate_layout(), console=self.console, refresh_per_second=2) as live:
                 while True:
@@ -406,6 +602,7 @@ def parse_args() -> argparse.Namespace:
 Examples:
   ./dashboard.py                    # Use config.yaml
   ./dashboard.py my-config.yaml     # Use custom config file
+  ./dashboard.py --dry-run          # Validate config without launching
 
 Config file format (YAML):
   repos:
@@ -413,6 +610,7 @@ Config file format (YAML):
       name: "Repo Name"
       enabled: true
 
+Use --dry-run to validate configuration before launching.
 Runs in tmux/screen for persistent sessions.
 Press Ctrl+C to quit.
         """
@@ -424,6 +622,12 @@ Press Ctrl+C to quit.
         nargs="?",
         default=Path("config.yaml"),
         help="Path to YAML config file (default: config.yaml)"
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate configuration and show what would be launched without starting"
     )
 
     return parser.parse_args()
@@ -440,10 +644,15 @@ def main():
         sys.exit(1)
 
     # Create and run dashboard
-    dashboard = Dashboard(args.config, script_path)
+    dashboard = Dashboard(args.config, script_path, dry_run=args.dry_run)
 
     if not dashboard.load_config():
         sys.exit(1)
+
+    if args.dry_run:
+        # Run validation and display
+        success = dashboard.run()
+        sys.exit(0 if success else 1)
 
     console = Console()
     console.print(f"[green]✓ Loaded {len(dashboard.monitors)} repositories from {args.config}[/green]")

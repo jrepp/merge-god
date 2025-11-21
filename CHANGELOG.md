@@ -1,5 +1,43 @@
 # Changelog
 
+## 2025-11-21 - Dry-Run Mode & Doormat Integration
+
+### New Features
+
+- **Dry-Run Mode**: Added `--dry-run` flag to dashboard
+  - Validates configuration without starting processes
+  - Checks repository paths exist and are valid git repos
+  - Verifies pr-loop.py is executable
+  - Displays summary table with validation status
+  - Shows detailed errors and warnings
+  - Returns exit code 0 (success) or 1 (errors)
+  - Example: `./dashboard.py --dry-run`
+
+- **Doormat Integration**: Automatic AWS credential management
+  - Automatically detects if `doormat` command is available
+  - Refreshes credentials before launching each repository monitor
+  - Runs `doormat refresh` non-blocking
+  - Non-fatal: continues if doormat fails
+  - Logs credential refresh attempts in dashboard
+
+### Usage
+
+```bash
+# Validate configuration before running
+./dashboard.py --dry-run
+
+# Run dashboard (doormat credentials auto-loaded if available)
+./dashboard.py
+```
+
+### Documentation
+
+- Updated README.md with dry-run mode documentation
+- Added doormat integration section
+- Updated Quick Start with validation step
+
+---
+
 ## 2025-11-21 - TUI Dashboard & Multi-Repo Support
 
 ### Major Changes

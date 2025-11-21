@@ -59,11 +59,24 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 - `bob` - AI assistant wrapper command (must be in PATH)
 - Git repository with GitHub remote
 
+**Optional:**
+- `doormat` - AWS credential manager (automatically detected and used if available)
+
 **Python dependencies** (automatically installed by uv):
 - `rich>=13.0.0` - For TUI dashboard (dashboard.py only)
 - `pyyaml>=6.0` - For config file parsing (dashboard.py only)
 
 Note: `pr-loop.py` has no external dependencies (only stdlib)
+
+### Doormat Integration
+
+If `doormat` is installed, the dashboard will automatically refresh credentials before launching each repository monitor. This ensures AWS credentials are always up-to-date for long-running sessions.
+
+**How it works:**
+- Dashboard checks for `doormat` command at startup
+- Runs `doormat refresh` before starting each pr-loop.py subprocess
+- Non-fatal: if doormat fails, processing continues
+- Logs credential refresh attempts in dashboard
 
 ### Why uv?
 
@@ -155,12 +168,22 @@ cp config.example.yaml config.yaml
 # 2. Edit config with your repositories
 vi config.yaml
 
-# 3. Run dashboard (best in tmux/screen)
+# 3. Validate configuration (dry-run)
+./dashboard.py --dry-run
+
+# 4. Run dashboard (best in tmux/screen)
 ./dashboard.py
 
 # Or specify custom config
 ./dashboard.py my-config.yaml
 ```
+
+**Dry-run mode**: Use `--dry-run` to validate your configuration before launching:
+- Checks that all repository paths exist and are valid git repos
+- Verifies pr-loop.py is present and executable
+- Displays summary of what would be launched
+- Shows any errors or warnings
+- Exits without starting processes
 
 The dashboard provides:
 - Real-time status for all configured repos
