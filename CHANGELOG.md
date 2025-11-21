@@ -1,5 +1,48 @@
 # Changelog
 
+## 2025-11-21 - Interactive Bootstrap Wizard
+
+### New Features
+
+- **Interactive Configuration Wizard**: Automatic setup when config.yaml doesn't exist
+  - Dashboard detects missing config file and offers to create it
+  - Interactive prompts for repository configuration:
+    * Repository path with live validation
+    * Automatic path expansion (~/ and relative paths)
+    * Display name (defaults to directory name)
+    * Enable/disable toggle
+    * Add multiple repositories in one session
+  - Real-time git repository validation
+  - Shows summary table before saving
+  - Option to validate immediately after creation (dry-run)
+  - Generates properly formatted YAML with comments
+  - User-friendly error handling and confirmation
+
+### Usage
+
+```bash
+# First time setup - no config file needed!
+./dashboard.py
+
+# Dashboard will guide you through:
+# 1. Would you like to create a config? [Y/n]
+# 2. Add repository paths (validated in real-time)
+# 3. Configure display names and enable/disable
+# 4. Review summary
+# 5. Save configuration
+# 6. Optional: validate now
+```
+
+### Benefits
+
+- No need to manually create or copy config files
+- Catches invalid paths during setup (not at runtime)
+- Reduces initial setup friction for new users
+- Still supports manual config file creation
+- Works with any config file name (not just config.yaml)
+
+---
+
 ## 2025-11-21 - Dry-Run Mode & Doormat Integration
 
 ### New Features

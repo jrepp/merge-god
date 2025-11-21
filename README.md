@@ -162,6 +162,17 @@ The comprehensive prompt is passed to `bob --json`, which processes the PR auton
 For monitoring multiple repositories with a visual dashboard:
 
 ```bash
+# Option A: Interactive Setup (First Time)
+# If config.yaml doesn't exist, dashboard will offer to create it interactively
+./dashboard.py
+
+# Follow the prompts to:
+# - Add repository paths
+# - Set display names
+# - Enable/disable repos
+# - Optionally validate after creation
+
+# Option B: Manual Configuration
 # 1. Copy example config
 cp config.example.yaml config.yaml
 
@@ -178,6 +189,14 @@ vi config.yaml
 ./dashboard.py my-config.yaml
 ```
 
+**Interactive Bootstrap**: When config.yaml doesn't exist, the dashboard automatically offers to create it interactively:
+- Prompts for repository paths with live validation
+- Suggests repository names based on directory
+- Validates git repositories as you add them
+- Shows summary before saving
+- Optionally runs dry-run validation after creation
+- Creates properly formatted YAML with comments
+
 **Dry-run mode**: Use `--dry-run` to validate your configuration before launching:
 - Checks that all repository paths exist and are valid git repos
 - Verifies pr-loop.py is present and executable
@@ -191,6 +210,42 @@ The dashboard provides:
 - Processing statistics and recent activity
 - Color-coded status indicators
 - Recent logs per repository
+
+**Interactive Setup Example:**
+```
+$ ./dashboard.py
+
+Config File Not Found
+No configuration file found at: config.yaml
+
+Would you like to create a configuration file now? [Y/n]: y
+
+Interactive Configuration Setup
+Let's configure repositories for PR automation.
+
+Repository #1
+  Repository path (absolute path): /Users/me/projects/my-app
+  ✓ Valid git repository
+  Repository name (display name) [my-app]: My App
+  Enable this repository? [Y/n]: y
+
+✓ Added: My App
+
+Add another repository? [y/N]: n
+
+Configuration Summary
+┏━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ #   ┃ Name   ┃ Path                         ┃ Enabled ┃
+┡━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ 1   │ My App │ /Users/me/projects/my-app    │   Yes   │
+└─────┴────────┴──────────────────────────────┴─────────┘
+
+Save configuration to config.yaml? [Y/n]: y
+
+✓ Configuration saved to config.yaml
+
+Validate configuration now (dry-run)? [Y/n]: y
+```
 
 **Recommended for tmux/screen:**
 ```bash
