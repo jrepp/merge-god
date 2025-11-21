@@ -42,9 +42,10 @@ from rich.text import Text
 class RepoMonitor:
     """Monitors a single repository's PR processing"""
 
-    def __init__(self, repo_config: dict[str, Any], script_path: Path):
+    def __init__(self, repo_config: dict[str, Any], script_path: Path, doormat_config: dict[str, Any] | None = None):
         self.config = repo_config
         self.script_path = script_path
+        self.doormat_config = doormat_config or {}
         self.name = repo_config.get("name", "Unknown")
         self.path = repo_config.get("path", "")
         self.enabled = repo_config.get("enabled", True)
@@ -77,22 +78,60 @@ class RepoMonitor:
                 # doormat not installed, skip
                 return True
 
-            # Run doormat to load credentials
-            # Common doormat commands: doormat refresh, doormat login
-            self.logs.append("Loading doormat credentials...")
-            result = subprocess.run(
-                ["doormat", "refresh"],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            # Get timeout from config or use default
+            timeout = self.doormat_config.get("timeout", 30)
 
-            if result.returncode == 0:
-                self.logs.append("✓ Doormat credentials loaded")
-                return True
+            # Check if custom command specified in config
+            if "command" in self.doormat_config:
+                doormat_commands = [self.doormat_config["command"]]
             else:
-                self.logs.append(f"⚠ Doormat refresh failed: {result.stderr[:100]}")
-                return True  # Non-fatal, continue anyway
+                # Try different doormat commands in order of likelihood
+                # Different versions/installations may use different commands
+                doormat_commands = [
+                    ["doormat"],                    # Some versions: just 'doormat' refreshes
+                    ["doormat", "login"],           # Common pattern
+                    ["doormat", "aws", "login"],    # AWS-specific
+                    ["doormat", "exec"],            # Exec pattern
+                ]
+
+            self.logs.append("Loading doormat credentials...")
+
+            success = False
+            last_error = None
+            for cmd in doormat_commands:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout
+                    )
+
+                    if result.returncode == 0:
+                        self.logs.append(f"✓ Doormat credentials loaded ({' '.join(cmd)})")
+                        success = True
+                        break
+                    else:
+                        last_error = result.stderr
+                    # Try next command if this one failed
+                except subprocess.TimeoutExpired:
+                    last_error = "timeout"
+                    # Try next command
+                    continue
+                except Exception as e:
+                    last_error = str(e)
+                    # Try next command
+                    continue
+
+            if not success:
+                self.logs.append("⚠ Could not load doormat credentials (tried multiple commands)")
+                if last_error and len(doormat_commands) == 1:
+                    # Only show error if custom command was specified
+                    error_msg = last_error[:100] if last_error != "timeout" else "operation timed out"
+                    self.logs.append(f"  Error: {error_msg}")
+                self.logs.append("  Continuing without credential refresh...")
+
+            return True  # Always non-fatal
 
         except subprocess.TimeoutExpired:
             self.logs.append("⚠ Doormat refresh timed out")
@@ -265,6 +304,9 @@ class Dashboard:
                 self.console.print(f"[red]Error: 'repos' must be a non-empty list[/red]")
                 return False
 
+            # Extract doormat config if present
+            doormat_config = config.get("doormat", {})
+
             # Create monitors for each repo
             for repo_config in repos:
                 if not isinstance(repo_config, dict):
@@ -281,7 +323,7 @@ class Dashboard:
                 if "enabled" not in repo_config:
                     repo_config["enabled"] = True
 
-                monitor = RepoMonitor(repo_config, self.script_path)
+                monitor = RepoMonitor(repo_config, self.script_path, doormat_config)
                 self.monitors.append(monitor)
 
             if not self.monitors:

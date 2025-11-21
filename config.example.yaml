@@ -38,3 +38,14 @@ repos:
 # notification:
 #   enabled: true
 #   topic: "merge-god-sez"
+
+# Doormat credential management (optional)
+# If doormat is installed, specify the command to refresh credentials
+# If not specified, dashboard will try common patterns automatically
+# doormat:
+#   command: ["doormat"]  # Simple command
+#   # OR
+#   command: ["doormat", "login"]  # With subcommand
+#   # OR
+#   command: ["doormat", "aws", "login"]  # AWS-specific
+#   timeout: 30  # seconds (default: 30)

@@ -74,9 +74,36 @@ If `doormat` is installed, the dashboard will automatically refresh credentials 
 
 **How it works:**
 - Dashboard checks for `doormat` command at startup
-- Runs `doormat refresh` before starting each pr-loop.py subprocess
+- Tries multiple doormat commands automatically:
+  - `doormat` (some versions)
+  - `doormat login` (common pattern)
+  - `doormat aws login` (AWS-specific)
+  - `doormat exec` (exec pattern)
 - Non-fatal: if doormat fails, processing continues
 - Logs credential refresh attempts in dashboard
+
+**Custom doormat command:**
+If your doormat installation uses a different command, specify it in config.yaml:
+```yaml
+doormat:
+  command: ["doormat", "your-command"]  # Custom command
+  timeout: 30  # Optional timeout in seconds (default: 30)
+```
+
+Example for different doormat versions:
+```yaml
+# Just 'doormat'
+doormat:
+  command: ["doormat"]
+
+# With subcommand
+doormat:
+  command: ["doormat", "login"]
+
+# AWS-specific
+doormat:
+  command: ["doormat", "aws", "login"]
+```
 
 ### Why uv?
 

@@ -1,5 +1,45 @@
 # Changelog
 
+## 2025-11-21 - Fix Doormat Command & Add Configuration
+
+### Bug Fixes
+
+- **Fixed doormat command error**: Replaced hardcoded `doormat refresh` with flexible command detection
+  - Dashboard now tries multiple doormat commands automatically:
+    * `doormat` (some versions run credential refresh by default)
+    * `doormat login` (common pattern)
+    * `doormat aws login` (AWS-specific installations)
+    * `doormat exec` (exec-based pattern)
+  - Tries commands in order until one succeeds
+  - Better error handling and logging
+  - Shows which command succeeded in logs
+
+- **Added doormat configuration support**: Specify custom doormat command in config.yaml
+  ```yaml
+  doormat:
+    command: ["doormat", "your-command"]
+    timeout: 30  # optional
+  ```
+  - Useful for different doormat installations
+  - Overrides automatic command detection
+  - Configurable timeout per installation
+
+### Improvements
+
+- Better error messages when doormat fails
+- Only shows detailed error for custom commands (not auto-detected)
+- More informative log messages showing which command worked
+- Updated config.example.yaml with doormat configuration examples
+
+### Documentation
+
+- README.md: Updated Doormat Integration section
+  * Lists all auto-detected commands
+  * Examples for custom configuration
+- config.example.yaml: Added doormat config section with examples
+
+---
+
 ## 2025-11-21 - Interactive Bootstrap Wizard
 
 ### New Features
