@@ -1,5 +1,63 @@
 # Changelog
 
+## 2025-11-21 - Label-Based Control & Documentation Restructure
+
+### Major Changes
+
+- **Label-Based Processing Control**: Replaced `--review` flag with GitHub label-based system
+  - Add `for-landing` label: Basic PR processing (conflicts, reviews, CI)
+  - Add `for-review` label: Comprehensive review with code improvements
+  - No label: PR is skipped
+  - PRs categorized at fetch time for efficient processing
+
+- **Real-Time Notifications**: Added ntfy.sh integration
+  - Notifications for: Processing start, complete, failure, review results
+  - Topic: `merge-god-sez` at https://ntfy.sh/merge-god-sez
+  - Emoji tags and priorities for visual identification
+  - No external dependencies (uses urllib)
+
+- **Documentation Restructure**: Organized documentation for better maintainability
+  - Created **PRD.md** - Product requirements tracker
+  - Created **ADR.md** - Architecture decision records
+  - Moved historical code review docs to `docs/` directory
+  - Added "For Maintainers" section to README
+  - Added documentation index at top of README
+
+### Technical Changes
+
+- `get_open_prs()` now returns categorized dict instead of flat list
+- `process_pr()` takes `mode` parameter instead of `review_enabled` boolean
+- Main loop processes PRs by label category
+- Added `send_notification()` function with configurable priorities and tags
+- Enhanced logging with categorization details
+
+### Documentation
+
+- All examples updated to show label-based usage
+- Added notification system documentation
+- Consolidated filtering and control guidelines
+- Added maintainer guide for PRD/ADR usage
+
+### Migration
+
+**Before:**
+```bash
+./pr-loop.py /path/to/repo --review
+```
+
+**After:**
+```bash
+# No command-line flag needed
+./pr-loop.py /path/to/repo
+
+# Control processing with GitHub labels:
+# - Add 'for-review' label to PR for comprehensive review
+# - Add 'for-landing' label to PR for basic processing
+# - No label = PR is skipped
+```
+
+---
+
 ## 2025-11-20 - Added Repository Argument
 
 ### Changes

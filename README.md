@@ -2,6 +2,15 @@
 
 Automated PR processing system that uses `bob` (an AI assistant wrapper) to continuously process and merge pull requests.
 
+## Documentation
+
+- **[PRD.md](PRD.md)** - Product requirements tracker (features, priorities, status)
+- **[ADR.md](ADR.md)** - Architecture decision records (design choices, rationale)
+- **[UV_SUPPORT.md](UV_SUPPORT.md)** - Comprehensive guide to uv usage
+- **[PROMPT_EXAMPLE.md](PROMPT_EXAMPLE.md)** - Example of generated PR prompt
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and changes
+- **[docs/](docs/)** - Historical documentation (code reviews, fixes)
+
 ## Features
 
 - **Automatic PR Processing**: Loops through open PRs and processes them in order
@@ -478,6 +487,29 @@ Edit `pr-loop.py` to customize:
 - **Timeout duration**: Change `timeout=3600` in `run_command()` (currently 1 hour)
 - **PR limit**: Change `--limit 100` in `get_open_prs()`
 - **WIP label patterns**: Modify the filter in `get_open_prs()`
+
+## For Maintainers
+
+### Adding Features
+When adding new features:
+1. Create a PRD entry in [PRD.md](PRD.md) with requirements and success criteria
+2. Document any architectural decisions in [ADR.md](ADR.md)
+3. Update CHANGELOG.md with user-visible changes
+4. Update this README if it affects usage
+
+### Making Architectural Decisions
+For significant technical choices:
+1. Add new ADR entry in [ADR.md](ADR.md)
+2. Include context, decision, rationale, and consequences
+3. Reference related PRD items if applicable
+4. Mark superseded ADRs when decisions change
+
+### Documentation Structure
+- **PRD.md** - What we're building (features, requirements)
+- **ADR.md** - How/why we built it (technical decisions)
+- **README.md** - How to use it (user guide)
+- **CHANGELOG.md** - What changed (version history)
+- **docs/** - Historical/archived documentation
 
 ## License
 
