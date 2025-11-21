@@ -27,10 +27,21 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 ## Requirements
 
 - Python 3.12+
-- [uv](https://github.com/astral-sh/uv) - Python package installer
+- [uv](https://github.com/astral-sh/uv) - Modern Python package and project manager (required)
 - [gh](https://cli.github.com/) - GitHub CLI
 - `bob` - AI assistant wrapper command (must be in PATH)
 - Git repository with GitHub remote
+
+### Why uv?
+
+All scripts use **uv** for dependency management and execution via PEP 723 inline script metadata. Benefits:
+
+- **No virtual environment needed** - uv manages dependencies automatically
+- **Fast execution** - Scripts start quickly with cached environments
+- **Reproducible** - Dependencies pinned in script headers
+- **Modern** - Uses latest Python packaging standards
+
+**See [UV_SUPPORT.md](UV_SUPPORT.md) for detailed documentation on uv usage and benefits.**
 
 ## Installation
 
