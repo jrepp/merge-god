@@ -15,6 +15,7 @@ repos:
   - path: /Users/jrepp/dev/my-project
     name: "My Project"
     enabled: true
+    watch_issues: true  # Monitor issues with "for-impl" label (default: false)
     # Optional: custom settings (future)
     # poll_interval: 300  # seconds between checks
     # notifications: true  # send notifications for this repo
@@ -38,6 +39,16 @@ repos:
 # notification:
 #   enabled: true
 #   topic: "merge-god-sez"
+
+# Issue Watching (optional, per-repo setting)
+# When enabled, monitors GitHub issues with "for-impl" label
+# Issues are processed as PRIMARY tasks (before PRs)
+# The agent will:
+#   1. Create a new branch from the issue
+#   2. Implement the feature/fix described in the issue
+#   3. Create a PR with the implementation
+#   4. Link the PR back to the issue
+# Set "watch_issues: true" in repo config to enable
 
 # Doormat credential management (optional)
 # If doormat is installed, specify the command to refresh credentials

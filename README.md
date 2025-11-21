@@ -44,6 +44,11 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 - **Review Response**: Provides agent with all review comments to address
 - **CI/CD Fixes**: Identifies failing checks and instructs agent to fix them
 - **Guideline Adherence**: Follows PR guidelines or learns from commit history
+- **Issue Watching (Optional)**: Monitor and automatically implement GitHub issues
+  - Watch for issues labeled `for-impl` (feature/fix implementation requests)
+  - Issues are PRIMARY tasks (processed before PRs)
+  - Creates branch, implements solution, creates PR, links back to issue
+  - Enable per-repository with `watch_issues: true` in config
 - **Label-Based Processing Control**: Use GitHub labels to control how PRs are processed:
   - `for-review` label: Comprehensive review with code quality improvements
   - `for-landing` label: Basic processing to merge (conflicts, reviews, CI fixes)

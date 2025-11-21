@@ -1,5 +1,77 @@
 # Changelog
 
+## 2025-11-21 - Add Issue Watching Feature (for-impl)
+
+### New Feature: Issue Monitoring and Implementation
+
+Added the ability to monitor and automatically implement GitHub issues labeled with `for-impl`. Issues are treated as PRIMARY tasks and processed before PRs.
+
+#### Configuration
+
+Enable per-repository in `config.yaml`:
+```yaml
+repos:
+  - path: /path/to/repo
+    name: "My Project"
+    enabled: true
+    watch_issues: true  # Monitor issues with "for-impl" label
+```
+
+#### How It Works
+
+When `watch_issues: true` is set for a repository:
+
+1. **Issue Discovery**: Bot monitors open issues with `for-impl` label
+2. **Priority**: Issues are processed BEFORE PRs (primary tasks)
+3. **Branch Creation**: Creates branch `issue-{number}-{sanitized-title}`
+4. **Implementation**: Agent implements the feature/fix described in the issue
+5. **PR Creation**: Creates PR with implementation and links back to issue
+6. **Auto-close**: PR description includes "Closes #{issue_number}"
+
+#### Agent Workflow
+
+The agent receives a comprehensive prompt with:
+- Issue number, title, description, and URL
+- Project guidelines and commit examples
+- Instructions to implement, test, and create PR
+- Branch information and linking requirements
+
+#### Selection Criteria Display
+
+The dashboard startup now shows:
+- **⚡ PRIMARY: Issues** (if watching enabled)
+  - `for-impl` - Feature/fix implementation requests
+  - Creates branch, implements, creates PR, links to issue
+- **✓ PRs** (processed after issues)
+  - `for-review` - Comprehensive review
+  - `for-landing` - Basic processing
+
+#### CLI Flag
+
+pr-loop.py now supports:
+```bash
+./pr-loop.py /path/to/repo --watch-issues
+```
+
+#### Key Features
+
+- **Priority Processing**: Issues processed before PRs in each cycle
+- **Automatic Branch Management**: Safe branch names generated from issue titles
+- **PR Linking**: Automatic issue-to-PR linking with "Closes #N"
+- **Notifications**: Real-time notifications for implementation start/complete/failure
+- **Error Handling**: Issues tracked separately from PRs, retry on failure
+- **Logging**: All issue operations logged with JSON events
+
+#### Implementation Details
+
+- Added `get_open_issues()` function to fetch issues with `for-impl` label
+- Added `process_issue()` function with full implementation workflow
+- Modified main loop to check issues before PRs
+- Updated dashboard to pass `--watch-issues` flag based on config
+- Updated selection criteria display to show issue monitoring status
+
+---
+
 ## 2025-11-21 - Show Tag Selection Criteria at Startup
 
 ### New Features

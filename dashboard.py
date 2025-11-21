@@ -105,6 +105,7 @@ class RepoMonitor:
         self.name = repo_config.get("name", "Unknown")
         self.path = repo_config.get("path", "")
         self.enabled = repo_config.get("enabled", True)
+        self.watch_issues = repo_config.get("watch_issues", False)
 
         self.process: subprocess.Popen | None = None
         self.status = "idle"
@@ -209,8 +210,13 @@ class RepoMonitor:
         self.load_doormat_credentials()
 
         try:
+            # Build command
+            cmd = [str(self.script_path), self.path]
+            if self.watch_issues:
+                cmd.append("--watch-issues")
+
             self.process = subprocess.Popen(
-                [str(self.script_path), self.path],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -695,8 +701,11 @@ class Dashboard:
         if self.log_writer and self.log_writer.log_file_path:
             print(f"Log file: {self.log_writer.log_file_path}")
 
+        # Check if any repo has issue watching enabled
+        has_issue_watching = any(m.watch_issues for m in self.monitors if m.enabled)
+
         # Show tag selection criteria
-        show_tag_criteria(console=None)
+        show_tag_criteria(console=None, has_issue_watching=has_issue_watching)
 
         print("Monitoring repositories (Ctrl+C to stop):\n")
 
@@ -765,14 +774,25 @@ class Dashboard:
             self.console.print("[green]✓ Dashboard stopped[/green]")
 
 
-def show_tag_criteria(console: Console | None = None):
-    """Display PR tag selection criteria"""
+def show_tag_criteria(console: Console | None = None, has_issue_watching: bool = False):
+    """Display PR and issue selection criteria
+
+    Args:
+        console: Rich Console for TUI mode (None for non-TUI)
+        has_issue_watching: Whether any repo has issue watching enabled
+    """
     use_console = console is not None
 
     if use_console:
         # Rich formatted output
-        console.print("\n[bold cyan]PR Selection Criteria[/bold cyan]")
+        console.print("\n[bold cyan]Selection Criteria[/bold cyan]")
         console.print("[dim]" + "─" * 60 + "[/dim]")
+
+        if has_issue_watching:
+            console.print("\n[bold magenta]⚡ PRIMARY: Issues (processed first)[/bold magenta]")
+            console.print("  [magenta]•[/magenta] [bold]for-impl[/bold] - Feature/fix implementation requests")
+            console.print("  [dim]  → Creates branch, implements, creates PR, links to issue[/dim]")
+
         console.print("\n[bold green]✓ PRs will be processed if labeled:[/bold green]")
         console.print("  [green]•[/green] [bold]for-review[/bold] - Comprehensive review with code improvements")
         console.print("  [green]•[/green] [bold]for-landing[/bold] - Basic processing to merge (conflicts, reviews, CI)")
@@ -784,8 +804,14 @@ def show_tag_criteria(console: Console | None = None):
     else:
         # Plain text output for non-TUI mode
         print("\n" + "=" * 60)
-        print("PR Selection Criteria")
+        print("Selection Criteria")
         print("=" * 60)
+
+        if has_issue_watching:
+            print("\n⚡ PRIMARY: Issues (processed first)")
+            print("  • for-impl - Feature/fix implementation requests")
+            print("    → Creates branch, implements, creates PR, links to issue")
+
         print("\n✓ PRs will be processed if labeled:")
         print("  • for-review - Comprehensive review with code improvements")
         print("  • for-landing - Basic processing to merge (conflicts, reviews, CI)")
@@ -1022,8 +1048,11 @@ def main():
     console = Console()
     console.print(f"[green]✓ Loaded {len(dashboard.monitors)} repositories from {args.config}[/green]")
 
+    # Check if any repo has issue watching enabled
+    has_issue_watching = any(m.watch_issues for m in dashboard.monitors if m.enabled)
+
     # Show tag selection criteria
-    show_tag_criteria(console)
+    show_tag_criteria(console, has_issue_watching=has_issue_watching)
 
     console.print("[cyan]Starting dashboard...[/cyan]\n")
 

@@ -249,6 +249,70 @@ def get_open_prs() -> dict[str, list[dict[str, Any]]]:
     return categorized
 
 
+def get_open_issues() -> list[dict[str, Any]]:
+    """Fetch open issues labeled for implementation
+
+    Returns:
+        List of issues with "for-impl" label that should be implemented
+    """
+    log_json("fetch_issues", {"action": "start"})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "issue", "list",
+        "--json", "number,title,body,labels,url,author,createdAt,updatedAt,state",
+        "--label", "for-impl",
+        "--state", "open",
+        "--limit", "100",
+    ], timeout=60)
+
+    if returncode != 0:
+        log_json("fetch_issues", {"action": "error", "stderr": stderr})
+        return []
+
+    if not stdout or not stdout.strip():
+        log_json("fetch_issues", {"action": "empty_response"})
+        return []
+
+    try:
+        all_issues = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        log_json("fetch_issues", {"action": "parse_error", "error": str(e), "stdout": stdout[:200]})
+        return []
+
+    # Validate it's a list
+    if not isinstance(all_issues, list):
+        log_json("fetch_issues", {"action": "invalid_type", "type": type(all_issues).__name__})
+        return []
+
+    # Filter and validate issues
+    valid_issues = []
+    for issue in all_issues:
+        if not isinstance(issue, dict):
+            continue
+
+        # Validate required fields
+        if not all(key in issue for key in ["number", "title", "url"]):
+            log_json("fetch_issues", {"action": "invalid_issue", "issue": issue})
+            continue
+
+        # Verify it has the for-impl label (should already be filtered by gh)
+        labels = []
+        for label in issue.get("labels", []):
+            if isinstance(label, dict) and "name" in label:
+                labels.append(label["name"].lower())
+
+        if "for-impl" in labels:
+            valid_issues.append(issue)
+
+    log_json("fetch_issues", {
+        "action": "complete",
+        "total": len(all_issues),
+        "for_impl": len(valid_issues),
+    })
+
+    return valid_issues
+
+
 def validate_git_ref(ref: str) -> bool:
     """Validate that a string is a safe git reference name
 
@@ -1453,6 +1517,228 @@ def process_pr(
     return success
 
 
+def process_issue(
+    issue: dict[str, Any],
+    guidelines: str,
+    commit_examples: str,
+    default_branch: str = "main"
+) -> bool:
+    """Process a GitHub issue labeled for implementation
+
+    Creates a branch, implements the feature/fix, creates a PR, and links it to the issue.
+
+    Args:
+        issue: Issue data from GitHub API
+        guidelines: Project contribution guidelines
+        commit_examples: Example commit messages
+        default_branch: Default branch of the repository
+
+    Returns:
+        True if processing successful, False otherwise
+    """
+    # Extract required fields
+    issue_number = issue.get("number")
+    title = issue.get("title", "Unknown")
+    body = issue.get("body", "")
+    url = issue.get("url")
+
+    # Validate required fields
+    if not issue_number:
+        log_json("process_issue", {
+            "action": "validation_error",
+            "error": "Missing issue number",
+            "issue": issue
+        })
+        return False
+
+    if not url:
+        log_json("process_issue", {
+            "action": "validation_error",
+            "issue_number": issue_number,
+            "error": "Missing issue URL"
+        })
+        return False
+
+    log_json("process_issue", {
+        "action": "start",
+        "issue_number": issue_number,
+        "title": title,
+    })
+
+    # Send notification
+    send_notification(
+        f"Implementing issue #{issue_number}: {title}",
+        title=f"Issue #{issue_number} - Implementation Started",
+        tags=["construction", "bulb"]
+    )
+
+    # Create branch name from issue
+    # Format: issue-{number}-{sanitized-title}
+    sanitized_title = title.lower().replace(" ", "-")[:50]
+    # Remove unsafe characters
+    sanitized_title = "".join(c for c in sanitized_title if c.isalnum() or c == "-")
+    branch_name = f"issue-{issue_number}-{sanitized_title}"
+
+    # Validate branch name
+    if not validate_git_ref(branch_name):
+        log_json("process_issue", {
+            "action": "validation_error",
+            "issue_number": issue_number,
+            "error": f"Invalid branch name: {branch_name}"
+        })
+        return False
+
+    # Sync with default branch first
+    log_json("process_issue", {
+        "action": "sync_branch",
+        "branch": default_branch
+    })
+
+    returncode, stdout, stderr = run_command(["git", "checkout", default_branch])
+    if returncode != 0:
+        log_json("process_issue", {
+            "action": "checkout_error",
+            "issue_number": issue_number,
+            "error": stderr
+        })
+        return False
+
+    returncode, stdout, stderr = run_command(["git", "pull", "origin", default_branch])
+    if returncode != 0:
+        log_json("process_issue", {
+            "action": "pull_error",
+            "issue_number": issue_number,
+            "error": stderr
+        })
+        return False
+
+    # Create new branch for the issue
+    log_json("process_issue", {
+        "action": "create_branch",
+        "issue_number": issue_number,
+        "branch": branch_name
+    })
+
+    returncode, stdout, stderr = run_command(["git", "checkout", "-b", branch_name])
+    if returncode != 0:
+        # Branch might already exist, try to checkout
+        returncode, stdout, stderr = run_command(["git", "checkout", branch_name])
+        if returncode != 0:
+            log_json("process_issue", {
+                "action": "branch_error",
+                "issue_number": issue_number,
+                "error": stderr
+            })
+            return False
+
+    # Build implementation prompt
+    prompt = f"""# Issue Implementation Task
+
+You are tasked with implementing a GitHub issue in this repository.
+
+## Issue Details
+
+**Issue Number:** #{issue_number}
+**Title:** {title}
+**URL:** {url}
+
+**Description:**
+{body if body else "No description provided"}
+
+## Your Task
+
+1. **Implement the feature or fix described in the issue**
+   - Read and understand the issue requirements carefully
+   - Implement the solution following best practices
+   - Ensure code quality, security, and performance
+
+2. **Write tests for your implementation**
+   - Add appropriate unit tests
+   - Ensure existing tests still pass
+
+3. **Commit your changes**
+   - Make focused, logical commits
+   - Write clear commit messages following project conventions
+   - Reference the issue in commits (e.g., "Fixes #{issue_number}")
+
+4. **Create a pull request**
+   - Use: `gh pr create --fill --head {branch_name} --base {default_branch}`
+   - Link to the issue in PR description (use "Closes #{issue_number}")
+   - Request any necessary reviews
+
+## Project Guidelines
+
+{guidelines if guidelines else "No specific guidelines available"}
+
+## Commit Message Examples
+
+{commit_examples if commit_examples else "No examples available"}
+
+## Important Notes
+
+- You are currently on branch: `{branch_name}`
+- Base branch: `{default_branch}`
+- This implementation should close issue #{issue_number}
+- Focus on completing the requirements in the issue
+- Ask questions if requirements are unclear
+- Test thoroughly before creating the PR
+
+Begin implementing the issue now.
+"""
+
+    log_json("process_issue", {
+        "action": "prompt_generated",
+        "issue_number": issue_number,
+        "prompt_size": len(prompt),
+    })
+
+    # Run bob to implement the issue
+    log_json("process_issue", {
+        "action": "running_bob",
+        "issue_number": issue_number,
+    })
+
+    returncode, stdout, stderr = run_command([
+        "bob",
+        "--json",
+        prompt,
+    ], timeout=3600)  # 1 hour for implementation
+
+    log_json("process_issue", {
+        "action": "bob_complete",
+        "issue_number": issue_number,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+    })
+
+    success = returncode == 0
+
+    if success:
+        # Send success notification
+        send_notification(
+            f"Issue #{issue_number} implementation completed: {title}\nCheck the created PR for details",
+            title=f"Issue #{issue_number} - Complete",
+            tags=["white_check_mark", "bulb"]
+        )
+    else:
+        # Send failure notification
+        send_notification(
+            f"Issue #{issue_number} implementation failed: {title}\nCheck logs for details",
+            title=f"Issue #{issue_number} - Failed",
+            priority="high",
+            tags=["x", "warning"]
+        )
+
+    log_json("process_issue", {
+        "action": "complete",
+        "issue_number": issue_number,
+        "success": success,
+    })
+
+    return success
+
+
 def validate_repository(repo_path: Path) -> bool:
     """Validate that the path is a valid git repository"""
     if not repo_path.exists():
@@ -1530,6 +1816,12 @@ Use GitHub labels to control processing mode:
         help="Path to the git repository to process"
     )
 
+    parser.add_argument(
+        "--watch-issues",
+        action="store_true",
+        help="Monitor and process issues labeled 'for-impl' (processed before PRs)"
+    )
+
     return parser.parse_args()
 
 
@@ -1568,6 +1860,7 @@ def main() -> None:
 
     iteration = 0
     processing_prs = set()  # Track PRs being processed to avoid duplicates
+    processing_issues = set()  # Track issues being processed to avoid duplicates
 
     while True:
         iteration += 1
@@ -1582,6 +1875,59 @@ def main() -> None:
             })
             time.sleep(60)
             continue
+
+        # PRIMARY TASK: Process issues first (if watch-issues enabled)
+        issues_processed = 0
+        if args.watch_issues:
+            open_issues = get_open_issues()
+
+            if open_issues:
+                log_json("iteration", {
+                    "number": iteration,
+                    "action": "issues_found",
+                    "count": len(open_issues),
+                })
+
+                for issue in open_issues:
+                    issue_number = issue.get("number")
+
+                    # Skip if already being processed
+                    if issue_number and issue_number in processing_issues:
+                        log_json("process_issue", {
+                            "action": "skip_duplicate",
+                            "issue_number": issue_number,
+                        })
+                        continue
+
+                    if issue_number:
+                        processing_issues.add(issue_number)
+
+                    try:
+                        success = process_issue(issue, guidelines, commit_examples, default_branch)
+                        if success and issue_number:
+                            # Remove from processing set after successful completion
+                            processing_issues.discard(issue_number)
+                        issues_processed += 1
+                    except KeyboardInterrupt:
+                        log_json("shutdown", {"reason": "keyboard_interrupt"})
+                        sys.exit(0)
+                    except Exception as e:
+                        log_json("process_issue", {
+                            "action": "exception",
+                            "issue_number": issue_number,
+                            "error": str(e),
+                        })
+                        # Remove from processing set on exception
+                        if issue_number:
+                            processing_issues.discard(issue_number)
+
+                    # Small delay between issues
+                    time.sleep(10)
+            else:
+                log_json("iteration", {
+                    "number": iteration,
+                    "action": "no_issues_found",
+                })
 
         # Get open PRs categorized by labels
         categorized_prs = get_open_prs()
@@ -1654,6 +2000,7 @@ def main() -> None:
         log_json("iteration", {
             "number": iteration,
             "action": "complete",
+            "issues_processed": issues_processed,
             "prs_processed": total_processed,
             "sleep_seconds": 300,
         })
