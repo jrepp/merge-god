@@ -1,5 +1,30 @@
 # Changelog
 
+## 2025-11-21 - Show Tag Selection Criteria at Startup
+
+### New Features
+
+- **Tag Selection Criteria Display**: Dashboard now shows PR processing criteria at startup
+  - Displayed in both TUI and non-TUI modes
+  - Shows which labels trigger PR processing:
+    * `for-review` - Comprehensive review with code improvements
+    * `for-landing` - Basic processing to merge (conflicts, reviews, CI)
+  - Shows what gets skipped:
+    * Draft PRs
+    * WIP labels (wip, work-in-process, work in process)
+    * PRs without processing labels
+  - Color-coded in TUI mode (green for processed, red for skipped)
+  - Plain text in non-TUI mode
+
+### Benefits
+
+- Users immediately understand PR selection rules when starting dashboard
+- Reduces confusion about why certain PRs aren't being processed
+- Quick reference for label requirements
+- Consistent display across both TUI and non-TUI modes
+
+---
+
 ## 2025-11-21 - Add Log File Output & Non-TUI Mode
 
 ### New Features

@@ -238,6 +238,7 @@ vi config.yaml
 - Exits without starting processes
 
 The dashboard provides:
+- **Tag selection criteria** displayed at startup (shows which labels trigger PR processing)
 - Real-time status for all configured repos
 - Live updates as PRs are processed
 - Processing statistics and recent activity
@@ -331,6 +332,8 @@ For processing a single repository without dashboard:
 ```
 
 **Note**: Processing mode is now controlled by GitHub labels, not command-line flags. Add the `for-review` or `for-landing` label to your PRs.
+
+**Dashboard Startup**: When you start the dashboard, it displays the tag selection criteria so you immediately understand which PRs will be processed and which will be skipped.
 
 #### How It Works
 

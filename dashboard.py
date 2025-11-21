@@ -695,7 +695,10 @@ class Dashboard:
         if self.log_writer and self.log_writer.log_file_path:
             print(f"Log file: {self.log_writer.log_file_path}")
 
-        print("\nMonitoring repositories (Ctrl+C to stop):\n")
+        # Show tag selection criteria
+        show_tag_criteria(console=None)
+
+        print("Monitoring repositories (Ctrl+C to stop):\n")
 
         for monitor in self.monitors:
             if monitor.enabled:
@@ -760,6 +763,37 @@ class Dashboard:
             self.console.print("\n[yellow]Shutting down...[/yellow]")
             self.stop_all()
             self.console.print("[green]✓ Dashboard stopped[/green]")
+
+
+def show_tag_criteria(console: Console | None = None):
+    """Display PR tag selection criteria"""
+    use_console = console is not None
+
+    if use_console:
+        # Rich formatted output
+        console.print("\n[bold cyan]PR Selection Criteria[/bold cyan]")
+        console.print("[dim]" + "─" * 60 + "[/dim]")
+        console.print("\n[bold green]✓ PRs will be processed if labeled:[/bold green]")
+        console.print("  [green]•[/green] [bold]for-review[/bold] - Comprehensive review with code improvements")
+        console.print("  [green]•[/green] [bold]for-landing[/bold] - Basic processing to merge (conflicts, reviews, CI)")
+        console.print("\n[bold red]✗ PRs will be skipped if:[/bold red]")
+        console.print("  [red]•[/red] Draft PRs ([dim]isDraft: true[/dim])")
+        console.print("  [red]•[/red] WIP labels ([dim]wip, work-in-process, work in process[/dim])")
+        console.print("  [red]•[/red] No processing label ([dim]missing for-review or for-landing[/dim])")
+        console.print("\n[dim]" + "─" * 60 + "[/dim]\n")
+    else:
+        # Plain text output for non-TUI mode
+        print("\n" + "=" * 60)
+        print("PR Selection Criteria")
+        print("=" * 60)
+        print("\n✓ PRs will be processed if labeled:")
+        print("  • for-review - Comprehensive review with code improvements")
+        print("  • for-landing - Basic processing to merge (conflicts, reviews, CI)")
+        print("\n✗ PRs will be skipped if:")
+        print("  • Draft PRs (isDraft: true)")
+        print("  • WIP labels (wip, work-in-process, work in process)")
+        print("  • No processing label (missing for-review or for-landing)")
+        print("\n" + "=" * 60 + "\n")
 
 
 def bootstrap_config(config_path: Path) -> bool:
@@ -987,6 +1021,10 @@ def main():
 
     console = Console()
     console.print(f"[green]✓ Loaded {len(dashboard.monitors)} repositories from {args.config}[/green]")
+
+    # Show tag selection criteria
+    show_tag_criteria(console)
+
     console.print("[cyan]Starting dashboard...[/cyan]\n")
 
     # Give user a moment to see startup message
