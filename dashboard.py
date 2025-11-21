@@ -13,21 +13,32 @@ TUI Dashboard for merge-god PR automation
 Monitors multiple repositories and displays real-time PR processing status.
 Runs pr-loop.py as subprocesses for each configured repository.
 
+Features:
+- Real-time TUI display (when TTY available)
+- Non-TUI mode for no-TTY environments (CI, background, testing)
+- All operations logged to file (default: merge-god-dashboard.log)
+- Multi-repository monitoring
+- Automatic doormat credential loading
+
 Usage:
-    ./dashboard.py [config_file]
+    ./dashboard.py [config_file] [--log-file PATH]
+    ./dashboard.py --dry-run          # Validate configuration
+    ./dashboard.py | cat              # Force non-TUI mode (no TTY)
 
 Default config file: config.yaml
+Default log file: merge-god-dashboard.log
 """
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import yaml
 from rich.console import Console
@@ -39,13 +50,58 @@ from rich.table import Table
 from rich.text import Text
 
 
+class LogWriter:
+    """Handles logging to both file and console"""
+
+    def __init__(self, log_file_path: Path | None = None):
+        self.log_file_path = log_file_path
+        self.log_file: TextIO | None = None
+
+        if self.log_file_path:
+            try:
+                # Open log file in append mode
+                self.log_file = open(self.log_file_path, 'a', buffering=1)  # Line buffered
+                self._write_separator()
+                self.log(f"=== Dashboard started at {datetime.now(timezone.utc).isoformat()} ===")
+            except Exception as e:
+                print(f"Warning: Could not open log file {self.log_file_path}: {e}", file=sys.stderr)
+
+    def _write_separator(self):
+        """Write a separator line to the log file"""
+        if self.log_file:
+            self.log_file.write("\n" + "=" * 80 + "\n")
+            self.log_file.flush()
+
+    def log(self, message: str):
+        """Write a message to the log file"""
+        if self.log_file:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            self.log_file.write(f"[{timestamp}] {message}\n")
+            self.log_file.flush()
+
+    def log_json(self, event: dict[str, Any]):
+        """Write a JSON event to the log file"""
+        if self.log_file:
+            self.log_file.write(json.dumps(event) + "\n")
+            self.log_file.flush()
+
+    def close(self):
+        """Close the log file"""
+        if self.log_file:
+            self.log(f"=== Dashboard stopped at {datetime.now(timezone.utc).isoformat()} ===")
+            self._write_separator()
+            self.log_file.close()
+            self.log_file = None
+
+
 class RepoMonitor:
     """Monitors a single repository's PR processing"""
 
-    def __init__(self, repo_config: dict[str, Any], script_path: Path, doormat_config: dict[str, Any] | None = None):
+    def __init__(self, repo_config: dict[str, Any], script_path: Path, doormat_config: dict[str, Any] | None = None, log_writer: LogWriter | None = None):
         self.config = repo_config
         self.script_path = script_path
         self.doormat_config = doormat_config or {}
+        self.log_writer = log_writer
         self.name = repo_config.get("name", "Unknown")
         self.path = repo_config.get("path", "")
         self.enabled = repo_config.get("enabled", True)
@@ -211,6 +267,11 @@ class RepoMonitor:
         event_type = event.get("event", "")
         data = event.get("data", {})
 
+        # Log event to file
+        if self.log_writer:
+            event_with_repo = {**event, "repo": self.name}
+            self.log_writer.log_json(event_with_repo)
+
         # Update status based on event type
         if event_type == "startup":
             self.status = "running"
@@ -281,13 +342,18 @@ class RepoMonitor:
 class Dashboard:
     """Main dashboard that manages multiple repository monitors"""
 
-    def __init__(self, config_path: Path, script_path: Path, dry_run: bool = False):
+    def __init__(self, config_path: Path, script_path: Path, dry_run: bool = False, log_writer: LogWriter | None = None):
         self.config_path = config_path
         self.script_path = script_path
         self.dry_run = dry_run
+        self.log_writer = log_writer
         self.monitors: list[RepoMonitor] = []
         self.console = Console()
         self.start_time = datetime.now(timezone.utc)
+        self.has_tty = sys.stdout.isatty()
+
+        if log_writer:
+            log_writer.log(f"Dashboard initialized (TTY: {self.has_tty}, dry_run: {dry_run})")
 
     def load_config(self) -> bool:
         """Load configuration from YAML file"""
@@ -323,7 +389,7 @@ class Dashboard:
                 if "enabled" not in repo_config:
                     repo_config["enabled"] = True
 
-                monitor = RepoMonitor(repo_config, self.script_path, doormat_config)
+                monitor = RepoMonitor(repo_config, self.script_path, doormat_config, self.log_writer)
                 self.monitors.append(monitor)
 
             if not self.monitors:
@@ -619,10 +685,70 @@ class Dashboard:
 
         return error_count == 0
 
+    def run_non_tui(self):
+        """Run dashboard in non-TUI mode (for no TTY environments)"""
+        print("\n=== merge-god Dashboard (Non-TUI Mode) ===")
+        print(f"Config: {self.config_path}")
+        print(f"Repositories: {len([m for m in self.monitors if m.enabled])} enabled")
+        print(f"Started: {self.start_time.isoformat()}")
+
+        if self.log_writer and self.log_writer.log_file_path:
+            print(f"Log file: {self.log_writer.log_file_path}")
+
+        print("\nMonitoring repositories (Ctrl+C to stop):\n")
+
+        for monitor in self.monitors:
+            if monitor.enabled:
+                status = "✓ enabled" if monitor.enabled else "○ disabled"
+                print(f"  {status} {monitor.name} ({monitor.path})")
+
+        print("\n" + "=" * 60 + "\n")
+
+        # Track last status print time
+        last_status_time = time.time()
+        status_interval = 60  # Print status every 60 seconds
+
+        try:
+            while True:
+                self.update()
+
+                # Print periodic status updates
+                current_time = time.time()
+                if current_time - last_status_time >= status_interval:
+                    uptime = datetime.now(timezone.utc) - self.start_time
+                    uptime_str = str(uptime).split('.')[0]
+                    print(f"[{datetime.now(timezone.utc).isoformat()}] Status update (uptime: {uptime_str})")
+
+                    for monitor in self.monitors:
+                        if monitor.enabled:
+                            pr_info = f" - {monitor.current_pr}" if monitor.current_pr else ""
+                            print(f"  {monitor.name}: {monitor.status}{pr_info}")
+                            print(f"    Processed: {monitor.stats['prs_processed']} "
+                                  f"(✓ {monitor.stats['successes']} ✗ {monitor.stats['failures']})")
+
+                    print()
+                    last_status_time = current_time
+
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\n\nShutting down...")
+            self.stop_all()
+            print("✓ Dashboard stopped\n")
+
     def run(self):
         """Run the dashboard"""
         if self.dry_run:
             return self.perform_dry_run()
+
+        # Choose TUI or non-TUI mode based on TTY availability
+        if not self.has_tty:
+            if self.log_writer:
+                self.log_writer.log("Running in non-TUI mode (no TTY detected)")
+            return self.run_non_tui()
+
+        # TUI mode
+        if self.log_writer:
+            self.log_writer.log("Running in TUI mode")
 
         try:
             with Live(self.generate_layout(), console=self.console, refresh_per_second=2) as live:
@@ -804,12 +930,28 @@ Press Ctrl+C to quit.
         help="Validate configuration and show what would be launched without starting"
     )
 
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=Path("merge-god-dashboard.log"),
+        help="Path to log file for all operations (default: merge-god-dashboard.log)"
+    )
+
     return parser.parse_args()
 
 
 def main():
     """Main entry point"""
     args = parse_args()
+
+    # Create log writer (unless dry-run mode)
+    log_writer: LogWriter | None = None
+    if not args.dry_run:
+        log_writer = LogWriter(args.log_file)
+
+        # Show log file location at the very top
+        console = Console()
+        console.print(f"\n[dim]Log file: {args.log_file.absolute()}[/dim]\n")
 
     # Check if config file exists
     if not args.config.exists():
@@ -831,9 +973,11 @@ def main():
         sys.exit(1)
 
     # Create and run dashboard
-    dashboard = Dashboard(args.config, script_path, dry_run=args.dry_run)
+    dashboard = Dashboard(args.config, script_path, dry_run=args.dry_run, log_writer=log_writer)
 
     if not dashboard.load_config():
+        if log_writer:
+            log_writer.close()
         sys.exit(1)
 
     if args.dry_run:
@@ -848,8 +992,13 @@ def main():
     # Give user a moment to see startup message
     time.sleep(1)
 
-    dashboard.start_all()
-    dashboard.run()
+    try:
+        dashboard.start_all()
+        dashboard.run()
+    finally:
+        # Clean up log writer
+        if log_writer:
+            log_writer.close()
 
 
 if __name__ == "__main__":

@@ -17,6 +17,12 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
   - Live status updates and processing visualization
   - Runs in tmux/screen sessions
   - Shows PRs being processed, stats, and recent activity
+  - Automatic non-TUI mode when no TTY (CI, background, testing)
+- **Comprehensive Logging**: All operations logged to file
+  - Default: `merge-god-dashboard.log`
+  - JSON events with timestamps and repo context
+  - Configurable log file path
+  - Real-time writes for debugging
 - **Multi-Repository Support**: Process PRs across multiple repos with single dashboard
   - YAML configuration file for easy repo management
   - Per-repo enable/disable control
@@ -283,6 +289,23 @@ tmux new -s merge-god
 # Detach with Ctrl+B, then D
 # Reattach: tmux attach -t merge-god
 ```
+
+**Non-TUI Mode (for testing/CI/background):**
+```bash
+# Force non-TUI mode with pipe
+./dashboard.py | cat
+
+# Run in background (automatically uses non-TUI mode)
+./dashboard.py > output.txt 2>&1 &
+
+# Custom log file
+./dashboard.py --log-file /path/to/custom.log
+```
+
+The dashboard automatically detects TTY availability:
+- **With TTY**: Rich TUI interface with live updates
+- **Without TTY**: Simple text output with periodic status (every 60s)
+- **Log file**: All operations logged regardless of mode (default: `merge-god-dashboard.log`)
 
 ### Option 2: Single Repository
 
@@ -685,8 +708,29 @@ Check that:
 If the dashboard is running but not updating:
 - Check that repositories in config.yaml exist and are valid git repos
 - Verify `pr-loop.py` is executable: `chmod +x pr-loop.py`
-- Check for errors in the dashboard logs
+- Check the log file for errors: `tail -f merge-god-dashboard.log`
 - Try running `pr-loop.py` directly to see if it works: `./pr-loop.py /path/to/repo`
+
+### Debugging with log file
+
+All dashboard operations are logged to `merge-god-dashboard.log` by default:
+
+```bash
+# Watch logs in real-time
+tail -f merge-god-dashboard.log
+
+# View JSON events with pretty formatting
+cat merge-god-dashboard.log | jq .
+
+# Search for errors
+grep -i error merge-god-dashboard.log
+
+# Filter by repository
+grep '"repo": "My Repo"' merge-god-dashboard.log | jq .
+
+# Use custom log file
+./dashboard.py --log-file debug.log
+```
 
 ### Config file errors
 

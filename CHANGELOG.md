@@ -1,5 +1,57 @@
 # Changelog
 
+## 2025-11-21 - Add Log File Output & Non-TUI Mode
+
+### New Features
+
+- **Log File Output**: All dashboard operations are now logged to a file
+  - Default log file: `merge-god-dashboard.log`
+  - Configurable with `--log-file` flag
+  - JSON events from all repository monitors
+  - Timestamped entries with repo context
+  - Log file path displayed at startup
+  - Automatically appends to existing log file
+  - Line-buffered for real-time writing
+
+- **Non-TUI Mode**: Automatic fallback when no TTY is available
+  - Detects TTY availability automatically
+  - Simple text-based output for no-TTY environments
+  - Periodic status updates (every 60 seconds)
+  - Perfect for:
+    * CI/CD pipelines
+    * Background processes
+    * SSH sessions without proper TTY
+    * Testing locally with `./dashboard.py | cat`
+  - Shows all repository status and statistics
+  - Same monitoring capabilities as TUI mode
+
+### Usage
+
+```bash
+# Default log file (merge-god-dashboard.log)
+./dashboard.py
+
+# Custom log file
+./dashboard.py --log-file /path/to/custom.log
+
+# Force non-TUI mode (for testing)
+./dashboard.py | cat
+
+# Background mode (automatically uses non-TUI)
+./dashboard.py > output.txt 2>&1 &
+```
+
+### Technical Details
+
+- Added `LogWriter` class for centralized logging
+- TTY detection using `sys.stdout.isatty()`
+- Non-TUI mode prints periodic status updates
+- All JSON events include repo name for context
+- Log file shows session start/stop markers
+- Graceful fallback if log file can't be created
+
+---
+
 ## 2025-11-21 - Fix Doormat Command & Add Configuration
 
 ### Bug Fixes
