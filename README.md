@@ -21,6 +21,11 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 - **Review Response**: Provides agent with all review comments to address
 - **CI/CD Fixes**: Identifies failing checks and instructs agent to fix them
 - **Guideline Adherence**: Follows PR guidelines or learns from commit history
+- **Optional Code Review Pass** (`--review` flag): After initial processing, runs a second agent pass that:
+  - Reviews all code changes for quality, security, and performance
+  - Identifies bugs, vulnerabilities, and best practice violations
+  - Makes targeted improvements with focused commits
+  - Applies comprehensive review guidelines (SOLID, DRY, security, performance)
 - **Structured Logging**: Emits all inputs/outputs in JSON format
 - **Rich Prompt Generation**: Creates comprehensive prompts with all context for optimal agent understanding
 
@@ -117,12 +122,17 @@ The comprehensive prompt is passed to `bob --json`, which processes the PR auton
 # Process PRs in a specific repository
 ./pr-loop.py /path/to/repo
 
+# Process PRs with code review pass
+./pr-loop.py /path/to/repo --review
+
 # Process PRs in current directory
 ./pr-loop.py .
 
 # Show help
 ./pr-loop.py --help
 ```
+
+#### Standard Mode (without --review)
 
 The script will:
 1. Validate the repository (git repo, GitHub CLI authenticated)
@@ -140,6 +150,34 @@ The script will:
      - Push changes back to the PR
 5. Wait 5 minutes between cycles
 6. Loop forever
+
+#### Review Mode (with --review)
+
+When `--review` flag is enabled, after the initial PR processing succeeds, a **second agent pass** is automatically triggered:
+
+1. **Fresh diff fetched** - Gets the current state of the PR after initial processing
+2. **Code review prompt generated** with:
+   - Complete diff of all changes
+   - List of changed files with statistics
+   - Comprehensive review guidelines covering:
+     - **Code Quality**: Correctness, error handling, edge cases, type safety
+     - **Security**: Input validation, SQL injection, XSS, auth checks, secrets
+     - **Performance**: Algorithm efficiency, query optimization, memory usage, caching
+     - **Best Practices**: DRY principle, SOLID, naming, documentation, tests
+3. **Second agent session runs** to:
+   - Review all code changes systematically
+   - Identify bugs, security issues, performance problems
+   - Make targeted improvements with focused commits
+   - Fix code quality issues and apply best practices
+
+**Use Cases for --review**:
+- High-stakes PRs requiring thorough code review
+- PRs from junior developers or external contributors
+- Security-sensitive changes
+- Performance-critical code
+- Complex refactorings
+
+**Note**: Review pass only runs if initial processing succeeds. Failed checks or merge conflicts are handled in the first pass.
 
 ### Test prompt generation
 

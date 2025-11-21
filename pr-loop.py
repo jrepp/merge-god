@@ -877,6 +877,162 @@ def build_pr_prompt(
     return "\n".join(prompt_parts)
 
 
+def build_review_prompt(
+    pr_number: int,
+    title: str,
+    head_branch: str,
+    url: str,
+    diff: str,
+    changed_files: list[dict[str, Any]]
+) -> str:
+    """Build a code review prompt for targeted improvements
+
+    This prompt is used in a second agent pass to review all changes
+    and make targeted improvements to code quality, best practices, etc.
+
+    Args:
+        pr_number: PR number
+        title: PR title
+        head_branch: Branch being reviewed
+        url: PR URL
+        diff: Full diff of changes
+        changed_files: List of changed files with stats
+
+    Returns:
+        Markdown formatted prompt for code review
+    """
+
+    prompt_parts = [
+        f"# Code Review: PR #{pr_number} - {title}",
+        "",
+        f"**Branch**: {head_branch}",
+        f"**URL**: {url}",
+        "",
+        "## Your Mission: Code Review and Targeted Improvements",
+        "",
+        "You are conducting a thorough code review of this PR. Your goal is to:",
+        "",
+        "1. **Review all code changes** for quality, correctness, and best practices",
+        "2. **Identify issues** such as:",
+        "   - Bugs or logical errors",
+        "   - Security vulnerabilities",
+        "   - Performance issues",
+        "   - Code duplication",
+        "   - Poor error handling",
+        "   - Missing edge case handling",
+        "   - Inconsistent coding style",
+        "   - Missing or inadequate tests",
+        "   - Unclear or missing documentation",
+        "3. **Make targeted improvements** to fix identified issues",
+        "4. **Commit your improvements** with clear, descriptive messages",
+        "",
+        "## Changed Files",
+        "",
+    ]
+
+    # Add file list with statistics
+    for file in changed_files[:50]:
+        filename = file.get("filename", "")
+        additions = file.get("additions", 0)
+        deletions = file.get("deletions", 0)
+        status = file.get("status", "modified")
+
+        status_emoji = {
+            "added": "✨",
+            "removed": "🗑️",
+            "modified": "📝",
+            "renamed": "🔄"
+        }.get(status, "📝")
+
+        prompt_parts.append(f"- {status_emoji} `{filename}` (+{additions}/-{deletions})")
+
+    prompt_parts.extend([
+        "",
+        "## Full Diff",
+        "",
+        "Below is the complete diff of all changes in this PR. Review each change carefully:",
+        "",
+        "```diff",
+        diff[:100000] if len(diff) > 100000 else diff,  # Cap at ~100KB to avoid overwhelming
+        "```",
+        "",
+        "## Review Guidelines",
+        "",
+        "### Code Quality Checks",
+        "- ✅ **Correctness**: Does the code do what it's supposed to do?",
+        "- ✅ **Error Handling**: Are errors handled gracefully?",
+        "- ✅ **Edge Cases**: Are boundary conditions and edge cases handled?",
+        "- ✅ **Resource Management**: Are resources (files, connections, etc.) properly managed?",
+        "- ✅ **Type Safety**: Are types used correctly? Any type errors?",
+        "",
+        "### Security Checks",
+        "- 🔒 **Input Validation**: Is user input properly validated?",
+        "- 🔒 **SQL Injection**: Are queries parameterized?",
+        "- 🔒 **XSS**: Is output properly escaped?",
+        "- 🔒 **Authentication/Authorization**: Are permissions checked?",
+        "- 🔒 **Secrets**: Are there any hardcoded secrets or credentials?",
+        "",
+        "### Performance Checks",
+        "- ⚡ **Algorithmic Efficiency**: Are algorithms efficient?",
+        "- ⚡ **Database Queries**: Are queries optimized? N+1 queries?",
+        "- ⚡ **Memory Usage**: Any memory leaks or excessive allocations?",
+        "- ⚡ **Caching**: Should results be cached?",
+        "",
+        "### Best Practices",
+        "- 📚 **DRY**: Is code duplicated? Can it be refactored?",
+        "- 📚 **SOLID**: Does code follow SOLID principles?",
+        "- 📚 **Naming**: Are variables and functions clearly named?",
+        "- 📚 **Comments**: Are complex sections documented?",
+        "- 📚 **Tests**: Are tests adequate? Missing test cases?",
+        "",
+        "## Making Improvements",
+        "",
+        "For each issue you identify:",
+        "",
+        "1. **Fix it directly** - Make the code changes",
+        "2. **Write clear commits** - Explain what you fixed and why",
+        "3. **Run tests** - Ensure your changes don't break anything",
+        "4. **Be surgical** - Make focused, minimal changes",
+        "",
+        "### Commit Message Format",
+        "",
+        "Use clear, descriptive commit messages:",
+        "",
+        "```",
+        "Fix: [brief description]",
+        "",
+        "[Detailed explanation of what was wrong and how you fixed it]",
+        "```",
+        "",
+        "Examples:",
+        "- `Fix: Add input validation to prevent SQL injection in user search`",
+        "- `Refactor: Extract duplicate error handling into helper function`",
+        "- `Performance: Add caching to reduce redundant API calls`",
+        "- `Security: Remove hardcoded API key, use environment variable`",
+        "",
+        "## Critical Rules",
+        "",
+        "- ❌ **NO assistant branding** in commits or comments",
+        "- ✅ **Be thorough** but don't over-engineer",
+        "- ✅ **Preserve intent** - don't change functionality unless it's wrong",
+        "- ✅ **Test your changes** before committing",
+        "- ✅ **If unsure**, skip that change and document why",
+        "",
+        "## Execution",
+        "",
+        "Review the diff systematically. For each file:",
+        "1. Understand what the code does",
+        "2. Look for issues based on guidelines above",
+        "3. Make improvements where needed",
+        "4. Commit with clear messages",
+        "",
+        "Focus on high-impact improvements. Don't waste time on trivial style issues.",
+        "",
+    ])
+
+    return "\n".join(prompt_parts)
+
+
 def gather_pr_context(pr_number: int, head_branch: str, base_branch: str, url: str) -> dict[str, Any]:
     """Gather comprehensive context about a PR before processing"""
     log_json("gather_pr_context", {"action": "start", "pr_number": pr_number})
@@ -935,7 +1091,13 @@ def gather_pr_context(pr_number: int, head_branch: str, base_branch: str, url: s
     return details, context
 
 
-def process_pr(pr: dict[str, Any], guidelines: str, commit_examples: str, default_branch: str = "main") -> bool:
+def process_pr(
+    pr: dict[str, Any],
+    guidelines: str,
+    commit_examples: str,
+    default_branch: str = "main",
+    review_enabled: bool = False
+) -> bool:
     """Process a single PR using bob with comprehensive context
 
     Args:
@@ -943,6 +1105,7 @@ def process_pr(pr: dict[str, Any], guidelines: str, commit_examples: str, defaul
         guidelines: Project contribution guidelines
         commit_examples: Example commit messages
         default_branch: Default branch of the repository
+        review_enabled: If True, run a second agent pass for code review
 
     Returns:
         True if processing successful, False otherwise
@@ -1064,10 +1227,91 @@ def process_pr(pr: dict[str, Any], guidelines: str, commit_examples: str, defaul
 
     success = returncode == 0
 
+    # If first pass failed, return early
+    if not success:
+        log_json("process_pr", {
+            "action": "complete",
+            "pr_number": pr_number,
+            "success": False,
+            "reason": "initial_pass_failed"
+        })
+        return False
+
+    # If review enabled, run second pass for code review
+    if review_enabled:
+        log_json("process_pr", {
+            "action": "review_pass_start",
+            "pr_number": pr_number,
+        })
+
+        # Get fresh diff after first pass changes
+        fresh_diff = get_pr_diff(pr_number)
+
+        if not fresh_diff:
+            log_json("process_pr", {
+                "action": "review_pass_skip",
+                "pr_number": pr_number,
+                "reason": "no_diff_available"
+            })
+        else:
+            # Build review prompt
+            try:
+                review_prompt = build_review_prompt(
+                    pr_number=pr_number,
+                    title=title,
+                    head_branch=head_branch,
+                    url=url,
+                    diff=fresh_diff,
+                    changed_files=pr_context.get("files", [])
+                )
+            except Exception as e:
+                log_json("process_pr", {
+                    "action": "review_prompt_error",
+                    "pr_number": pr_number,
+                    "error": str(e)
+                })
+                # Don't fail the whole process if review prompt fails
+                review_prompt = None
+
+            if review_prompt:
+                log_json("process_pr", {
+                    "action": "review_prompt_generated",
+                    "pr_number": pr_number,
+                    "prompt_size": len(review_prompt),
+                })
+
+                # Run bob with review prompt
+                log_json("process_pr", {
+                    "action": "running_bob_review",
+                    "pr_number": pr_number,
+                })
+
+                review_returncode, review_stdout, review_stderr = run_command([
+                    "bob",
+                    "--json",
+                    review_prompt,
+                ], timeout=3600)  # 1 hour for review pass
+
+                log_json("process_pr", {
+                    "action": "bob_review_complete",
+                    "pr_number": pr_number,
+                    "returncode": review_returncode,
+                    "stdout": review_stdout,
+                    "stderr": review_stderr,
+                })
+
+                review_success = review_returncode == 0
+                log_json("process_pr", {
+                    "action": "review_pass_complete",
+                    "pr_number": pr_number,
+                    "success": review_success,
+                })
+
     log_json("process_pr", {
         "action": "complete",
         "pr_number": pr_number,
         "success": success,
+        "review_enabled": review_enabled,
     })
 
     return success
@@ -1131,7 +1375,7 @@ def parse_args() -> argparse.Namespace:
         epilog="""
 Examples:
   ./pr-loop.py /path/to/repo
-  ./pr-loop.py ~/projects/my-repo
+  ./pr-loop.py ~/projects/my-repo --review
   ./pr-loop.py .
 
 The script will continuously process open PRs in the repository,
@@ -1143,6 +1387,12 @@ excluding draft PRs and those labeled with WIP/work-in-process.
         "repo_path",
         type=Path,
         help="Path to the git repository to process"
+    )
+
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="Enable code review pass: after initial PR processing, run a second agent session to review all diffs and make targeted improvements"
     )
 
     return parser.parse_args()
@@ -1164,6 +1414,7 @@ def main() -> None:
         "repo_path": str(repo_path),
         "cwd": str(Path.cwd()),
         "python_version": sys.version,
+        "review_enabled": args.review,
     })
 
     # Detect default branch
@@ -1228,7 +1479,7 @@ def main() -> None:
                 processing_prs.add(pr_number)
 
             try:
-                success = process_pr(pr, guidelines, commit_examples, default_branch)
+                success = process_pr(pr, guidelines, commit_examples, default_branch, args.review)
                 if success and pr_number:
                     # Remove from processing set after successful completion
                     processing_prs.discard(pr_number)
