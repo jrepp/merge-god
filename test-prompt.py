@@ -14,8 +14,23 @@ import sys
 import subprocess
 from pathlib import Path
 
-# Import functions from pr-loop.py by executing it in the same namespace
-exec(Path("pr-loop.py").read_text())
+# Import functions from pr-loop.py by executing it in a controlled namespace
+# We read the file content but strip the main execution block
+pr_loop_content = Path("pr-loop.py").read_text()
+# Remove the if __name__ == "__main__" block to prevent auto-execution
+lines = pr_loop_content.split('\n')
+filtered_lines = []
+skip_main_block = False
+for i, line in enumerate(lines):
+    if 'if __name__ == "__main__"' in line:
+        skip_main_block = True
+        continue
+    if skip_main_block:
+        # Skip everything after the if __name__ block
+        continue
+    filtered_lines.append(line)
+
+exec('\n'.join(filtered_lines))
 
 
 def main():
@@ -56,14 +71,14 @@ def main():
     import json
     pr_info = json.loads(stdout)
 
-    # Get guidelines and commit examples
-    guidelines = get_pr_guidelines()
-    commit_examples = get_commit_history_examples() if not guidelines else ""
-
     # Gather context
     head_branch = pr_info["headRefName"]
     base_branch = pr_info.get("baseRefName", "main")
     url = pr_info["url"]
+
+    # Get guidelines and commit examples
+    guidelines = get_pr_guidelines()
+    commit_examples = get_commit_history_examples(base_branch) if not guidelines else ""
 
     pr_details, pr_context = gather_pr_context(pr_number, head_branch, base_branch, url)
 
