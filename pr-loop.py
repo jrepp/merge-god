@@ -1,0 +1,1270 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+
+"""
+PR Merge Loop - Automatically processes and merges PRs using bob (AI assistant wrapper)
+Continuously loops through open PRs, syncing repo, fixing conflicts, responding to reviews, and fixing CI.
+
+Usage: ./pr-loop.py <repo_path>
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def log_json(event_type: str, data: dict[str, Any]) -> None:
+    """Emit structured JSON logs with timestamp"""
+    log_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "event": event_type,
+        "data": data,
+    }
+    print(json.dumps(log_entry), flush=True)
+
+
+def run_command(
+    cmd: list[str],
+    cwd: Path | None = None,
+    timeout: int = 300,  # 5 minutes default
+    max_output_size: int = 50 * 1024 * 1024  # 50MB default
+) -> tuple[int, str, str]:
+    """Run a command and return exit code, stdout, stderr
+
+    Args:
+        cmd: Command and arguments as list
+        cwd: Working directory for command
+        timeout: Timeout in seconds (default 5 minutes)
+        max_output_size: Maximum output size in bytes (default 50MB)
+
+    Returns:
+        Tuple of (returncode, stdout, stderr)
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        # Check output size
+        stdout_size = len(result.stdout.encode('utf-8'))
+        stderr_size = len(result.stderr.encode('utf-8'))
+
+        if stdout_size > max_output_size:
+            log_json("command_warning", {
+                "warning": "stdout truncated",
+                "size": stdout_size,
+                "max_size": max_output_size,
+                "command": cmd[0] if cmd else "unknown"
+            })
+            result.stdout = result.stdout[:max_output_size // 2] + "\n... [truncated] ..."
+
+        if stderr_size > max_output_size:
+            log_json("command_warning", {
+                "warning": "stderr truncated",
+                "size": stderr_size,
+                "max_size": max_output_size,
+                "command": cmd[0] if cmd else "unknown"
+            })
+            result.stderr = result.stderr[:max_output_size // 2] + "\n... [truncated] ..."
+
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired as e:
+        return -1, "", f"Command timed out after {timeout} seconds"
+    except FileNotFoundError as e:
+        return -1, "", f"Command not found: {cmd[0] if cmd else 'unknown'}"
+    except Exception as e:
+        return -1, "", f"Command failed: {str(e)}"
+
+
+def get_open_prs() -> list[dict[str, Any]]:
+    """Fetch open PRs excluding drafts and WIP labels"""
+    log_json("fetch_prs", {"action": "start"})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "pr", "list",
+        "--json", "number,title,headRefName,baseRefName,isDraft,labels,url,author,createdAt,updatedAt",
+        "--limit", "100",
+    ], timeout=60)
+
+    if returncode != 0:
+        log_json("fetch_prs", {"action": "error", "stderr": stderr})
+        return []
+
+    if not stdout or not stdout.strip():
+        log_json("fetch_prs", {"action": "empty_response"})
+        return []
+
+    try:
+        all_prs = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        log_json("fetch_prs", {"action": "parse_error", "error": str(e), "stdout": stdout[:200]})
+        return []
+
+    # Validate it's a list
+    if not isinstance(all_prs, list):
+        log_json("fetch_prs", {"action": "invalid_type", "type": type(all_prs).__name__})
+        return []
+
+    # Filter out draft PRs and those with WIP/work-in-process labels
+    filtered_prs = []
+    for pr in all_prs:
+        if not isinstance(pr, dict):
+            continue
+
+        # Validate required fields exist
+        if not all(key in pr for key in ["number", "headRefName", "url"]):
+            log_json("fetch_prs", {"action": "invalid_pr", "pr": pr})
+            continue
+
+        if pr.get("isDraft", False):
+            continue
+
+        # Safely get labels
+        labels = []
+        for label in pr.get("labels", []):
+            if isinstance(label, dict) and "name" in label:
+                labels.append(label["name"].lower())
+
+        if any(wip in label for label in labels for wip in ["wip", "work-in-process", "work in process"]):
+            continue
+
+        filtered_prs.append(pr)
+
+    log_json("fetch_prs", {
+        "action": "complete",
+        "total": len(all_prs),
+        "filtered": len(filtered_prs),
+    })
+
+    return filtered_prs
+
+
+def validate_git_ref(ref: str) -> bool:
+    """Validate that a string is a safe git reference name
+
+    Prevents command injection through malicious branch names.
+    """
+    if not ref or not isinstance(ref, str):
+        return False
+
+    # Git ref names should not contain these characters
+    unsafe_chars = ['\0', '\n', '\r', ' ', '~', '^', ':', '?', '*', '[', '\\', '..', '@{', '//']
+    if any(char in ref for char in unsafe_chars):
+        return False
+
+    # Should not start or end with certain characters
+    if ref.startswith(('.', '/')) or ref.endswith(('.', '/', '.lock')):
+        return False
+
+    # Reasonable length check (git allows 255 but be conservative)
+    if len(ref) > 200:
+        return False
+
+    return True
+
+
+def detect_default_branch() -> str:
+    """Detect the default branch of the repository"""
+    # Try to get the default branch from remote
+    returncode, stdout, stderr = run_command([
+        "git", "symbolic-ref", "refs/remotes/origin/HEAD"
+    ], timeout=10)
+
+    if returncode == 0 and stdout:
+        # Output is like "refs/remotes/origin/main"
+        branch = stdout.strip().split('/')[-1]
+        if branch:
+            return branch
+
+    # Fallback: try common names
+    for branch in ["main", "master", "develop"]:
+        returncode, stdout, stderr = run_command([
+            "git", "rev-parse", "--verify", f"origin/{branch}"
+        ], timeout=10)
+        if returncode == 0:
+            return branch
+
+    # Last resort
+    log_json("branch_detection", {
+        "warning": "Could not detect default branch, using 'main'"
+    })
+    return "main"
+
+
+def get_pr_details(pr_number: int) -> dict[str, Any]:
+    """Fetch comprehensive PR details"""
+    log_json("get_pr_details", {"action": "start", "pr_number": pr_number})
+
+    # Get full PR information
+    returncode, stdout, stderr = run_command([
+        "gh", "pr", "view", str(pr_number),
+        "--json", "number,title,body,state,headRefName,baseRefName,isDraft,mergeable,"
+                  "author,createdAt,updatedAt,closedAt,mergedAt,labels,assignees,reviewers,"
+                  "additions,deletions,changedFiles,commits,reviews,reviewDecision,statusCheckRollup"
+    ])
+
+    if returncode != 0:
+        log_json("get_pr_details", {"action": "error", "pr_number": pr_number, "stderr": stderr})
+        return {}
+
+    try:
+        details = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        log_json("get_pr_details", {"action": "parse_error", "pr_number": pr_number, "error": str(e)})
+        return {}
+
+    log_json("get_pr_details", {"action": "complete", "pr_number": pr_number})
+    return details
+
+
+def get_pr_comments(pr_number: int) -> list[dict[str, Any]]:
+    """Fetch all PR comments (discussion/issue comments)"""
+    log_json("get_pr_comments", {"action": "start", "pr_number": pr_number})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "api", f"repos/{{owner}}/{{repo}}/issues/{pr_number}/comments",
+        "--jq", "."
+    ])
+
+    if returncode != 0:
+        log_json("get_pr_comments", {"action": "error", "pr_number": pr_number, "stderr": stderr})
+        return []
+
+    try:
+        comments = json.loads(stdout) if stdout else []
+    except json.JSONDecodeError as e:
+        log_json("get_pr_comments", {"action": "parse_error", "pr_number": pr_number, "error": str(e)})
+        return []
+
+    log_json("get_pr_comments", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "comment_count": len(comments)
+    })
+    return comments
+
+
+def get_pr_review_comments(pr_number: int) -> list[dict[str, Any]]:
+    """Fetch all PR review comments (inline code review comments)"""
+    log_json("get_pr_review_comments", {"action": "start", "pr_number": pr_number})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
+        "--jq", "."
+    ])
+
+    if returncode != 0:
+        log_json("get_pr_review_comments", {
+            "action": "error",
+            "pr_number": pr_number,
+            "stderr": stderr
+        })
+        return []
+
+    try:
+        comments = json.loads(stdout) if stdout else []
+    except json.JSONDecodeError as e:
+        log_json("get_pr_review_comments", {
+            "action": "parse_error",
+            "pr_number": pr_number,
+            "error": str(e)
+        })
+        return []
+
+    log_json("get_pr_review_comments", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "review_comment_count": len(comments)
+    })
+    return comments
+
+
+def get_pr_diff(pr_number: int) -> str:
+    """Get the PR diff"""
+    log_json("get_pr_diff", {"action": "start", "pr_number": pr_number})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "pr", "diff", str(pr_number)
+    ])
+
+    if returncode != 0:
+        log_json("get_pr_diff", {"action": "error", "pr_number": pr_number, "stderr": stderr})
+        return ""
+
+    log_json("get_pr_diff", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "diff_size": len(stdout)
+    })
+    return stdout
+
+
+def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) -> dict[str, Any]:
+    """Check if PR has merge conflicts with base branch"""
+    log_json("check_merge_conflicts", {
+        "action": "start",
+        "pr_number": pr_number,
+        "head_branch": head_branch,
+        "base_branch": base_branch
+    })
+
+    # Validate branch names
+    if not validate_git_ref(head_branch):
+        log_json("check_merge_conflicts", {
+            "action": "invalid_branch",
+            "pr_number": pr_number,
+            "branch": "head",
+            "value": head_branch
+        })
+        return {
+            "has_conflicts": False,
+            "conflicting_files": [],
+            "conflict_count": 0,
+            "error": "Invalid head branch name"
+        }
+
+    if not validate_git_ref(base_branch):
+        log_json("check_merge_conflicts", {
+            "action": "invalid_branch",
+            "pr_number": pr_number,
+            "branch": "base",
+            "value": base_branch
+        })
+        return {
+            "has_conflicts": False,
+            "conflicting_files": [],
+            "conflict_count": 0,
+            "error": "Invalid base branch name"
+        }
+
+    # Fetch latest
+    returncode, stdout, stderr = run_command([
+        "git", "fetch", "origin", head_branch, base_branch
+    ], timeout=120)
+
+    if returncode != 0:
+        log_json("check_merge_conflicts", {
+            "action": "fetch_error",
+            "pr_number": pr_number,
+            "stderr": stderr
+        })
+        return {
+            "has_conflicts": False,
+            "conflicting_files": [],
+            "conflict_count": 0,
+            "error": "Failed to fetch branches"
+        }
+
+    # Check if merge would conflict using merge-tree
+    returncode, stdout, stderr = run_command([
+        "git", "merge-tree",
+        f"origin/{base_branch}",
+        f"origin/{head_branch}"
+    ], timeout=120)
+
+    # More robust conflict detection
+    has_conflicts = False
+    if returncode == 0 and stdout:
+        # Look for conflict markers in a way that reduces false positives
+        lines = stdout.split("\n")
+        conflict_marker_count = sum(1 for line in lines if line.startswith("<<<<<<<"))
+        has_conflicts = conflict_marker_count > 0
+
+    # Get list of conflicting files if any
+    conflicting_files = []
+    if has_conflicts:
+        lines = stdout.split("\n")
+        current_file = None
+        for line in lines:
+            if line.startswith("+++") or line.startswith("---"):
+                parts = line.split()
+                if len(parts) > 1 and parts[1] != "/dev/null":
+                    file_path = parts[1].lstrip("ab/")
+                    if file_path and file_path not in conflicting_files:
+                        current_file = file_path
+            elif line.startswith("<<<<<<<") and current_file:
+                if current_file not in conflicting_files:
+                    conflicting_files.append(current_file)
+
+    result = {
+        "has_conflicts": has_conflicts,
+        "conflicting_files": conflicting_files,
+        "conflict_count": len(conflicting_files)
+    }
+
+    log_json("check_merge_conflicts", {
+        "action": "complete",
+        "pr_number": pr_number,
+        **result
+    })
+
+    return result
+
+
+def get_pr_commits(pr_number: int) -> list[dict[str, Any]]:
+    """Get all commits in the PR"""
+    log_json("get_pr_commits", {"action": "start", "pr_number": pr_number})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/commits",
+        "--jq", "."
+    ])
+
+    if returncode != 0:
+        log_json("get_pr_commits", {"action": "error", "pr_number": pr_number, "stderr": stderr})
+        return []
+
+    try:
+        commits = json.loads(stdout) if stdout else []
+    except json.JSONDecodeError as e:
+        log_json("get_pr_commits", {"action": "parse_error", "pr_number": pr_number, "error": str(e)})
+        return []
+
+    log_json("get_pr_commits", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "commit_count": len(commits)
+    })
+    return commits
+
+
+def get_pr_files(pr_number: int) -> list[dict[str, Any]]:
+    """Get list of changed files in the PR"""
+    log_json("get_pr_files", {"action": "start", "pr_number": pr_number})
+
+    returncode, stdout, stderr = run_command([
+        "gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/files",
+        "--jq", "."
+    ])
+
+    if returncode != 0:
+        log_json("get_pr_files", {"action": "error", "pr_number": pr_number, "stderr": stderr})
+        return []
+
+    try:
+        files = json.loads(stdout) if stdout else []
+    except json.JSONDecodeError as e:
+        log_json("get_pr_files", {"action": "parse_error", "pr_number": pr_number, "error": str(e)})
+        return []
+
+    log_json("get_pr_files", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "file_count": len(files)
+    })
+    return files
+
+
+def analyze_ci_status(status_checks: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Analyze CI/CD status from status checks"""
+    if not status_checks:
+        return {
+            "total_checks": 0,
+            "passed": 0,
+            "failed": 0,
+            "pending": 0,
+            "skipped": 0,
+            "failed_checks": []
+        }
+
+    passed = 0
+    failed = 0
+    pending = 0
+    skipped = 0
+    failed_checks = []
+
+    for check in status_checks:
+        status = check.get("state", "").upper()
+        conclusion = check.get("conclusion", "").upper()
+
+        if conclusion == "SUCCESS":
+            passed += 1
+        elif conclusion in ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE"]:
+            failed += 1
+            failed_checks.append({
+                "name": check.get("name", "unknown"),
+                "conclusion": conclusion,
+                "details_url": check.get("detailsUrl", "")
+            })
+        elif status == "PENDING" or status == "IN_PROGRESS":
+            pending += 1
+        elif conclusion == "SKIPPED" or conclusion == "NEUTRAL":
+            skipped += 1
+
+    return {
+        "total_checks": len(status_checks),
+        "passed": passed,
+        "failed": failed,
+        "pending": pending,
+        "skipped": skipped,
+        "failed_checks": failed_checks
+    }
+
+
+def sync_repo(default_branch: str = "main") -> bool:
+    """Sync the repository with origin
+
+    Args:
+        default_branch: The default branch to sync (detected at startup)
+
+    Returns:
+        True if sync successful, False otherwise
+    """
+    log_json("sync_repo", {"action": "start", "branch": default_branch})
+
+    # Validate branch name
+    if not validate_git_ref(default_branch):
+        log_json("sync_repo", {
+            "action": "error",
+            "step": "validation",
+            "error": f"Invalid branch name: {default_branch}"
+        })
+        return False
+
+    # Fetch all remotes
+    returncode, stdout, stderr = run_command(
+        ["git", "fetch", "--all", "--prune"],
+        timeout=180
+    )
+    if returncode != 0:
+        log_json("sync_repo", {"action": "error", "step": "fetch", "stderr": stderr})
+        return False
+
+    # Checkout default branch
+    returncode, stdout, stderr = run_command(
+        ["git", "checkout", default_branch],
+        timeout=30
+    )
+    if returncode != 0:
+        log_json("sync_repo", {
+            "action": "error",
+            "step": "checkout",
+            "branch": default_branch,
+            "stderr": stderr
+        })
+        return False
+
+    # Pull latest changes
+    returncode, stdout, stderr = run_command(
+        ["git", "pull", "origin", default_branch],
+        timeout=120
+    )
+    if returncode != 0:
+        log_json("sync_repo", {
+            "action": "error",
+            "step": "pull",
+            "branch": default_branch,
+            "stderr": stderr
+        })
+        return False
+
+    log_json("sync_repo", {"action": "complete"})
+    return True
+
+
+def get_pr_guidelines() -> str:
+    """Check for PR guidelines in common locations"""
+    guideline_files = [
+        "CONTRIBUTING.md",
+        ".github/CONTRIBUTING.md",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        "docs/CONTRIBUTING.md",
+        "PULL_REQUEST_TEMPLATE.md",
+    ]
+
+    for filename in guideline_files:
+        filepath = Path.cwd() / filename
+        if filepath.exists():
+            try:
+                return filepath.read_text()
+            except Exception:
+                continue
+
+    return ""
+
+
+def get_commit_history_examples(default_branch: str = "main") -> str:
+    """Get recent commit messages as examples
+
+    Args:
+        default_branch: The default branch to get commits from
+
+    Returns:
+        String of commit messages, one per line
+    """
+    if not validate_git_ref(default_branch):
+        log_json("commit_history", {
+            "warning": f"Invalid branch name: {default_branch}"
+        })
+        return ""
+
+    returncode, stdout, stderr = run_command([
+        "git", "log", "--pretty=format:%s", "-n", "20", f"origin/{default_branch}"
+    ], timeout=30)
+
+    if returncode == 0 and stdout:
+        return stdout
+
+    return ""
+
+
+def build_pr_prompt(
+    pr_details: dict[str, Any],
+    pr_context: dict[str, Any],
+    guidelines: str,
+    commit_examples: str
+) -> str:
+    """Build comprehensive prompt for bob to process the PR with full context"""
+
+    pr_number = pr_details.get("number", "unknown")
+    title = pr_details.get("title", "")
+    body = pr_details.get("body", "")
+    head_branch = pr_details.get("headRefName", "")
+    base_branch = pr_details.get("baseRefName", "main")
+    url = pr_context.get("url", "")
+    author = pr_details.get("author", {}).get("login", "unknown")
+
+    prompt_parts = [
+        f"# PR #{pr_number}: {title}",
+        "",
+        f"**Author**: {author}",
+        f"**Branch**: {head_branch} → {base_branch}",
+        f"**URL**: {url}",
+        "",
+    ]
+
+    # Add PR description
+    if body:
+        prompt_parts.extend([
+            "## PR Description",
+            "",
+            body,
+            "",
+        ])
+
+    # Add PR statistics
+    additions = pr_details.get("additions", 0)
+    deletions = pr_details.get("deletions", 0)
+    changed_files = pr_details.get("changedFiles", 0)
+
+    prompt_parts.extend([
+        "## PR Statistics",
+        "",
+        f"- **Files changed**: {changed_files}",
+        f"- **Additions**: +{additions}",
+        f"- **Deletions**: -{deletions}",
+        "",
+    ])
+
+    # Add merge conflict information
+    conflict_info = pr_context.get("conflicts", {})
+    if conflict_info.get("has_conflicts"):
+        conflicting_files = conflict_info.get("conflicting_files", [])
+        prompt_parts.extend([
+            "## ⚠️ Merge Conflicts Detected",
+            "",
+            f"This PR has merge conflicts with {base_branch}. You MUST resolve these conflicts:",
+            "",
+        ])
+        for file in conflicting_files:
+            prompt_parts.append(f"- `{file}`")
+        prompt_parts.append("")
+
+    # Add CI/CD status
+    ci_status = pr_context.get("ci_status", {})
+    if ci_status.get("total_checks", 0) > 0:
+        prompt_parts.extend([
+            "## CI/CD Status",
+            "",
+            f"- **Total checks**: {ci_status['total_checks']}",
+            f"- **Passed**: ✅ {ci_status['passed']}",
+            f"- **Failed**: ❌ {ci_status['failed']}",
+            f"- **Pending**: ⏳ {ci_status['pending']}",
+            f"- **Skipped**: ⏭️ {ci_status['skipped']}",
+            "",
+        ])
+
+        failed_checks = ci_status.get("failed_checks", [])
+        if failed_checks:
+            prompt_parts.extend([
+                "### Failed Checks (MUST FIX)",
+                "",
+            ])
+            for check in failed_checks:
+                prompt_parts.append(f"- **{check['name']}**: {check['conclusion']}")
+                if check.get("details_url"):
+                    prompt_parts.append(f"  - Details: {check['details_url']}")
+            prompt_parts.append("")
+
+    # Add review decision
+    review_decision = pr_details.get("reviewDecision", "")
+    if review_decision:
+        emoji = "✅" if review_decision == "APPROVED" else "⚠️" if review_decision == "CHANGES_REQUESTED" else "⏳"
+        prompt_parts.extend([
+            "## Review Status",
+            "",
+            f"{emoji} **{review_decision}**",
+            "",
+        ])
+
+    # Add review comments
+    review_comments = pr_context.get("review_comments", [])
+    if review_comments:
+        prompt_parts.extend([
+            "## Code Review Comments (MUST ADDRESS)",
+            "",
+            "These are inline code review comments that require your attention:",
+            "",
+        ])
+        for i, comment in enumerate(review_comments[:20], 1):  # Limit to 20 most recent
+            author = comment.get("user", {}).get("login", "unknown")
+            body = comment.get("body", "")
+            path = comment.get("path", "")
+            line = comment.get("line", "") or comment.get("original_line", "")
+
+            prompt_parts.extend([
+                f"### Review Comment {i}",
+                f"**File**: `{path}` (line {line})",
+                f"**Author**: {author}",
+                "",
+                body,
+                "",
+            ])
+
+    # Add general PR comments
+    comments = pr_context.get("comments", [])
+    if comments:
+        prompt_parts.extend([
+            "## Discussion Comments",
+            "",
+        ])
+        for i, comment in enumerate(comments[-10:], 1):  # Last 10 comments
+            author = comment.get("user", {}).get("login", "unknown")
+            body = comment.get("body", "")
+
+            prompt_parts.extend([
+                f"### Comment {i}",
+                f"**Author**: {author}",
+                "",
+                body,
+                "",
+            ])
+
+    # Add changed files summary
+    changed_files_list = pr_context.get("files", [])
+    if changed_files_list:
+        prompt_parts.extend([
+            "## Changed Files",
+            "",
+        ])
+        for file in changed_files_list[:50]:  # Limit to 50 files
+            filename = file.get("filename", "")
+            status = file.get("status", "modified")
+            additions = file.get("additions", 0)
+            deletions = file.get("deletions", 0)
+
+            status_emoji = {"added": "✨", "removed": "🗑️", "modified": "📝", "renamed": "🔄"}.get(status, "📝")
+            prompt_parts.append(f"- {status_emoji} `{filename}` (+{additions}/-{deletions})")
+        prompt_parts.append("")
+
+    # Add commit history
+    commits = pr_context.get("commits", [])
+    if commits:
+        prompt_parts.extend([
+            "## Commit History",
+            "",
+        ])
+        for commit in commits[-10:]:  # Last 10 commits
+            message = commit.get("commit", {}).get("message", "").split("\n")[0]
+            sha = commit.get("sha", "")
+            # Safely slice SHA (handle short or missing SHAs)
+            short_sha = sha[:7] if sha and len(sha) >= 7 else (sha if sha else "unknown")
+            prompt_parts.append(f"- `{short_sha}` {message}")
+        prompt_parts.append("")
+
+    # Add guidelines
+    prompt_parts.extend([
+        "---",
+        "",
+        "## Your Mission",
+        "",
+        "Get this PR merged successfully by completing ALL of the following:",
+        "",
+    ])
+
+    tasks = []
+    if conflict_info.get("has_conflicts"):
+        tasks.append("1. **RESOLVE MERGE CONFLICTS** - This is CRITICAL and must be done first")
+
+    task_num = len(tasks) + 1
+    tasks.extend([
+        f"{task_num}. Checkout the PR branch: `{head_branch}`",
+        f"{task_num + 1}. Sync with `{base_branch}` (fetch and merge/rebase)",
+    ])
+
+    task_num += 2
+    if review_comments:
+        tasks.append(f"{task_num}. Address ALL {len(review_comments)} code review comments with appropriate changes")
+        task_num += 1
+
+    if ci_status.get("failed", 0) > 0:
+        tasks.append(f"{task_num}. Fix ALL {ci_status['failed']} failing CI checks")
+        task_num += 1
+
+    tasks.extend([
+        f"{task_num}. Run tests and checks locally to verify everything passes",
+        f"{task_num + 1}. Push changes back to `{head_branch}`",
+        f"{task_num + 2}. Verify CI passes on GitHub after pushing",
+    ])
+
+    prompt_parts.extend(tasks)
+    prompt_parts.append("")
+
+    # Add guidelines or commit examples
+    if guidelines:
+        prompt_parts.extend([
+            "## Project Guidelines",
+            "",
+            "Follow these PR and contribution guidelines:",
+            "",
+            "```",
+            guidelines,
+            "```",
+            "",
+        ])
+    elif commit_examples:
+        prompt_parts.extend([
+            "## Commit Style Examples",
+            "",
+            "No explicit guidelines found. Follow the style of recent commits:",
+            "",
+            "```",
+            commit_examples,
+            "```",
+            "",
+        ])
+
+    # Add important rules
+    prompt_parts.extend([
+        "## Critical Rules",
+        "",
+        "- ❌ **NO assistant branding** in commits, comments, or code",
+        "- ✅ Write clear, professional commit messages matching project style",
+        "- ✅ Make focused, minimal changes addressing specific issues only",
+        "- ✅ Test thoroughly before pushing",
+        "- ✅ Respond to review comments on GitHub when appropriate",
+        "- ✅ If blocked, clearly document the issue and what's needed",
+        "",
+        "## Execution",
+        "",
+        "Work autonomously through all tasks. Report progress and any blockers.",
+        "",
+    ])
+
+    return "\n".join(prompt_parts)
+
+
+def gather_pr_context(pr_number: int, head_branch: str, base_branch: str, url: str) -> dict[str, Any]:
+    """Gather comprehensive context about a PR before processing"""
+    log_json("gather_pr_context", {"action": "start", "pr_number": pr_number})
+
+    context = {
+        "url": url,
+        "comments": [],
+        "review_comments": [],
+        "commits": [],
+        "files": [],
+        "conflicts": {},
+        "ci_status": {},
+        "diff": "",
+    }
+
+    # Get PR details
+    details = get_pr_details(pr_number)
+
+    # Extract and analyze CI status
+    status_checks = details.get("statusCheckRollup", [])
+    context["ci_status"] = analyze_ci_status(status_checks)
+
+    # Get all comments
+    context["comments"] = get_pr_comments(pr_number)
+
+    # Get review comments
+    context["review_comments"] = get_pr_review_comments(pr_number)
+
+    # Get commits
+    context["commits"] = get_pr_commits(pr_number)
+
+    # Get changed files
+    context["files"] = get_pr_files(pr_number)
+
+    # Check for merge conflicts
+    context["conflicts"] = check_merge_conflicts(pr_number, head_branch, base_branch)
+
+    # Get diff (can be large, so we log size but don't include in JSON logs)
+    context["diff"] = get_pr_diff(pr_number)
+
+    log_json("gather_pr_context", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "context_summary": {
+            "comments": len(context["comments"]),
+            "review_comments": len(context["review_comments"]),
+            "commits": len(context["commits"]),
+            "files": len(context["files"]),
+            "has_conflicts": context["conflicts"].get("has_conflicts", False),
+            "ci_checks": context["ci_status"].get("total_checks", 0),
+            "ci_failed": context["ci_status"].get("failed", 0),
+            "diff_size": len(context["diff"]),
+        }
+    })
+
+    return details, context
+
+
+def process_pr(pr: dict[str, Any], guidelines: str, commit_examples: str, default_branch: str = "main") -> bool:
+    """Process a single PR using bob with comprehensive context
+
+    Args:
+        pr: PR data from GitHub API
+        guidelines: Project contribution guidelines
+        commit_examples: Example commit messages
+        default_branch: Default branch of the repository
+
+    Returns:
+        True if processing successful, False otherwise
+    """
+    # Safely extract required fields with validation
+    pr_number = pr.get("number")
+    head_branch = pr.get("headRefName")
+    base_branch = pr.get("baseRefName", default_branch)
+    url = pr.get("url")
+    title = pr.get("title", "Unknown")
+
+    # Validate required fields
+    if not pr_number:
+        log_json("process_pr", {
+            "action": "validation_error",
+            "error": "Missing PR number",
+            "pr": pr
+        })
+        return False
+
+    if not head_branch:
+        log_json("process_pr", {
+            "action": "validation_error",
+            "pr_number": pr_number,
+            "error": "Missing head branch"
+        })
+        return False
+
+    if not url:
+        log_json("process_pr", {
+            "action": "validation_error",
+            "pr_number": pr_number,
+            "error": "Missing PR URL"
+        })
+        return False
+
+    # Validate branch names
+    if not validate_git_ref(head_branch):
+        log_json("process_pr", {
+            "action": "validation_error",
+            "pr_number": pr_number,
+            "error": f"Invalid head branch name: {head_branch}"
+        })
+        return False
+
+    if not validate_git_ref(base_branch):
+        log_json("process_pr", {
+            "action": "validation_error",
+            "pr_number": pr_number,
+            "error": f"Invalid base branch name: {base_branch}"
+        })
+        return False
+
+    log_json("process_pr", {
+        "action": "start",
+        "pr_number": pr_number,
+        "title": title,
+        "head_branch": head_branch,
+        "base_branch": base_branch,
+    })
+
+    # Gather comprehensive PR context
+    try:
+        pr_details, pr_context = gather_pr_context(pr_number, head_branch, base_branch, url)
+    except Exception as e:
+        log_json("process_pr", {
+            "action": "context_gather_error",
+            "pr_number": pr_number,
+            "error": str(e),
+        })
+        return False
+
+    # Validate we got details
+    if not pr_details or not isinstance(pr_details, dict):
+        log_json("process_pr", {
+            "action": "empty_details",
+            "pr_number": pr_number,
+            "error": "Failed to fetch PR details"
+        })
+        return False
+
+    # Build the comprehensive prompt
+    try:
+        prompt = build_pr_prompt(pr_details, pr_context, guidelines, commit_examples)
+    except Exception as e:
+        log_json("process_pr", {
+            "action": "prompt_build_error",
+            "pr_number": pr_number,
+            "error": str(e)
+        })
+        return False
+
+    log_json("process_pr", {
+        "action": "prompt_generated",
+        "pr_number": pr_number,
+        "prompt_size": len(prompt),
+    })
+
+    # Run bob with the prompt (bob is a wrapper around claude code)
+    # Use longer timeout since bob may take a while to process and fix the PR
+    log_json("process_pr", {
+        "action": "running_bob",
+        "pr_number": pr_number,
+    })
+
+    returncode, stdout, stderr = run_command([
+        "bob",
+        "--json",
+        prompt,
+    ], timeout=3600)  # 1 hour for bob to do its work
+
+    log_json("process_pr", {
+        "action": "bob_complete",
+        "pr_number": pr_number,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+    })
+
+    success = returncode == 0
+
+    log_json("process_pr", {
+        "action": "complete",
+        "pr_number": pr_number,
+        "success": success,
+    })
+
+    return success
+
+
+def validate_repository(repo_path: Path) -> bool:
+    """Validate that the path is a valid git repository"""
+    if not repo_path.exists():
+        log_json("validation_error", {
+            "error": "Repository path does not exist",
+            "path": str(repo_path)
+        })
+        return False
+
+    if not repo_path.is_dir():
+        log_json("validation_error", {
+            "error": "Repository path is not a directory",
+            "path": str(repo_path)
+        })
+        return False
+
+    git_dir = repo_path / ".git"
+    if not git_dir.exists():
+        log_json("validation_error", {
+            "error": "Not a git repository (no .git directory)",
+            "path": str(repo_path)
+        })
+        return False
+
+    # Test git command works in this directory
+    returncode, stdout, stderr = run_command(["git", "status"], cwd=repo_path)
+    if returncode != 0:
+        log_json("validation_error", {
+            "error": "Git command failed",
+            "path": str(repo_path),
+            "stderr": stderr
+        })
+        return False
+
+    # Check if gh CLI is authenticated and works
+    returncode, stdout, stderr = run_command(["gh", "auth", "status"])
+    if returncode != 0:
+        log_json("validation_error", {
+            "error": "GitHub CLI not authenticated. Run 'gh auth login'",
+            "stderr": stderr
+        })
+        return False
+
+    log_json("validation", {
+        "success": True,
+        "path": str(repo_path)
+    })
+    return True
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="Automated PR processing loop using bob (Claude Code wrapper)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  ./pr-loop.py /path/to/repo
+  ./pr-loop.py ~/projects/my-repo
+  ./pr-loop.py .
+
+The script will continuously process open PRs in the repository,
+excluding draft PRs and those labeled with WIP/work-in-process.
+        """
+    )
+
+    parser.add_argument(
+        "repo_path",
+        type=Path,
+        help="Path to the git repository to process"
+    )
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Main loop - process PRs forever"""
+    args = parse_args()
+    repo_path = args.repo_path.resolve()
+
+    # Validate repository
+    if not validate_repository(repo_path):
+        sys.exit(1)
+
+    # Change to repository directory
+    os.chdir(repo_path)
+
+    log_json("startup", {
+        "repo_path": str(repo_path),
+        "cwd": str(Path.cwd()),
+        "python_version": sys.version,
+    })
+
+    # Detect default branch
+    default_branch = detect_default_branch()
+    log_json("startup", {
+        "default_branch": default_branch
+    })
+
+    # Get guidelines and commit examples once at startup
+    guidelines = get_pr_guidelines()
+    commit_examples = get_commit_history_examples(default_branch) if not guidelines else ""
+
+    log_json("startup", {
+        "has_guidelines": bool(guidelines),
+        "has_commit_examples": bool(commit_examples),
+    })
+
+    iteration = 0
+    processing_prs = set()  # Track PRs being processed to avoid duplicates
+
+    while True:
+        iteration += 1
+        log_json("iteration", {"number": iteration, "action": "start"})
+
+        # Sync repository
+        if not sync_repo(default_branch):
+            log_json("iteration", {
+                "number": iteration,
+                "action": "sync_failed",
+                "sleep_seconds": 60,
+            })
+            time.sleep(60)
+            continue
+
+        # Get open PRs
+        prs = get_open_prs()
+
+        if not prs:
+            log_json("iteration", {
+                "number": iteration,
+                "action": "no_prs",
+                "sleep_seconds": 300,
+            })
+            # Clear processing set when no PRs
+            processing_prs.clear()
+            time.sleep(300)  # Wait 5 minutes if no PRs
+            continue
+
+        # Process each PR
+        for pr in prs:
+            pr_number = pr.get("number")
+
+            # Skip if already being processed in this iteration
+            if pr_number and pr_number in processing_prs:
+                log_json("process_pr", {
+                    "action": "skip_duplicate",
+                    "pr_number": pr_number
+                })
+                continue
+
+            if pr_number:
+                processing_prs.add(pr_number)
+
+            try:
+                success = process_pr(pr, guidelines, commit_examples, default_branch)
+                if success and pr_number:
+                    # Remove from processing set after successful completion
+                    processing_prs.discard(pr_number)
+            except KeyboardInterrupt:
+                log_json("shutdown", {"reason": "keyboard_interrupt"})
+                sys.exit(0)
+            except Exception as e:
+                log_json("process_pr", {
+                    "action": "exception",
+                    "pr_number": pr_number,
+                    "error": str(e),
+                })
+                # Remove from processing set on exception
+                if pr_number:
+                    processing_prs.discard(pr_number)
+
+            # Small delay between PRs
+            time.sleep(10)
+
+        log_json("iteration", {
+            "number": iteration,
+            "action": "complete",
+            "prs_processed": len(prs),
+            "sleep_seconds": 300,
+        })
+
+        # Wait before next iteration
+        time.sleep(300)  # 5 minutes between full cycles
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        log_json("shutdown", {"reason": "keyboard_interrupt"})
+        sys.exit(0)
+    except Exception as e:
+        log_json("fatal_error", {"error": str(e)})
+        sys.exit(1)
