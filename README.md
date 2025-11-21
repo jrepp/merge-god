@@ -13,6 +13,14 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 
 ## Features
 
+- **TUI Dashboard**: Real-time monitoring dashboard for multiple repositories
+  - Live status updates and processing visualization
+  - Runs in tmux/screen sessions
+  - Shows PRs being processed, stats, and recent activity
+- **Multi-Repository Support**: Process PRs across multiple repos with single dashboard
+  - YAML configuration file for easy repo management
+  - Per-repo enable/disable control
+  - Independent processing per repository
 - **Automatic PR Processing**: Loops through open PRs and processes them in order
 - **Smart Filtering**: Excludes draft PRs and those labeled with WIP/work-in-process
 - **Comprehensive Context Gathering**: Before processing each PR, the script gathers:
@@ -50,6 +58,12 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 - [gh](https://cli.github.com/) - GitHub CLI
 - `bob` - AI assistant wrapper command (must be in PATH)
 - Git repository with GitHub remote
+
+**Python dependencies** (automatically installed by uv):
+- `rich>=13.0.0` - For TUI dashboard (dashboard.py only)
+- `pyyaml>=6.0` - For config file parsing (dashboard.py only)
+
+Note: `pr-loop.py` has no external dependencies (only stdlib)
 
 ### Why uv?
 
@@ -127,6 +141,51 @@ The script then generates a comprehensive markdown prompt containing:
 The comprehensive prompt is passed to `bob --json`, which processes the PR autonomously.
 
 **See [PROMPT_EXAMPLE.md](PROMPT_EXAMPLE.md) for a complete example of a generated prompt.**
+
+## Quick Start
+
+### Option 1: TUI Dashboard (Recommended)
+
+For monitoring multiple repositories with a visual dashboard:
+
+```bash
+# 1. Copy example config
+cp config.example.yaml config.yaml
+
+# 2. Edit config with your repositories
+vi config.yaml
+
+# 3. Run dashboard (best in tmux/screen)
+./dashboard.py
+
+# Or specify custom config
+./dashboard.py my-config.yaml
+```
+
+The dashboard provides:
+- Real-time status for all configured repos
+- Live updates as PRs are processed
+- Processing statistics and recent activity
+- Color-coded status indicators
+- Recent logs per repository
+
+**Recommended for tmux/screen:**
+```bash
+# In tmux
+tmux new -s merge-god
+./dashboard.py
+
+# Detach with Ctrl+B, then D
+# Reattach: tmux attach -t merge-god
+```
+
+### Option 2: Single Repository
+
+For processing a single repository without dashboard:
+
+```bash
+./pr-loop.py /path/to/repo
+```
 
 ## Usage
 
@@ -308,6 +367,42 @@ launchctl start com.user.pr-loop
 
 ## Configuration
 
+### Dashboard Configuration
+
+Create a `config.yaml` file to configure multiple repositories:
+
+```yaml
+repos:
+  - path: /path/to/repo1
+    name: "Project A"
+    enabled: true
+
+  - path: /path/to/repo2
+    name: "Project B"
+    enabled: true
+
+  - path: /path/to/repo3
+    name: "Disabled Project"
+    enabled: false  # Set to false to skip
+```
+
+**Configuration fields:**
+- `path` (required): Absolute path to git repository
+- `name` (optional): Display name (defaults to directory name)
+- `enabled` (optional): Whether to process this repo (defaults to true)
+
+**Example:**
+```bash
+# Copy example config
+cp config.example.yaml config.yaml
+
+# Edit with your repos
+vi config.yaml
+
+# Run dashboard
+./dashboard.py
+```
+
 ### PR Guidelines
 
 The script automatically looks for PR guidelines in these locations (in order):
@@ -476,8 +571,25 @@ chmod +x pr-loop.py
 Check that:
 - PRs are not marked as draft
 - PRs don't have WIP-related labels
+- PRs have `for-review` or `for-landing` label
 - GitHub CLI is authenticated: `gh auth status`
 - Repository has a `main` branch (or update the script for `master`)
+
+### Dashboard not showing updates
+
+If the dashboard is running but not updating:
+- Check that repositories in config.yaml exist and are valid git repos
+- Verify `pr-loop.py` is executable: `chmod +x pr-loop.py`
+- Check for errors in the dashboard logs
+- Try running `pr-loop.py` directly to see if it works: `./pr-loop.py /path/to/repo`
+
+### Config file errors
+
+If config file won't load:
+- Verify YAML syntax is correct (use a YAML validator)
+- Check that all `path` fields have absolute paths
+- Ensure file is named `config.yaml` or specify custom path
+- See `config.example.yaml` for reference
 
 ## Customization
 

@@ -1,0 +1,40 @@
+# merge-god Configuration File
+#
+# This file defines which repositories to process and their settings.
+# Copy this file to config.yaml and customize for your setup.
+#
+# Usage:
+#   ./dashboard.py config.yaml
+#
+# Or specify a different config file:
+#   ./dashboard.py /path/to/my-config.yaml
+
+# List of repositories to monitor and process
+repos:
+  # Example repository 1
+  - path: /Users/jrepp/dev/my-project
+    name: "My Project"
+    enabled: true
+    # Optional: custom settings (future)
+    # poll_interval: 300  # seconds between checks
+    # notifications: true  # send notifications for this repo
+
+  # Example repository 2
+  - path: /Users/jrepp/dev/another-repo
+    name: "Another Repo"
+    enabled: true
+
+  # Example disabled repository
+  - path: /Users/jrepp/dev/disabled-repo
+    name: "Disabled Project"
+    enabled: false  # Set to false to skip this repo
+
+# Global settings (future)
+# dashboard:
+#   refresh_rate: 0.5  # seconds between display updates
+#   max_log_lines: 100  # max log lines to display per repo
+#   theme: "dark"  # dark or light
+
+# notification:
+#   enabled: true
+#   topic: "merge-god-sez"

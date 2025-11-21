@@ -1,5 +1,65 @@
 # Changelog
 
+## 2025-11-21 - TUI Dashboard & Multi-Repo Support
+
+### Major Changes
+
+- **TUI Dashboard**: Added real-time monitoring dashboard with Rich library
+  - Visual monitoring of PR processing across multiple repositories
+  - Live status updates, processing stats, and recent activity logs
+  - Color-coded status indicators for each repository
+  - Runs in terminal (perfect for tmux/screen sessions)
+  - New script: `dashboard.py`
+
+- **Multi-Repository Support**: Process PRs across multiple repos
+  - YAML configuration file (`config.yaml`) for repo management
+  - Configure multiple repositories in single file
+  - Enable/disable repos individually
+  - Independent processing per repository
+  - Dashboard monitors all configured repos simultaneously
+
+- **Templated Prompts**: Added future PRD for customizable prompt templates
+  - Placeholder for template system (not yet implemented)
+  - Will allow per-repo and per-scenario prompt customization
+
+### New Files
+
+- `dashboard.py` - TUI dashboard with Rich library
+- `config.example.yaml` - Example configuration file
+- Updated `PRD.md` with PRD-007 (Dashboard) and future templating idea
+- Updated `ADR.md` with ADR-010 (TUI) and ADR-011 (YAML config)
+
+### Dependencies
+
+- Added `rich>=13.0.0` for TUI dashboard
+- Added `pyyaml>=6.0` for config file parsing
+- Both managed by uv (PEP 723 inline metadata)
+
+### Usage
+
+**Dashboard (recommended):**
+```bash
+cp config.example.yaml config.yaml
+vi config.yaml  # Add your repos
+./dashboard.py
+```
+
+**Single repo (as before):**
+```bash
+./pr-loop.py /path/to/repo
+```
+
+### Configuration Format
+
+```yaml
+repos:
+  - path: /path/to/repo
+    name: "Repo Name"
+    enabled: true
+```
+
+---
+
 ## 2025-11-21 - Label-Based Control & Documentation Restructure
 
 ### Major Changes

@@ -323,6 +323,97 @@ Currently hardcoded. Could be made configurable via environment variable if need
 
 ---
 
+## ADR-010: TUI Dashboard with Rich Library
+**Date**: 2025-11-21
+**Status**: ✅ Accepted
+**Deciders**: System designer
+
+### Context
+Need real-time monitoring of PR processing across multiple repositories without constantly tailing logs.
+
+### Decision
+Build TUI (Text User Interface) dashboard using Python Rich library to display live processing status.
+
+### Rationale
+- **Rich library**: Excellent TUI capabilities with tables, live updates, colors
+- **Terminal-based**: Works in tmux/screen sessions
+- **Real-time updates**: Live display without manual refresh
+- **Readable**: Better than raw JSON logs
+- **No web server needed**: Simpler than web dashboard
+- **Cross-platform**: Works on Linux, macOS, Windows
+
+### Consequences
+**Positive:**
+- Visual monitoring without log parsing
+- Real-time status updates
+- Works in existing terminal workflow
+- No additional infrastructure needed
+- Rich formatting (colors, tables, progress)
+
+**Negative:**
+- Requires terminal window/pane
+- Limited to text interface
+- No remote access without tmux/screen
+- Adds dependency on Rich library
+
+### Implementation
+- Dashboard runs as separate process
+- Spawns pr-loop.py subprocesses for each repo
+- Reads JSON logs from subprocess stdout
+- Updates display in real-time using Rich Live
+
+---
+
+## ADR-011: YAML Configuration for Multi-Repo
+**Date**: 2025-11-21
+**Status**: ✅ Accepted
+**Deciders**: System designer
+
+### Context
+Need to manage multiple repository configurations without command-line complexity.
+
+### Decision
+Use YAML configuration file for multi-repository setup.
+
+### Rationale
+- **Human-readable**: Easy to edit and understand
+- **Comments**: Support for inline documentation
+- **Structured**: Clear hierarchy for repo settings
+- **Standard**: Well-known format
+- **Per-repo settings**: Can customize each repo independently
+- **Enable/disable**: Easy to turn repos on/off
+
+### Consequences
+**Positive:**
+- Single file for all configuration
+- Easy to add/remove repositories
+- Can commit to version control
+- Supports comments for documentation
+- Per-repo customization possible
+
+**Negative:**
+- Adds PyYAML dependency
+- Another file to manage
+- Needs validation on load
+- Breaking changes require migration
+
+### Configuration Format
+```yaml
+repos:
+  - path: /path/to/repo
+    name: "Repo Name"
+    enabled: true
+    # Future: custom settings per repo
+```
+
+### Future Extensions
+- Per-repo polling intervals
+- Per-repo notification settings
+- Custom prompt templates
+- Label filters per repo
+
+---
+
 ## Template for New ADRs
 
 ```markdown

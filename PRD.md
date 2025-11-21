@@ -137,6 +137,43 @@ This document tracks product requirements and features for the merge-god PR auto
 
 ---
 
+## PRD-007: TUI Dashboard with Multi-Repo Support
+**Status**: ✅ Implemented
+**Date**: 2025-11-21
+**Priority**: P1 (High)
+
+### Requirements
+- [x] TUI (Text User Interface) dashboard for monitoring
+- [x] Support for multiple repositories via config file
+- [x] Real-time display of PR processing status
+- [x] Show recent activity/logs per repository
+- [x] Display processing statistics
+- [x] Run in tmux/screen sessions
+- [x] Config file format (YAML)
+- [x] Per-repo settings (branch, polling interval)
+- [x] Live updates without refreshing
+
+### Success Criteria
+- Dashboard displays all configured repos
+- Shows live processing status for each repo
+- Updates in real-time as PRs are processed
+- Easy to read in terminal
+- Config file is human-readable and editable
+- Works well in tmux sessions
+
+### Configuration Format
+```yaml
+repos:
+  - path: /path/to/repo1
+    name: "Project A"
+    enabled: true
+  - path: /path/to/repo2
+    name: "Project B"
+    enabled: true
+```
+
+---
+
 ## Future PRD Ideas (Not Prioritized)
 
 ### PRD-XXX: Merge Automation
@@ -159,15 +196,6 @@ Track metrics:
 - Average processing time
 - Most common failure reasons
 
-### PRD-XXX: Multi-Repo Support
-**Status**: 💡 Idea
-**Priority**: TBD
-
-Process PRs across multiple repositories:
-- Config file with repo list
-- Priority ordering
-- Per-repo settings
-
 ### PRD-XXX: Web Dashboard
 **Status**: 💡 Idea
 **Priority**: TBD
@@ -176,7 +204,18 @@ Simple web UI to:
 - View processing status
 - See recent activity
 - Manually trigger processing
-- View logs in real-time
+- Export logs
+
+### PRD-XXX: Templated Prompts
+**Status**: 💡 Idea
+**Priority**: TBD
+
+Add templating system for prompts:
+- Template files for different processing scenarios
+- Variable substitution (PR details, context, etc.)
+- Per-repo custom templates
+- Override default prompts via config
+- Template for: landing, review, conflict resolution, CI fixes
 
 ---
 
