@@ -32,22 +32,69 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
+# Production dependencies - required for runtime
 dependencies = [
-    "anthropic[bedrock]>=0.39.0",
-    "PyGithub>=2.1.0",
-    "rich>=13.0.0",
-    "pyyaml>=6.0",
-    "psutil>=5.9.0",
+    "anthropic[bedrock]>=0.39.0",  # Claude Agent SDK with Bedrock support
+    "PyGithub>=2.1.0",              # GitHub API client
+    "rich>=13.0.0",                 # Terminal UI and formatting
+    "pyyaml>=6.0",                  # Configuration file parsing
+    "psutil>=5.9.0",                # Process and system monitoring
 ]
 
 [project.optional-dependencies]
+# Complete development environment (includes all dev groups)
 dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "ruff>=0.1.0",
+    # Testing
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+
+    # Linting and formatting
+    "ruff>=0.1.15",
+    "isort>=5.13.0",
+    "black>=24.0.0",
+
+    # Type checking
     "mypy>=1.8.0",
-    "pre-commit>=3.6.0",
     "types-PyYAML>=6.0.0",
+
+    # Security scanning
+    "bandit[toml]>=1.7.6",
+    "pip-audit>=2.6.0",
+
+    # Pre-commit and hooks
+    "pre-commit>=3.6.0",
+
+    # Build and publishing
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
+
+# Testing dependencies only
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+]
+
+# Linting and code quality
+lint = [
+    "ruff>=0.1.15",
+    "isort>=5.13.0",
+    "black>=24.0.0",
+    "mypy>=1.8.0",
+    "types-PyYAML>=6.0.0",
+    "bandit[toml]>=1.7.6",
+    "pip-audit>=2.6.0",
+]
+
+# Build and publish tools
+build = [
+    "build>=1.0.0",
+    "twine>=4.0.0",
+    "hatchling>=1.21.0",
 ]
 
 [project.scripts]
@@ -81,15 +128,39 @@ exclude = [
     "/create_test_*.py",
 ]
 
+# === uv Configuration ===
+
 [tool.uv]
+# uv-specific development dependencies (used by 'uv sync')
 dev-dependencies = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "ruff>=0.1.0",
+    # Testing
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+
+    # Linting and formatting
+    "ruff>=0.1.15",
+    "isort>=5.13.0",
+    "black>=24.0.0",
+
+    # Type checking
     "mypy>=1.8.0",
-    "pre-commit>=3.6.0",
     "types-PyYAML>=6.0.0",
+
+    # Security scanning
+    "bandit[toml]>=1.7.6",
+    "pip-audit>=2.6.0",
+
+    # Pre-commit and hooks
+    "pre-commit>=3.6.0",
+
+    # Build and publishing
+    "build>=1.0.0",
+    "twine>=4.0.0",
 ]
+
+# === Ruff Configuration ===
 
 [tool.ruff]
 line-length = 100
@@ -147,6 +218,8 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["merge_god"]
 
+# === mypy Configuration ===
+
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true
@@ -171,9 +244,21 @@ module = [
 ]
 ignore_missing_imports = true
 
+# === pytest Configuration ===
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+
+# === Bandit Configuration ===
+
+[tool.bandit]
+exclude_dirs = ["tests", "test_*.py"]
+skips = [
+    "B101",  # assert_used - ok in tests
+    "B603",  # subprocess_without_shell_equals_true
+    "B607",  # start_process_with_partial_path
+]
