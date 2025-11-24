@@ -52,7 +52,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -65,15 +65,20 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from .db_operations import DatabaseError, StateDatabase
+from .models import CIStatus, PRState, RepositoryState
+
 # Import our state tracking modules
-from state_tracker import StateTracker, StateTrackerError
-from models import RepositoryState, BranchPRState, CIStatus, PRState
-from db_operations import StateDatabase, DatabaseError
+from .state_tracker import StateTracker, StateTrackerError
 
 # Constants
 WIP_LABELS = {"wip", "work-in-process", "work in process"}
 ERROR_TRUNCATE_LENGTH = 100
 DEFAULT_DB_PATH = Path("merge-god-state.db")
+
+# Display limits for dashboard
+MAX_UNTAGGED_PRS_DISPLAY = 5  # Max untagged PRs to show
+MAX_LIST_ITEMS_DISPLAY = 3  # Max items to show in state/queue lists
 
 
 @dataclass
@@ -116,9 +121,9 @@ class LogWriter:
         if self.log_file_path:
             try:
                 # Open log file in append mode
-                self.log_file = open(self.log_file_path, 'a', buffering=1)  # Line buffered
+                self.log_file = self.log_file_path.open("a", buffering=1)  # Line buffered
                 self._write_separator()
-                self.log(f"=== Dashboard started at {datetime.now(timezone.utc).isoformat()} ===")
+                self.log(f"=== Dashboard started at {datetime.now(UTC).isoformat()} ===")
             except Exception as e:
                 print(f"Warning: Could not open log file {self.log_file_path}: {e}", file=sys.stderr)
 
@@ -131,7 +136,7 @@ class LogWriter:
     def log(self, message: str):
         """Write a message to the log file"""
         if self.log_file:
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             self.log_file.write(f"[{timestamp}] {message}\n")
             self.log_file.flush()
 
@@ -144,7 +149,7 @@ class LogWriter:
     def close(self):
         """Close the log file"""
         if self.log_file:
-            self.log(f"=== Dashboard stopped at {datetime.now(timezone.utc).isoformat()} ===")
+            self.log(f"=== Dashboard stopped at {datetime.now(UTC).isoformat()} ===")
             self._write_separator()
             self.log_file.close()
             self.log_file = None
@@ -210,6 +215,9 @@ class RepoMonitor:
 
     def _recover_state_from_db(self) -> None:
         """Recover previous dashboard state from database"""
+        if not self.db:
+            return
+
         try:
             # Register repository
             self.db.save_repository(self.name, self.path)
@@ -296,7 +304,7 @@ class RepoMonitor:
                     state_thread = threading.Thread(
                         target=self.initialize_state_tracker,
                         daemon=True,
-                        name=f"StateTracker-{self.name}"
+                        name=f"StateTracker-{self.name}",
                     )
                     state_thread.start()
 
@@ -324,9 +332,9 @@ class RepoMonitor:
                     "pr_queue_sizes": {
                         "for_review": len(self.pr_queue["for_review"]),
                         "for_landing": len(self.pr_queue["for_landing"]),
-                        "untagged": len(self.pr_queue["untagged"])
-                    }
-                }
+                        "untagged": len(self.pr_queue["untagged"]),
+                    },
+                },
             )
 
             # Save repository state if available
@@ -342,9 +350,9 @@ class RepoMonitor:
             # Check if doormat command exists
             result = subprocess.run(
                 ["which", "doormat"],
-                capture_output=True,
+                check=False, capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             if result.returncode != 0:
@@ -375,17 +383,16 @@ class RepoMonitor:
                 try:
                     result = subprocess.run(
                         cmd,
-                        capture_output=True,
+                        check=False, capture_output=True,
                         text=True,
-                        timeout=timeout
+                        timeout=timeout,
                     )
 
                     if result.returncode == 0:
                         self.logs.append(f"✓ Doormat credentials loaded ({' '.join(cmd)})")
                         success = True
                         break
-                    else:
-                        last_error = result.stderr
+                    last_error = result.stderr
                     # Try next command if this one failed
                 except subprocess.TimeoutExpired:
                     last_error = "timeout"
@@ -476,11 +483,13 @@ class RepoMonitor:
 
             # Sort PRs: failing CI first, then by PR number
             def sort_key(pr: dict[str, Any]) -> tuple[bool, int]:
-                return (not pr["ci_failing"], pr["number"])
+                ci_failing = bool(pr.get("ci_failing", False))
+                pr_number = int(pr.get("number", 0))
+                return (not ci_failing, pr_number)
 
             for_review_prs.sort(key=sort_key)
             for_landing_prs.sort(key=sort_key)
-            untagged_prs.sort(key=lambda pr: pr["number"])
+            untagged_prs.sort(key=lambda pr: int(pr.get("number") or 0))  # type: ignore[call-overload]
 
             # Update PR queue (thread-safe)
             self.pr_queue = {
@@ -496,7 +505,7 @@ class RepoMonitor:
                 self.logs.append(
                     f"✓ Found {total_prs} PRs "
                     f"(review:{len(for_review_prs)}, landing:{len(for_landing_prs)}, skip:{len(untagged_prs)}"
-                    f"{f', {failing_count} failing CI' if failing_count > 0 else ''})"
+                    f"{f', {failing_count} failing CI' if failing_count > 0 else ''})",
                 )
 
     def initialize_state_tracker(self) -> bool:
@@ -520,15 +529,15 @@ class RepoMonitor:
             phase_start = time.time()
             self.repo_state = self.state_tracker.build_repository_state(
                 fetch_first=False,  # Skip fetch for faster dashboard startup
-                include_closed_prs=False
+                include_closed_prs=False,
             )
             summary = self.repo_state.summary_dict()
             self.logs.append(
                 f"✓ [2/3] Loaded in {time.time() - phase_start:.1f}s: "
                 f"{summary['total_branches']} branches, "
-                f"{summary['branches_with_prs']} with PRs"
+                f"{summary['branches_with_prs']} with PRs",
             )
-            if summary['failing_ci'] > 0:
+            if summary["failing_ci"] > 0:
                 self.logs.append(f"  ⚠ {summary['failing_ci']} PRs with failing CI")
 
             # Populate PR queue for immediate dashboard display
@@ -547,7 +556,7 @@ class RepoMonitor:
                     "event": "repo_state_initialized",
                     "repo": self.name,
                     "data": summary,
-                    "elapsed_seconds": elapsed
+                    "elapsed_seconds": elapsed,
                 })
 
             self.state_loaded = True
@@ -567,7 +576,7 @@ class RepoMonitor:
                     "event": "repo_state_error",
                     "repo": self.name,
                     "error": str(e),
-                    "elapsed_seconds": elapsed
+                    "elapsed_seconds": elapsed,
                 })
 
             return False
@@ -580,7 +589,7 @@ class RepoMonitor:
         try:
             self.repo_state = self.state_tracker.build_repository_state(
                 fetch_first=fetch_first,
-                include_closed_prs=False
+                include_closed_prs=False,
             )
             # Force repopulate PR queue with fresh data (overwrite existing)
             self.populate_pr_queue_from_state(force=True)
@@ -603,7 +612,7 @@ class RepoMonitor:
         state_thread = threading.Thread(
             target=self.initialize_state_tracker,
             daemon=True,
-            name=f"StateTracker-{self.name}"
+            name=f"StateTracker-{self.name}",
         )
         state_thread.start()
 
@@ -665,7 +674,7 @@ class RepoMonitor:
 
     def read_output(self) -> list[dict[str, Any]]:
         """Read and parse JSON logs from subprocess"""
-        events = []
+        events: list[dict[str, Any]] = []
         if not self.process or not self.process.stdout:
             return events
 
@@ -697,7 +706,7 @@ class RepoMonitor:
 
     def process_event(self, event: dict[str, Any]):
         """Process a JSON log event and update state"""
-        self.last_update = datetime.now(timezone.utc)
+        self.last_update = datetime.now(UTC)
         event_type = event.get("event", "")
         data = event.get("data", {})
 
@@ -724,7 +733,7 @@ class RepoMonitor:
                 untagged = data.get("untagged", 0)
                 self.logs.append(
                     f"Found {for_review + for_landing} PRs "
-                    f"(review:{for_review}, landing:{for_landing}, skip:{untagged})"
+                    f"(review:{for_review}, landing:{for_landing}, skip:{untagged})",
                 )
 
                 # Store PR queue information for display (thread-safe)
@@ -749,10 +758,10 @@ class RepoMonitor:
 
                     if untagged > 0:
                         untagged_prs = pr_details.get("untagged", [])
-                        for pr in untagged_prs[:5]:  # Show first 5
+                        for pr in untagged_prs[:MAX_UNTAGGED_PRS_DISPLAY]:
                             self.logs.append(f"  ⊗ untagged: PR #{pr['number']} - {pr['title']}")
-                        if len(untagged_prs) > 5:
-                            self.logs.append(f"  ⊗ ... and {len(untagged_prs) - 5} more untagged")
+                        if len(untagged_prs) > MAX_UNTAGGED_PRS_DISPLAY:
+                            self.logs.append(f"  ⊗ ... and {len(untagged_prs) - MAX_UNTAGGED_PRS_DISPLAY} more untagged")
 
             elif action == "complete":
                 self.status = "idle"
@@ -790,7 +799,7 @@ class RepoMonitor:
                     "mode": mode,
                     "head_branch": head_branch,
                     "base_branch": base_branch,
-                    "started_at": datetime.now(timezone.utc),
+                    "started_at": datetime.now(UTC),
                 }
 
                 self.current_action = f"Processing {title[:50]}... (mode: {mode})"
@@ -808,8 +817,8 @@ class RepoMonitor:
                             metadata={
                                 "title": title,
                                 "head_branch": head_branch,
-                                "base_branch": base_branch
-                            }
+                                "base_branch": base_branch,
+                            },
                         )
                     except DatabaseError as e:
                         self.logs.append(f"⚠ DB error: {str(e)[:ERROR_TRUNCATE_LENGTH]}")
@@ -859,7 +868,7 @@ class RepoMonitor:
                         mode=self.processing_pr.get("mode", "unknown"),
                         prompt=f"Processing PR #{self.processing_pr.get('number')}",
                         prompt_size=0,
-                        timestamp=datetime.now(timezone.utc),
+                        timestamp=datetime.now(UTC),
                     )
 
             elif action == "prompt_generated":
@@ -891,7 +900,7 @@ class RepoMonitor:
                     }
                     self.current_agent_invocation.success = (returncode == 0)
                     self.current_agent_invocation.duration = (
-                        datetime.now(timezone.utc) - self.current_agent_invocation.timestamp
+                        datetime.now(UTC) - self.current_agent_invocation.timestamp
                     ).total_seconds()
 
                     # Add to history
@@ -912,7 +921,7 @@ class RepoMonitor:
                     self.stats["successes"] += 1
                     self.logs.append(
                         f"✓ Completed PR #{pr_number} in {duration:.1f}s "
-                        f"({tasks_completed}/{tasks_total} tasks, {actions_taken} actions)"
+                        f"({tasks_completed}/{tasks_total} tasks, {actions_taken} actions)",
                     )
                 else:
                     self.stats["failures"] += 1
@@ -926,7 +935,7 @@ class RepoMonitor:
                         self.db.record_processing_complete(
                             record_id=self.current_processing_id,
                             success=success,
-                            error_message=data.get("reason") if not success else None
+                            error_message=data.get("reason") if not success else None,
                         )
                     except DatabaseError as e:
                         self.logs.append(f"⚠ DB error: {str(e)[:ERROR_TRUNCATE_LENGTH]}")
@@ -1004,7 +1013,7 @@ class RepoMonitor:
             pr_number = data.get("pr_number", "?")
             if action == "start":
                 self.current_action = f"Gathering context for PR #{pr_number}..."
-                self.logs.append(f"  📋 Gathering PR context...")
+                self.logs.append("  📋 Gathering PR context...")
             elif action == "complete":
                 # Get summary info from context
                 context_summary = data.get("context_summary", {})
@@ -1017,10 +1026,10 @@ class RepoMonitor:
 
                 self.logs.append(
                     f"  ✓ Context: {comments} comments, {review_comments} reviews, "
-                    f"{commits} commits, {files} files"
+                    f"{commits} commits, {files} files",
                 )
                 if has_conflicts:
-                    self.logs.append(f"  ⚠ Merge conflicts detected")
+                    self.logs.append("  ⚠ Merge conflicts detected")
                 if ci_failed > 0:
                     self.logs.append(f"  ✗ {ci_failed} CI checks failing")
 
@@ -1043,7 +1052,7 @@ class Dashboard:
         self.log_writer = log_writer
         self.monitors: list[RepoMonitor] = []
         self.console = Console()
-        self.start_time = datetime.now(timezone.utc)
+        self.start_time = datetime.now(UTC)
         self.has_tty = sys.stdout.isatty()
 
         # Screen management
@@ -1067,7 +1076,7 @@ class Dashboard:
     def load_config(self) -> bool:
         """Load configuration from YAML file"""
         try:
-            with open(self.config_path) as f:
+            with self.config_path.open() as f:
                 config = yaml.safe_load(f)
 
             if not config or "repos" not in config:
@@ -1076,7 +1085,7 @@ class Dashboard:
 
             repos = config["repos"]
             if not isinstance(repos, list) or not repos:
-                self.console.print(f"[red]Error: 'repos' must be a non-empty list[/red]")
+                self.console.print("[red]Error: 'repos' must be a non-empty list[/red]")
                 return False
 
             # Extract doormat config if present
@@ -1089,7 +1098,7 @@ class Dashboard:
 
                 # Validate required fields
                 if "path" not in repo_config:
-                    self.console.print(f"[yellow]Warning: Skipping repo without 'path'[/yellow]")
+                    self.console.print("[yellow]Warning: Skipping repo without 'path'[/yellow]")
                     continue
 
                 # Set defaults
@@ -1102,7 +1111,7 @@ class Dashboard:
                 self.monitors.append(monitor)
 
             if not self.monitors:
-                self.console.print(f"[red]Error: No valid repositories found in config[/red]")
+                self.console.print("[red]Error: No valid repositories found in config[/red]")
                 return False
 
             return True
@@ -1140,12 +1149,12 @@ class Dashboard:
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="body"),
-            Layout(name="footer", size=3)
+            Layout(name="footer", size=3),
         )
 
         # Header
-        uptime = datetime.now(timezone.utc) - self.start_time
-        uptime_str = str(uptime).split('.')[0]  # Remove microseconds
+        uptime = datetime.now(UTC) - self.start_time
+        uptime_str = str(uptime).split(".")[0]  # Remove microseconds
 
         header_text = Text()
         header_text.append("merge-god ", style="bold cyan")
@@ -1240,12 +1249,12 @@ class Dashboard:
             "Processed:",
             Text(f"{monitor.stats['prs_processed']} ", style="white") +
             Text(f"(✓ {monitor.stats['successes']} ", style="green") +
-            Text(f"✗ {monitor.stats['failures']})", style="red")
+            Text(f"✗ {monitor.stats['failures']})", style="red"),
         )
-        status_table.add_row("Iteration:", Text(str(monitor.stats['iteration']), style="white"))
+        status_table.add_row("Iteration:", Text(str(monitor.stats["iteration"]), style="white"))
 
         if monitor.last_update:
-            ago = (datetime.now(timezone.utc) - monitor.last_update).total_seconds()
+            ago = (datetime.now(UTC) - monitor.last_update).total_seconds()
             status_table.add_row("Last update:", Text(f"{int(ago)}s ago", style="dim"))
 
         # Add repository state information if available
@@ -1263,31 +1272,31 @@ class Dashboard:
             state_text.append(f" ({summary['branches_with_prs']} with PRs)\n", style="dim")
 
             # All synced indicator
-            if summary['branches_needing_sync'] == 0 and summary['total_branches'] > 0:
+            if summary["branches_needing_sync"] == 0 and summary["total_branches"] > 0:
                 state_text.append("  ✓ All branches synced\n", style="green")
 
-            if summary['branches_needing_sync'] > 0:
+            if summary["branches_needing_sync"] > 0:
                 state_text.append(
                     f"  ⚠ Needs sync: {summary['branches_needing_sync']}\n",
-                    style="yellow"
+                    style="yellow",
                 )
 
-            if summary['failing_ci'] > 0:
+            if summary["failing_ci"] > 0:
                 state_text.append(
                     f"  ✗ Failing CI: {summary['failing_ci']}\n",
-                    style="red"
+                    style="red",
                 )
-            elif summary['branches_with_prs'] > 0:
-                state_text.append(f"  ✓ All CI passing\n", style="green")
+            elif summary["branches_with_prs"] > 0:
+                state_text.append("  ✓ All CI passing\n", style="green")
 
             # Show top failing/behind branches
             failing = monitor.repo_state.get_failing_ci()
             if failing:
                 state_text.append("  Failing CI: ", style="red")
-                failing_names = [s.branch_name for s in failing[:3]]
+                failing_names = [s.branch_name for s in failing[:MAX_LIST_ITEMS_DISPLAY]]
                 state_text.append(", ".join(failing_names), style="red dim")
-                if len(failing) > 3:
-                    state_text.append(f" +{len(failing) - 3} more", style="dim")
+                if len(failing) > MAX_LIST_ITEMS_DISPLAY:
+                    state_text.append(f" +{len(failing) - MAX_LIST_ITEMS_DISPLAY} more", style="dim")
                 state_text.append("\n")
 
             needing_sync = monitor.repo_state.get_branches_needing_sync()
@@ -1295,11 +1304,11 @@ class Dashboard:
                 state_text.append("  Out of sync: ", style="yellow")
                 sync_names = [
                     f"{s.branch_name} ({'↑' if s.needs_push else ''}{'↓' if s.needs_pull else ''})"
-                    for s in needing_sync[:3]
+                    for s in needing_sync[:MAX_LIST_ITEMS_DISPLAY]
                 ]
                 state_text.append(", ".join(sync_names), style="yellow dim")
-                if len(needing_sync) > 3:
-                    state_text.append(f" +{len(needing_sync) - 3} more", style="dim")
+                if len(needing_sync) > MAX_LIST_ITEMS_DISPLAY:
+                    state_text.append(f" +{len(needing_sync) - MAX_LIST_ITEMS_DISPLAY} more", style="dim")
                 state_text.append("\n")
 
         elif monitor.state_load_error:
@@ -1321,26 +1330,26 @@ class Dashboard:
             pr_queue_text.append(f"{pr['title']}\n", style="white")
 
             # Show branch info
-            pr_queue_text.append(f"    Branch: ", style="dim")
+            pr_queue_text.append("    Branch: ", style="dim")
             pr_queue_text.append(f"{pr['head_branch']}", style="cyan")
             pr_queue_text.append(" → ", style="dim")
             pr_queue_text.append(f"{pr['base_branch']}\n", style="cyan")
 
             # Show mode
-            mode_style = "green" if pr['mode'] == "for-review" else "cyan"
-            pr_queue_text.append(f"    Mode: ", style="dim")
+            mode_style = "green" if pr["mode"] == "for-review" else "cyan"
+            pr_queue_text.append("    Mode: ", style="dim")
             pr_queue_text.append(f"{pr['mode']}\n", style=mode_style)
 
             # Show elapsed time
-            elapsed = (datetime.now(timezone.utc) - pr['started_at']).total_seconds()
+            elapsed = (datetime.now(UTC) - pr["started_at"]).total_seconds()
             elapsed_mins = int(elapsed / 60)
             elapsed_secs = int(elapsed % 60)
-            pr_queue_text.append(f"    Elapsed: ", style="dim")
+            pr_queue_text.append("    Elapsed: ", style="dim")
             pr_queue_text.append(f"{elapsed_mins}m {elapsed_secs}s\n", style="yellow")
 
             # Show current action if available
             if monitor.current_action:
-                pr_queue_text.append(f"    Action: ", style="dim")
+                pr_queue_text.append("    Action: ", style="dim")
                 pr_queue_text.append(f"{monitor.current_action}\n", style="yellow dim")
 
         # Show queued PRs (excluding the one currently being processed) - thread-safe access
@@ -1361,26 +1370,26 @@ class Dashboard:
             # Show for-review PRs
             if queued_for_review:
                 pr_queue_text.append(f"  for-review ({len(queued_for_review)}):\n", style="green bold")
-                for pr in queued_for_review[:3]:  # Show first 3
+                for pr in queued_for_review[:MAX_LIST_ITEMS_DISPLAY]:
                     pr_queue_text.append(f"    • PR #{pr['number']}: {pr['title'][:40]}\n", style="green dim")
-                if len(queued_for_review) > 3:
-                    pr_queue_text.append(f"    • ... +{len(queued_for_review) - 3} more\n", style="green dim")
+                if len(queued_for_review) > MAX_LIST_ITEMS_DISPLAY:
+                    pr_queue_text.append(f"    • ... +{len(queued_for_review) - MAX_LIST_ITEMS_DISPLAY} more\n", style="green dim")
 
             # Show for-landing PRs
             if queued_for_landing:
                 pr_queue_text.append(f"  for-landing ({len(queued_for_landing)}):\n", style="cyan bold")
-                for pr in queued_for_landing[:3]:  # Show first 3
+                for pr in queued_for_landing[:MAX_LIST_ITEMS_DISPLAY]:
                     pr_queue_text.append(f"    • PR #{pr['number']}: {pr['title'][:40]}\n", style="cyan dim")
-                if len(queued_for_landing) > 3:
-                    pr_queue_text.append(f"    • ... +{len(queued_for_landing) - 3} more\n", style="cyan dim")
+                if len(queued_for_landing) > MAX_LIST_ITEMS_DISPLAY:
+                    pr_queue_text.append(f"    • ... +{len(queued_for_landing) - MAX_LIST_ITEMS_DISPLAY} more\n", style="cyan dim")
 
             # Show untagged PRs (skipped)
             if queued_untagged:
                 pr_queue_text.append(f"  untagged/skipped ({len(queued_untagged)}):\n", style="yellow bold")
-                for pr in queued_untagged[:3]:  # Show first 3
+                for pr in queued_untagged[:MAX_LIST_ITEMS_DISPLAY]:
                     pr_queue_text.append(f"    ⊗ PR #{pr['number']}: {pr['title'][:40]}\n", style="yellow dim")
-                if len(queued_untagged) > 3:
-                    pr_queue_text.append(f"    ⊗ ... +{len(queued_untagged) - 3} more\n", style="yellow dim")
+                if len(queued_untagged) > MAX_LIST_ITEMS_DISPLAY:
+                    pr_queue_text.append(f"    ⊗ ... +{len(queued_untagged) - MAX_LIST_ITEMS_DISPLAY} more\n", style="yellow dim")
 
         # Recent logs
         logs_text = Text()
@@ -1425,7 +1434,7 @@ class Dashboard:
         # Current invocation (if active)
         if monitor.current_agent_invocation:
             inv = monitor.current_agent_invocation
-            elapsed = (datetime.now(timezone.utc) - inv.timestamp).total_seconds()
+            elapsed = (datetime.now(UTC) - inv.timestamp).total_seconds()
 
             current_text = Text()
             current_text.append("🤖 Currently Running:\n", style="bold yellow")
@@ -1445,7 +1454,7 @@ class Dashboard:
             content.add_row("")
 
             # Show last 10 invocations
-            for i, inv in enumerate(reversed(list(monitor.agent_history)[-10:]), 1):
+            for _i, inv in enumerate(reversed(list(monitor.agent_history)[-10:]), 1):
                 inv_text = Text()
 
                 # Status indicator
@@ -1536,7 +1545,7 @@ class Dashboard:
             "enabled": monitor.enabled,
             "valid": True,
             "warnings": [],
-            "errors": []
+            "errors": [],
         }
 
         if not monitor.enabled:
@@ -1567,8 +1576,8 @@ class Dashboard:
         try:
             subprocess.run(
                 ["gh", "auth", "status"],
-                capture_output=True,
-                timeout=5
+                check=False, capture_output=True,
+                timeout=5,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             result["warnings"].append("GitHub CLI (gh) may not be authenticated")
@@ -1577,8 +1586,8 @@ class Dashboard:
 
     def perform_dry_run(self):
         """Validate configuration and display what would be launched"""
-        from rich.table import Table
         from rich.panel import Panel
+        from rich.table import Table
 
         self.console.print("\n[bold cyan]Dry Run Mode[/bold cyan]")
         self.console.print(f"Config file: [cyan]{self.config_path}[/cyan]\n")
@@ -1598,7 +1607,6 @@ class Dashboard:
             return False
 
         # Check if executable
-        import os
         if not os.access(self.script_path, os.X_OK):
             self.console.print(f"[yellow]⚠ {self.script_path} is not executable (run: chmod +x pr-loop.py)[/yellow]")
 
@@ -1640,7 +1648,7 @@ class Dashboard:
                 monitor.name,
                 monitor.path,
                 enabled_display,
-                status
+                status,
             )
 
         self.console.print(table)
@@ -1672,7 +1680,7 @@ class Dashboard:
             f"Errors: [red]{error_count}[/red]\n\n"
             f"{'[yellow]⚠ Issues detected - review above[/yellow]' if has_issues else '[green]✓ All enabled repos valid[/green]'}\n\n"
             f"[dim]To run: ./dashboard.py {self.config_path}[/dim]",
-            border_style="cyan"
+            border_style="cyan",
         )
         self.console.print(summary)
 
@@ -1733,7 +1741,7 @@ class Dashboard:
                     if len(current_logs) > last_pos:
                         new_logs = current_logs[last_pos:]
                         for log_line in new_logs:
-                            timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            timestamp = datetime.now(UTC).strftime("%H:%M:%S")
                             print(f"[{timestamp}] [{monitor.name}] {log_line}")
 
                         last_log_positions[monitor.name] = len(current_logs)
@@ -1741,10 +1749,10 @@ class Dashboard:
                 # Print periodic status summaries (less frequently)
                 current_time = time.time()
                 if current_time - last_status_time >= status_interval:
-                    uptime = datetime.now(timezone.utc) - self.start_time
-                    uptime_str = str(uptime).split('.')[0]
+                    uptime = datetime.now(UTC) - self.start_time
+                    uptime_str = str(uptime).split(".")[0]
                     print(f"\n{'=' * 60}")
-                    print(f"[{datetime.now(timezone.utc).isoformat()}] STATUS SUMMARY (uptime: {uptime_str})")
+                    print(f"[{datetime.now(UTC).isoformat()}] STATUS SUMMARY (uptime: {uptime_str})")
                     print(f"{'=' * 60}")
 
                     for monitor in self.monitors:
@@ -1772,7 +1780,6 @@ class Dashboard:
         """
         import select
         import sys
-        import tty
         import termios
 
         # Only works in TTY mode
@@ -1796,7 +1803,7 @@ class Dashboard:
                     key = sys.stdin.read(1)
 
                     # Handle screen switching
-                    if key == '1':
+                    if key == "1":
                         old_screen = self.current_screen
                         self.current_screen = "pr_dashboard"
                         # Refresh data if switching to this view
@@ -1805,7 +1812,7 @@ class Dashboard:
                                 if monitor.enabled:
                                     monitor.refresh_data_for_view(self.current_screen)
                         return True
-                    elif key == '2':
+                    if key == "2":
                         old_screen = self.current_screen
                         self.current_screen = "agent_dashboard"
                         # Refresh data if switching to this view
@@ -1814,7 +1821,7 @@ class Dashboard:
                                 if monitor.enabled:
                                     monitor.refresh_data_for_view(self.current_screen)
                         return True
-                    elif key.upper() == 'R':
+                    if key.upper() == "R":
                         # Manual refresh - trigger repository state refresh for all monitors
                         for monitor in self.monitors:
                             if monitor.enabled:
@@ -1859,7 +1866,7 @@ class Dashboard:
         refresh_thread = threading.Thread(
             target=refresh_task,
             daemon=True,
-            name=f"ManualRefresh-{monitor.name}"
+            name=f"ManualRefresh-{monitor.name}",
         )
         refresh_thread.start()
 
@@ -1887,14 +1894,14 @@ class Dashboard:
                     (f"[bold]PR:[/bold] #{pr_number}\n" if pr_number else "") +
                     "\n".join([f"[dim]{k}:[/dim] {v}" for k, v in details.items()]),
                     border_style="yellow",
-                    title="⚠ User Action Required"
+                    title="⚠ User Action Required",
                 ))
 
                 # Prompt for confirmation
                 from rich.prompt import Confirm
                 approved = Confirm.ask(
                     "\n[bold cyan]Proceed with this action?[/bold cyan]",
-                    default=False
+                    default=False,
                 )
 
                 # Send response
@@ -1934,7 +1941,7 @@ class Dashboard:
                 console=self.console,
                 refresh_per_second=4,  # Higher refresh rate for smoother updates
                 screen=False,  # Don't use alternate screen (reduces flicker)
-                transient=False  # Keep display persistent
+                transient=False,  # Keep display persistent
             ) as live:
                 while True:
                     self.update()
@@ -1969,7 +1976,7 @@ def show_tag_criteria(console: Console | None = None, has_issue_watching: bool =
     """
     use_console = console is not None
 
-    if use_console:
+    if use_console and console:
         # Rich formatted output
         console.print("\n[bold cyan]Selection Criteria[/bold cyan]")
         console.print("[dim]" + "─" * 60 + "[/dim]")
@@ -2024,7 +2031,7 @@ def bootstrap_config(config_path: Path) -> bool:
     console.print("\n[bold cyan]Interactive Configuration Setup[/bold cyan]")
     console.print("Let's configure repositories for PR automation.\n")
 
-    repos = []
+    repos: list[dict[str, Any]] = []
 
     while True:
         console.print(f"\n[bold]Repository #{len(repos) + 1}[/bold]")
@@ -2050,11 +2057,11 @@ def bootstrap_config(config_path: Path) -> bool:
                 console.print(f"  [red]✗ Path is not a directory: {repo_path}[/red]")
                 continue
             elif not (path_obj / ".git").exists():
-                console.print(f"  [yellow]⚠ Not a git repository (no .git directory)[/yellow]")
+                console.print("  [yellow]⚠ Not a git repository (no .git directory)[/yellow]")
                 if not Confirm.ask("  Use this path anyway?", default=False):
                     continue
             else:
-                console.print(f"  [green]✓ Valid git repository[/green]")
+                console.print("  [green]✓ Valid git repository[/green]")
 
             break
 
@@ -2069,7 +2076,7 @@ def bootstrap_config(config_path: Path) -> bool:
         repos.append({
             "path": repo_path,
             "name": repo_name,
-            "enabled": enabled
+            "enabled": enabled,
         })
 
         console.print(f"\n[green]✓ Added: {repo_name}[/green]")
@@ -2091,9 +2098,9 @@ def bootstrap_config(config_path: Path) -> bool:
         enabled_display = "[green]Yes[/green]" if repo["enabled"] else "[dim]No[/dim]"
         table.add_row(
             str(i),
-            repo["name"],
-            repo["path"],
-            enabled_display
+            str(repo["name"]),
+            str(repo["path"]),
+            enabled_display,
         )
 
     console.print(table)
@@ -2106,7 +2113,7 @@ def bootstrap_config(config_path: Path) -> bool:
 
     # Create config structure
     config = {
-        "repos": repos
+        "repos": repos,
     }
 
     # Write config file
@@ -2114,11 +2121,11 @@ def bootstrap_config(config_path: Path) -> bool:
         # Ensure parent directory exists
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(config_path, 'w') as f:
+        with config_path.open("w") as f:
             # Write with nice formatting and comments
             f.write("# merge-god Configuration File\n")
             f.write("# Generated by interactive setup\n")
-            f.write(f"# Created: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
+            f.write(f"# Created: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
             f.write("\n")
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
@@ -2130,7 +2137,7 @@ def bootstrap_config(config_path: Path) -> bool:
             return True  # Signal to run dry-run
 
         console.print("\n[cyan]Configuration complete! Run the dashboard:[/cyan]")
-        console.print(f"  [bold]./dashboard.py[/bold]\n")
+        console.print("  [bold]./dashboard.py[/bold]\n")
 
         return False  # Don't run dry-run
 
@@ -2159,7 +2166,7 @@ Config file format (YAML):
 Use --dry-run to validate configuration before launching.
 Runs in tmux/screen for persistent sessions.
 Press Ctrl+C to quit.
-        """
+        """,
     )
 
     parser.add_argument(
@@ -2167,27 +2174,27 @@ Press Ctrl+C to quit.
         type=Path,
         nargs="?",
         default=Path("config.yaml"),
-        help="Path to YAML config file (default: config.yaml)"
+        help="Path to YAML config file (default: config.yaml)",
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate configuration and show what would be launched without starting"
+        help="Validate configuration and show what would be launched without starting",
     )
 
     parser.add_argument(
         "--log-file",
         type=Path,
         default=Path("merge-god-dashboard.log"),
-        help="Path to log file for all operations (default: merge-god-dashboard.log)"
+        help="Path to log file for all operations (default: merge-god-dashboard.log)",
     )
 
     parser.add_argument(
         "--db-path",
         type=Path,
         default=DEFAULT_DB_PATH,
-        help=f"Path to SQLite database for state persistence (default: {DEFAULT_DB_PATH})"
+        help=f"Path to SQLite database for state persistence (default: {DEFAULT_DB_PATH})",
     )
 
     return parser.parse_args()

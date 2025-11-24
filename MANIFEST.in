@@ -1,0 +1,15 @@
+include README.md
+include LICENSE
+include config.example.yaml
+include pyproject.toml
+
+recursive-include merge_god *.py
+recursive-exclude merge_god __pycache__
+recursive-exclude merge_god *.pyc
+recursive-exclude merge_god *.pyo
+
+global-exclude *.db
+global-exclude *.db-*
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo

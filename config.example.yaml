@@ -16,6 +16,7 @@ repos:
     name: "My Project"
     enabled: true
     watch_issues: true  # Monitor issues with "for-impl" label (default: false)
+    interactive: true   # Prompt for confirmation before actions in TUI mode (default: true)
     # Optional: custom settings (future)
     # poll_interval: 300  # seconds between checks
     # notifications: true  # send notifications for this repo
@@ -40,6 +41,16 @@ repos:
 #   enabled: true
 #   topic: "merge-god-sez"
 
+# Interactive Mode (optional, per-repo setting)
+# When enabled (default: true), the TUI will prompt for confirmation before:
+#   - Processing each PR
+#   - Making commits
+#   - Pushing changes
+#   - Merging PRs
+#   - Creating new PRs from issues
+# In non-TUI mode, this setting is ignored (always runs non-interactively)
+# Set "interactive: false" to run fully automated without prompts
+
 # Issue Watching (optional, per-repo setting)
 # When enabled, monitors GitHub issues with "for-impl" label
 # Issues are processed as PRIMARY tasks (before PRs)
@@ -60,3 +71,23 @@ repos:
 #   # OR
 #   command: ["doormat", "aws", "login"]  # AWS-specific
 #   timeout: 30  # seconds (default: 30)
+
+# PR Processing Configuration
+# The system uses Claude Agent SDK for structured PR processing with:
+# - Task decomposition (analyze, resolve conflicts, fix CI, etc.)
+# - Real-time streaming and progress updates
+# - Tool calling (file editing, test running, git operations)
+# - Structured action tracking and error recovery
+#
+# Authentication options:
+#
+# Option 1: AWS Bedrock (recommended for AWS users)
+#   export CLAUDE_CODE_USE_BEDROCK=1
+#   export ANTHROPIC_MODEL="global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+#   export ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION="us-west-1"
+#
+# Option 2: Direct Anthropic API
+#   export ANTHROPIC_API_KEY="your-api-key-here"
+#   export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
+#
+# See AGENT_SDK_USAGE.md for detailed documentation

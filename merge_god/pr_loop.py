@@ -21,11 +21,30 @@ import os
 import subprocess
 import sys
 import time
-import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+from .types import (
+    CIStatusInfo,
+    CommitInfo,
+    ConflictInfo,
+    FileChange,
+    PRComment,
+    PRContextDict,
+    PRDetails,
+    ReviewComment,
+)
+
+if TYPE_CHECKING:
+    from agents import (
+        PRAgent,
+        PRContext,
+        PRProcessingCallbacks,
+    )
+    from db_operations import StateDatabase
 
 # Import agent system
 try:
@@ -39,11 +58,11 @@ try:
     AGENT_SDK_AVAILABLE = True
 except ImportError:
     AGENT_SDK_AVAILABLE = False
-    PRAgent = None
-    PRContext = None
-    PRProcessingCallbacks = None
-    create_claude_client = None
-    get_model_name = None
+    PRAgent = None  # type: ignore
+    PRContext = None  # type: ignore
+    PRProcessingCallbacks = None  # type: ignore
+    create_claude_client = None  # type: ignore
+    get_model_name = None  # type: ignore
 
 # Import database operations
 try:
@@ -51,13 +70,19 @@ try:
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
-    StateDatabase = None
+    StateDatabase = None  # type: ignore
+
+# Constants
+HTTP_OK_STATUS = 200  # HTTP 200 OK status code
+MAX_BRANCH_NAME_LENGTH = 200  # Maximum reasonable git branch name length
+GIT_SHORT_SHA_LENGTH = 7  # Standard git short SHA length
+MAX_DIFF_DISPLAY_SIZE = 100000  # Max diff size to display in prompt (~100KB)
 
 
 def log_json(event_type: str, data: dict[str, Any]) -> None:
     """Emit structured JSON logs with timestamp"""
     log_entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "event": event_type,
         "data": data,
     }
@@ -69,7 +94,7 @@ def request_confirmation(
     description: str,
     pr_number: str | None = None,
     details: dict[str, Any] | None = None,
-    timeout: int = 300
+    timeout: int = 300,
 ) -> bool:
     """Request user confirmation for an action (interactive mode only)
 
@@ -111,7 +136,7 @@ def request_confirmation(
     except Exception as e:
         log_json("confirmation_warning", {
             "warning": "Could not set stdin non-blocking",
-            "error": str(e)
+            "error": str(e),
         })
 
     # Poll for input with timeout
@@ -130,15 +155,15 @@ def request_confirmation(
                             "approved": approved,
                         })
 
-                        return approved
+                        return bool(approved)
                     except json.JSONDecodeError as e:
                         log_json("confirmation_error", {
                             "action_type": action_type,
-                            "error": f"JSON decode error: {str(e)}",
-                            "line": line[:100]
+                            "error": f"JSON decode error: {e!s}",
+                            "line": line[:100],
                         })
                         return False
-        except (BlockingIOError, IOError):
+        except (OSError, BlockingIOError):
             # No input available yet, continue polling
             pass
         except Exception as e:
@@ -162,7 +187,7 @@ def send_notification(
     message: str,
     title: str | None = None,
     priority: str = "default",
-    tags: list[str] | None = None
+    tags: list[str] | None = None,
 ) -> bool:
     """Send notification to ntfy.sh topic
 
@@ -195,37 +220,36 @@ def send_notification(
             topic_url,
             data=message.encode("utf-8"),
             headers=headers,
-            method="POST"
+            method="POST",
         )
 
         with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status == 200:
+            if response.status == HTTP_OK_STATUS:
                 log_json("notification", {
                     "action": "sent",
                     "title": title,
-                    "message_length": len(message)
+                    "message_length": len(message),
                 })
                 return True
-            else:
-                log_json("notification", {
-                    "action": "failed",
-                    "status": response.status,
-                    "title": title
-                })
-                return False
+            log_json("notification", {
+                "action": "failed",
+                "status": response.status,
+                "title": title,
+            })
+            return False
 
     except urllib.error.URLError as e:
         log_json("notification", {
             "action": "error",
             "error": str(e),
-            "title": title
+            "title": title,
         })
         return False
     except Exception as e:
         log_json("notification", {
             "action": "exception",
             "error": str(e),
-            "title": title
+            "title": title,
         })
         return False
 
@@ -234,7 +258,7 @@ def run_command(
     cmd: list[str],
     cwd: Path | None = None,
     timeout: int = 300,  # 5 minutes default
-    max_output_size: int = 50 * 1024 * 1024  # 50MB default
+    max_output_size: int = 50 * 1024 * 1024,  # 50MB default
 ) -> tuple[int, str, str]:
     """Run a command and return exit code, stdout, stderr
 
@@ -250,22 +274,22 @@ def run_command(
     try:
         result = subprocess.run(
             cmd,
-            cwd=cwd,
+            check=False, cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
         )
 
         # Check output size
-        stdout_size = len(result.stdout.encode('utf-8'))
-        stderr_size = len(result.stderr.encode('utf-8'))
+        stdout_size = len(result.stdout.encode("utf-8"))
+        stderr_size = len(result.stderr.encode("utf-8"))
 
         if stdout_size > max_output_size:
             log_json("command_warning", {
                 "warning": "stdout truncated",
                 "size": stdout_size,
                 "max_size": max_output_size,
-                "command": cmd[0] if cmd else "unknown"
+                "command": cmd[0] if cmd else "unknown",
             })
             result.stdout = result.stdout[:max_output_size // 2] + "\n... [truncated] ..."
 
@@ -274,17 +298,17 @@ def run_command(
                 "warning": "stderr truncated",
                 "size": stderr_size,
                 "max_size": max_output_size,
-                "command": cmd[0] if cmd else "unknown"
+                "command": cmd[0] if cmd else "unknown",
             })
             result.stderr = result.stderr[:max_output_size // 2] + "\n... [truncated] ..."
 
         return result.returncode, result.stdout, result.stderr
-    except subprocess.TimeoutExpired as e:
+    except subprocess.TimeoutExpired:
         return -1, "", f"Command timed out after {timeout} seconds"
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         return -1, "", f"Command not found: {cmd[0] if cmd else 'unknown'}"
     except Exception as e:
-        return -1, "", f"Command failed: {str(e)}"
+        return -1, "", f"Command failed: {e!s}"
 
 
 def get_open_prs() -> dict[str, list[dict[str, Any]]]:
@@ -327,14 +351,14 @@ def get_open_prs() -> dict[str, list[dict[str, Any]]]:
     categorized: dict[str, list[dict[str, Any]]] = {
         "for-review": [],
         "for-landing": [],
-        "untagged": []
+        "untagged": [],
     }
 
     # Track filtered PRs for detailed logging
-    filtered_prs = {
+    filtered_prs: dict[str, list[dict[str, Any]]] = {
         "draft": [],
         "wip": [],
-        "invalid": []
+        "invalid": [],
     }
 
     for pr in all_prs:
@@ -477,51 +501,48 @@ def validate_git_ref(ref: str) -> bool:
         return False
 
     # Git ref names should not contain these characters
-    unsafe_chars = ['\0', '\n', '\r', ' ', '~', '^', ':', '?', '*', '[', '\\', '..', '@{', '//']
+    unsafe_chars = ["\0", "\n", "\r", " ", "~", "^", ":", "?", "*", "[", "\\", "..", "@{", "//"]
     if any(char in ref for char in unsafe_chars):
         return False
 
     # Should not start or end with certain characters
-    if ref.startswith(('.', '/')) or ref.endswith(('.', '/', '.lock')):
+    if ref.startswith((".", "/")) or ref.endswith((".", "/", ".lock")):
         return False
 
     # Reasonable length check (git allows 255 but be conservative)
-    if len(ref) > 200:
-        return False
-
-    return True
+    return not len(ref) > MAX_BRANCH_NAME_LENGTH
 
 
 def detect_default_branch() -> str:
     """Detect the default branch of the repository"""
     # Try to get the default branch from remote
-    returncode, stdout, stderr = run_command([
-        "git", "symbolic-ref", "refs/remotes/origin/HEAD"
+    returncode, stdout, _ = run_command([
+        "git", "symbolic-ref", "refs/remotes/origin/HEAD",
     ], timeout=10)
 
     if returncode == 0 and stdout:
         # Output is like "refs/remotes/origin/main"
-        branch = stdout.strip().split('/')[-1]
+        branch = stdout.strip().split("/")[-1]
         if branch:
             return branch
 
     # Fallback: try common names
     for branch in ["main", "master", "develop"]:
-        returncode, stdout, stderr = run_command([
-            "git", "rev-parse", "--verify", f"origin/{branch}"
+        returncode, stdout, _stderr = run_command([
+            "git", "rev-parse", "--verify", f"origin/{branch}",
         ], timeout=10)
         if returncode == 0:
             return branch
 
     # Last resort
     log_json("branch_detection", {
-        "warning": "Could not detect default branch, using 'main'"
+        "warning": "Could not detect default branch, using 'main'",
     })
     return "main"
 
 
 def get_pr_details(pr_number: int) -> dict[str, Any]:
-    """Fetch comprehensive PR details"""
+    """Fetch comprehensive PR details - returns PRDetails on success, empty dict on error"""
     log_json("get_pr_details", {"action": "start", "pr_number": pr_number})
 
     # Get full PR information
@@ -529,7 +550,7 @@ def get_pr_details(pr_number: int) -> dict[str, Any]:
         "gh", "pr", "view", str(pr_number),
         "--json", "number,title,body,state,headRefName,baseRefName,isDraft,mergeable,"
                   "author,createdAt,updatedAt,closedAt,mergedAt,labels,assignees,reviewers,"
-                  "additions,deletions,changedFiles,commits,reviews,reviewDecision,statusCheckRollup"
+                  "additions,deletions,changedFiles,commits,reviews,reviewDecision,statusCheckRollup",
     ])
 
     if returncode != 0:
@@ -538,6 +559,9 @@ def get_pr_details(pr_number: int) -> dict[str, Any]:
 
     try:
         details = json.loads(stdout)
+        if not isinstance(details, dict):
+            log_json("get_pr_details", {"action": "parse_error", "pr_number": pr_number, "error": "Expected dict, got " + type(details).__name__})
+            return {}
     except json.JSONDecodeError as e:
         log_json("get_pr_details", {"action": "parse_error", "pr_number": pr_number, "error": str(e)})
         return {}
@@ -546,13 +570,13 @@ def get_pr_details(pr_number: int) -> dict[str, Any]:
     return details
 
 
-def get_pr_comments(pr_number: int) -> list[dict[str, Any]]:
+def get_pr_comments(pr_number: int) -> list[PRComment]:
     """Fetch all PR comments (discussion/issue comments)"""
     log_json("get_pr_comments", {"action": "start", "pr_number": pr_number})
 
     returncode, stdout, stderr = run_command([
         "gh", "api", f"repos/{{owner}}/{{repo}}/issues/{pr_number}/comments",
-        "--jq", "."
+        "--jq", ".",
     ])
 
     if returncode != 0:
@@ -568,25 +592,25 @@ def get_pr_comments(pr_number: int) -> list[dict[str, Any]]:
     log_json("get_pr_comments", {
         "action": "complete",
         "pr_number": pr_number,
-        "comment_count": len(comments)
+        "comment_count": len(comments),
     })
     return comments
 
 
-def get_pr_review_comments(pr_number: int) -> list[dict[str, Any]]:
+def get_pr_review_comments(pr_number: int) -> list[ReviewComment]:
     """Fetch all PR review comments (inline code review comments)"""
     log_json("get_pr_review_comments", {"action": "start", "pr_number": pr_number})
 
     returncode, stdout, stderr = run_command([
         "gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
-        "--jq", "."
+        "--jq", ".",
     ])
 
     if returncode != 0:
         log_json("get_pr_review_comments", {
             "action": "error",
             "pr_number": pr_number,
-            "stderr": stderr
+            "stderr": stderr,
         })
         return []
 
@@ -596,14 +620,14 @@ def get_pr_review_comments(pr_number: int) -> list[dict[str, Any]]:
         log_json("get_pr_review_comments", {
             "action": "parse_error",
             "pr_number": pr_number,
-            "error": str(e)
+            "error": str(e),
         })
         return []
 
     log_json("get_pr_review_comments", {
         "action": "complete",
         "pr_number": pr_number,
-        "review_comment_count": len(comments)
+        "review_comment_count": len(comments),
     })
     return comments
 
@@ -613,7 +637,7 @@ def get_pr_diff(pr_number: int) -> str:
     log_json("get_pr_diff", {"action": "start", "pr_number": pr_number})
 
     returncode, stdout, stderr = run_command([
-        "gh", "pr", "diff", str(pr_number)
+        "gh", "pr", "diff", str(pr_number),
     ])
 
     if returncode != 0:
@@ -623,18 +647,18 @@ def get_pr_diff(pr_number: int) -> str:
     log_json("get_pr_diff", {
         "action": "complete",
         "pr_number": pr_number,
-        "diff_size": len(stdout)
+        "diff_size": len(stdout),
     })
     return stdout
 
 
-def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) -> dict[str, Any]:
+def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) -> ConflictInfo:
     """Check if PR has merge conflicts with base branch"""
     log_json("check_merge_conflicts", {
         "action": "start",
         "pr_number": pr_number,
         "head_branch": head_branch,
-        "base_branch": base_branch
+        "base_branch": base_branch,
     })
 
     # Validate branch names
@@ -643,13 +667,13 @@ def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) ->
             "action": "invalid_branch",
             "pr_number": pr_number,
             "branch": "head",
-            "value": head_branch
+            "value": head_branch,
         })
         return {
             "has_conflicts": False,
             "conflicting_files": [],
             "conflict_count": 0,
-            "error": "Invalid head branch name"
+            "error": "Invalid head branch name",
         }
 
     if not validate_git_ref(base_branch):
@@ -657,38 +681,38 @@ def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) ->
             "action": "invalid_branch",
             "pr_number": pr_number,
             "branch": "base",
-            "value": base_branch
+            "value": base_branch,
         })
         return {
             "has_conflicts": False,
             "conflicting_files": [],
             "conflict_count": 0,
-            "error": "Invalid base branch name"
+            "error": "Invalid base branch name",
         }
 
     # Fetch latest
     returncode, stdout, stderr = run_command([
-        "git", "fetch", "origin", head_branch, base_branch
+        "git", "fetch", "origin", head_branch, base_branch,
     ], timeout=120)
 
     if returncode != 0:
         log_json("check_merge_conflicts", {
             "action": "fetch_error",
             "pr_number": pr_number,
-            "stderr": stderr
+            "stderr": stderr,
         })
         return {
             "has_conflicts": False,
             "conflicting_files": [],
             "conflict_count": 0,
-            "error": "Failed to fetch branches"
+            "error": "Failed to fetch branches",
         }
 
     # Check if merge would conflict using merge-tree
     returncode, stdout, stderr = run_command([
         "git", "merge-tree",
         f"origin/{base_branch}",
-        f"origin/{head_branch}"
+        f"origin/{head_branch}",
     ], timeout=120)
 
     # More robust conflict detection
@@ -705,7 +729,7 @@ def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) ->
         lines = stdout.split("\n")
         current_file = None
         for line in lines:
-            if line.startswith("+++") or line.startswith("---"):
+            if line.startswith(("+++", "---")):
                 parts = line.split()
                 if len(parts) > 1 and parts[1] != "/dev/null":
                     file_path = parts[1].lstrip("ab/")
@@ -715,28 +739,28 @@ def check_merge_conflicts(pr_number: int, head_branch: str, base_branch: str) ->
                 if current_file not in conflicting_files:
                     conflicting_files.append(current_file)
 
-    result = {
+    result: ConflictInfo = {
         "has_conflicts": has_conflicts,
         "conflicting_files": conflicting_files,
-        "conflict_count": len(conflicting_files)
+        "conflict_count": len(conflicting_files),
     }
 
     log_json("check_merge_conflicts", {
         "action": "complete",
         "pr_number": pr_number,
-        **result
+        **cast("dict[str, Any]", result),
     })
 
     return result
 
 
-def get_pr_commits(pr_number: int) -> list[dict[str, Any]]:
+def get_pr_commits(pr_number: int) -> list[CommitInfo]:
     """Get all commits in the PR"""
     log_json("get_pr_commits", {"action": "start", "pr_number": pr_number})
 
     returncode, stdout, stderr = run_command([
         "gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/commits",
-        "--jq", "."
+        "--jq", ".",
     ])
 
     if returncode != 0:
@@ -752,18 +776,18 @@ def get_pr_commits(pr_number: int) -> list[dict[str, Any]]:
     log_json("get_pr_commits", {
         "action": "complete",
         "pr_number": pr_number,
-        "commit_count": len(commits)
+        "commit_count": len(commits),
     })
     return commits
 
 
-def get_pr_files(pr_number: int) -> list[dict[str, Any]]:
+def get_pr_files(pr_number: int) -> list[FileChange]:
     """Get list of changed files in the PR"""
     log_json("get_pr_files", {"action": "start", "pr_number": pr_number})
 
     returncode, stdout, stderr = run_command([
         "gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/files",
-        "--jq", "."
+        "--jq", ".",
     ])
 
     if returncode != 0:
@@ -779,28 +803,26 @@ def get_pr_files(pr_number: int) -> list[dict[str, Any]]:
     log_json("get_pr_files", {
         "action": "complete",
         "pr_number": pr_number,
-        "file_count": len(files)
+        "file_count": len(files),
     })
     return files
 
 
-def analyze_ci_status(status_checks: list[dict[str, Any]] | None) -> dict[str, Any]:
+def analyze_ci_status(status_checks: list[dict[str, Any]] | None) -> CIStatusInfo:
     """Analyze CI/CD status from status checks"""
     if not status_checks:
         return {
-            "total_checks": 0,
+            "total": 0,
             "passed": 0,
             "failed": 0,
             "pending": 0,
-            "skipped": 0,
-            "failed_checks": []
+            "failed_checks": [],
         }
 
     passed = 0
     failed = 0
     pending = 0
-    skipped = 0
-    failed_checks = []
+    failed_checks: list[str] = []
 
     for check in status_checks:
         status = check.get("state", "").upper()
@@ -810,23 +832,17 @@ def analyze_ci_status(status_checks: list[dict[str, Any]] | None) -> dict[str, A
             passed += 1
         elif conclusion in ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE"]:
             failed += 1
-            failed_checks.append({
-                "name": check.get("name", "unknown"),
-                "conclusion": conclusion,
-                "details_url": check.get("detailsUrl", "")
-            })
-        elif status == "PENDING" or status == "IN_PROGRESS":
+            check_name = check.get("name", "unknown")
+            failed_checks.append(f"{check_name} ({conclusion})")
+        elif status in {"PENDING", "IN_PROGRESS"}:
             pending += 1
-        elif conclusion == "SKIPPED" or conclusion == "NEUTRAL":
-            skipped += 1
 
     return {
-        "total_checks": len(status_checks),
+        "total": len(status_checks),
         "passed": passed,
         "failed": failed,
         "pending": pending,
-        "skipped": skipped,
-        "failed_checks": failed_checks
+        "failed_checks": failed_checks,
     }
 
 
@@ -846,44 +862,44 @@ def sync_repo(default_branch: str = "main") -> bool:
         log_json("sync_repo", {
             "action": "error",
             "step": "validation",
-            "error": f"Invalid branch name: {default_branch}"
+            "error": f"Invalid branch name: {default_branch}",
         })
         return False
 
     # Fetch all remotes
-    returncode, stdout, stderr = run_command(
+    returncode, _, stderr = run_command(
         ["git", "fetch", "--all", "--prune"],
-        timeout=180
+        timeout=180,
     )
     if returncode != 0:
         log_json("sync_repo", {"action": "error", "step": "fetch", "stderr": stderr})
         return False
 
     # Checkout default branch
-    returncode, stdout, stderr = run_command(
+    returncode, _, stderr = run_command(
         ["git", "checkout", default_branch],
-        timeout=30
+        timeout=30,
     )
     if returncode != 0:
         log_json("sync_repo", {
             "action": "error",
             "step": "checkout",
             "branch": default_branch,
-            "stderr": stderr
+            "stderr": stderr,
         })
         return False
 
     # Pull latest changes
-    returncode, stdout, stderr = run_command(
+    returncode, _stdout, stderr = run_command(
         ["git", "pull", "origin", default_branch],
-        timeout=120
+        timeout=120,
     )
     if returncode != 0:
         log_json("sync_repo", {
             "action": "error",
             "step": "pull",
             "branch": default_branch,
-            "stderr": stderr
+            "stderr": stderr,
         })
         return False
 
@@ -923,12 +939,12 @@ def get_commit_history_examples(default_branch: str = "main") -> str:
     """
     if not validate_git_ref(default_branch):
         log_json("commit_history", {
-            "warning": f"Invalid branch name: {default_branch}"
+            "warning": f"Invalid branch name: {default_branch}",
         })
         return ""
 
-    returncode, stdout, stderr = run_command([
-        "git", "log", "--pretty=format:%s", "-n", "20", f"origin/{default_branch}"
+    returncode, stdout, _stderr = run_command([
+        "git", "log", "--pretty=format:%s", "-n", "20", f"origin/{default_branch}",
     ], timeout=30)
 
     if returncode == 0 and stdout:
@@ -941,7 +957,7 @@ def build_pr_prompt(
     pr_details: dict[str, Any],
     pr_context: dict[str, Any],
     guidelines: str,
-    commit_examples: str
+    commit_examples: str,
 ) -> str:
     """Build comprehensive prompt for bob to process the PR with full context"""
 
@@ -1107,7 +1123,7 @@ def build_pr_prompt(
             message = commit.get("commit", {}).get("message", "").split("\n")[0]
             sha = commit.get("sha", "")
             # Safely slice SHA (handle short or missing SHAs)
-            short_sha = sha[:7] if sha and len(sha) >= 7 else (sha if sha else "unknown")
+            short_sha = sha[:GIT_SHORT_SHA_LENGTH] if sha and len(sha) >= GIT_SHORT_SHA_LENGTH else (sha if sha else "unknown")
             prompt_parts.append(f"- `{short_sha}` {message}")
         prompt_parts.append("")
 
@@ -1124,7 +1140,7 @@ def build_pr_prompt(
     # Add PR description if available to reinforce the original intent
     if body:
         # Take first paragraph or first 500 chars as a summary
-        description_lines = body.strip().split('\n')
+        description_lines = body.strip().split("\n")
         summary = description_lines[0] if description_lines else body[:500]
         prompt_parts.extend([
             f"**Purpose**: {summary}",
@@ -1214,7 +1230,7 @@ def build_review_prompt(
     head_branch: str,
     url: str,
     diff: str,
-    changed_files: list[dict[str, Any]]
+    changed_files: list[dict[str, Any]],
 ) -> str:
     """Build a code review prompt for targeted improvements
 
@@ -1272,7 +1288,7 @@ def build_review_prompt(
             "added": "✨",
             "removed": "🗑️",
             "modified": "📝",
-            "renamed": "🔄"
+            "renamed": "🔄",
         }.get(status, "📝")
 
         prompt_parts.append(f"- {status_emoji} `{filename}` (+{additions}/-{deletions})")
@@ -1284,7 +1300,7 @@ def build_review_prompt(
         "Below is the complete diff of all changes in this PR. Review each change carefully:",
         "",
         "```diff",
-        diff[:100000] if len(diff) > 100000 else diff,  # Cap at ~100KB to avoid overwhelming
+        diff[:MAX_DIFF_DISPLAY_SIZE] if len(diff) > MAX_DIFF_DISPLAY_SIZE else diff,  # Cap at ~100KB to avoid overwhelming
         "```",
         "",
         "## Review Guidelines",
@@ -1364,18 +1380,18 @@ def build_review_prompt(
     return "\n".join(prompt_parts)
 
 
-def gather_pr_context(pr_number: int, head_branch: str, base_branch: str, url: str) -> dict[str, Any]:
+def gather_pr_context(pr_number: int, head_branch: str, base_branch: str, url: str) -> tuple[PRDetails, PRContextDict]:
     """Gather comprehensive context about a PR before processing"""
     log_json("gather_pr_context", {"action": "start", "pr_number": pr_number})
 
-    context = {
+    context: PRContextDict = {
         "url": url,
         "comments": [],
         "review_comments": [],
         "commits": [],
         "files": [],
-        "conflicts": {},
-        "ci_status": {},
+        "conflicts": {"has_conflicts": False, "conflicting_files": []},
+        "ci_status": {"total": 0, "passed": 0, "failed": 0, "pending": 0, "failed_checks": []},
         "diff": "",
     }
 
@@ -1416,10 +1432,12 @@ def gather_pr_context(pr_number: int, head_branch: str, base_branch: str, url: s
             "ci_checks": context["ci_status"].get("total_checks", 0),
             "ci_failed": context["ci_status"].get("failed", 0),
             "diff_size": len(context["diff"]),
-        }
+        },
     })
 
-    return details, context
+    # Cast details since get_pr_details returns dict[str, Any] which can be empty dict on error
+    # Caller should check if details is empty
+    return cast("PRDetails", details), context
 
 
 # Global agent client (initialized once)
@@ -1446,7 +1464,7 @@ async def process_pr_async(
     mode: str = "for-landing",
     interactive: bool = False,
     db: StateDatabase | None = None,
-    repo_name: str | None = None
+    repo_name: str | None = None,
 ) -> bool:
     """
     Process a single PR using structured tasks and streaming.
@@ -1477,7 +1495,7 @@ async def process_pr_async(
         log_json("process_pr", {
             "action": "validation_error",
             "error": "Missing PR number",
-            "pr": pr
+            "pr": pr,
         })
         return False
 
@@ -1485,7 +1503,7 @@ async def process_pr_async(
         log_json("process_pr", {
             "action": "validation_error",
             "pr_number": pr_number,
-            "error": "Missing head branch"
+            "error": "Missing head branch",
         })
         return False
 
@@ -1493,7 +1511,7 @@ async def process_pr_async(
         log_json("process_pr", {
             "action": "validation_error",
             "pr_number": pr_number,
-            "error": "Missing PR URL"
+            "error": "Missing PR URL",
         })
         return False
 
@@ -1502,7 +1520,7 @@ async def process_pr_async(
         log_json("process_pr", {
             "action": "validation_error",
             "pr_number": pr_number,
-            "error": f"Invalid head branch name: {head_branch}"
+            "error": f"Invalid head branch name: {head_branch}",
         })
         return False
 
@@ -1510,7 +1528,7 @@ async def process_pr_async(
         log_json("process_pr", {
             "action": "validation_error",
             "pr_number": pr_number,
-            "error": f"Invalid base branch name: {base_branch}"
+            "error": f"Invalid base branch name: {base_branch}",
         })
         return False
 
@@ -1526,7 +1544,7 @@ async def process_pr_async(
                 "head_branch": head_branch,
                 "base_branch": base_branch,
                 "url": url,
-            }
+            },
         )
 
         if not approved:
@@ -1548,7 +1566,7 @@ async def process_pr_async(
     send_notification(
         f"Processing PR #{pr_number}: {title}\nMode: {mode}",
         title=f"PR #{pr_number} - Processing Started",
-        tags=["robot", "arrows_clockwise"]
+        tags=["robot", "arrows_clockwise"],
     )
 
     # Gather comprehensive PR context
@@ -1556,7 +1574,7 @@ async def process_pr_async(
         "action": "gathering_context",
         "pr_number": pr_number,
         "phase": "1/4",
-        "phase_name": "Context Gathering"
+        "phase_name": "Context Gathering",
     })
 
     try:
@@ -1566,7 +1584,7 @@ async def process_pr_async(
             "action": "context_gathered",
             "pr_number": pr_number,
             "phase": "1/4",
-            "phase_name": "Context Gathering Complete"
+            "phase_name": "Context Gathering Complete",
         })
     except Exception as e:
         log_json("process_pr", {
@@ -1578,7 +1596,7 @@ async def process_pr_async(
             f"PR #{pr_number} failed: {title}\nError gathering context: {str(e)[:100]}",
             title=f"PR #{pr_number} - Error",
             priority="high",
-            tags=["x", "warning"]
+            tags=["x", "warning"],
         )
         return False
 
@@ -1587,7 +1605,7 @@ async def process_pr_async(
         log_json("process_pr", {
             "action": "empty_details",
             "pr_number": pr_number,
-            "error": "Failed to fetch PR details"
+            "error": "Failed to fetch PR details",
         })
         return False
 
@@ -1598,18 +1616,19 @@ async def process_pr_async(
     # Save PR context to database for later replay/testing (Process 1 output)
     if db and repo_name:
         try:
-            db.save_pr_context(repo_name, pr_number, pr_details, pr_context_dict)
+            # TypedDict is compatible with dict[str, Any], cast for mypy
+            db.save_pr_context(repo_name, pr_number, cast("dict[str, Any]", pr_details), cast("dict[str, Any]", pr_context_dict))
             log_json("process_pr", {
                 "action": "context_saved_to_db",
                 "pr_number": pr_number,
-                "db_enabled": True
+                "db_enabled": True,
             })
         except Exception as e:
             log_json("process_pr", {
                 "action": "context_save_warning",
                 "pr_number": pr_number,
                 "error": str(e),
-                "hint": "PR processing will continue, but context won't be cached for replay"
+                "hint": "PR processing will continue, but context won't be cached for replay",
             })
 
     # Convert to structured PRContext
@@ -1617,22 +1636,23 @@ async def process_pr_async(
         "action": "building_context",
         "pr_number": pr_number,
         "phase": "2/4",
-        "phase_name": "Building PR Context"
+        "phase_name": "Building PR Context",
     })
 
     try:
-        pr_context = PRContext.from_dict(pr_details, pr_context_dict)
+        # TypedDict is compatible with dict[str, Any], cast for mypy
+        pr_context = PRContext.from_dict(cast("dict[str, Any]", pr_details), cast("dict[str, Any]", pr_context_dict))
         log_json("process_pr", {
             "action": "context_built",
             "pr_number": pr_number,
             "phase": "2/4",
-            "phase_name": "PR Context Ready"
+            "phase_name": "PR Context Ready",
         })
     except Exception as e:
         log_json("process_pr", {
             "action": "context_conversion_error",
             "pr_number": pr_number,
-            "error": str(e)
+            "error": str(e),
         })
         return False
 
@@ -1641,7 +1661,7 @@ async def process_pr_async(
         "action": "initializing_agent",
         "pr_number": pr_number,
         "phase": "3/4",
-        "phase_name": "Initializing Agent"
+        "phase_name": "Initializing Agent",
     })
 
     try:
@@ -1650,13 +1670,13 @@ async def process_pr_async(
             "action": "agent_initialized",
             "pr_number": pr_number,
             "phase": "3/4",
-            "model": model
+            "model": model,
         })
     except Exception as e:
         log_json("process_pr", {
             "action": "agent_client_error",
             "pr_number": pr_number,
-            "error": str(e)
+            "error": str(e),
         })
         return False
 
@@ -1664,14 +1684,14 @@ async def process_pr_async(
     agent = PRAgent(
         client=client,
         model=model,
-        repo_path=Path.cwd()
+        repo_path=Path.cwd(),
     )
 
     # Create callbacks for event handling
     callbacks = PRProcessingCallbacks(
         pr_number=pr_number,
         log_json=log_json,
-        send_notification=send_notification
+        send_notification=send_notification,
     )
 
     # Process PR with streaming and structured tasks
@@ -1680,14 +1700,14 @@ async def process_pr_async(
         "pr_number": pr_number,
         "phase": "4/4",
         "phase_name": "Agent Processing PR",
-        "mode": mode
+        "mode": mode,
     })
 
     try:
         result = await agent.process_pr_streaming(
             pr_context=pr_context,
             mode=mode,
-            callbacks=callbacks
+            callbacks=callbacks,
         )
 
         # Log detailed results
@@ -1712,7 +1732,7 @@ async def process_pr_async(
                 f"Tasks: {len(result.tasks)}, Actions: {len(result.actions)}\n"
                 f"Duration: {result.duration:.1f}s",
                 title=f"PR #{pr_number} - Complete",
-                tags=["white_check_mark", "rocket"]
+                tags=["white_check_mark", "rocket"],
             )
         else:
             failed_tasks = result.get_failed_tasks()
@@ -1722,7 +1742,7 @@ async def process_pr_async(
                 f"Duration: {result.duration:.1f}s",
                 title=f"PR #{pr_number} - Failed",
                 priority="high",
-                tags=["x", "warning"]
+                tags=["x", "warning"],
             )
 
         return result.success
@@ -1732,14 +1752,14 @@ async def process_pr_async(
             "action": "exception",
             "pr_number": pr_number,
             "error": str(e),
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
         })
 
         send_notification(
             f"PR #{pr_number} exception: {str(e)[:100]}",
             title=f"PR #{pr_number} - Error",
             priority="urgent",
-            tags=["x", "warning"]
+            tags=["x", "warning"],
         )
 
         return False
@@ -1753,7 +1773,7 @@ def process_pr(
     mode: str = "for-landing",
     interactive: bool = False,
     db: StateDatabase | None = None,
-    repo_name: str | None = None
+    repo_name: str | None = None,
 ) -> bool:
     """Process a single PR using Claude Agent SDK.
 
@@ -1775,13 +1795,13 @@ def process_pr(
         log_json("process_pr", {
             "action": "agent_sdk_unavailable",
             "pr_number": pr.get("number"),
-            "error": "Agent SDK not installed. Install with: uv pip install -e ."
+            "error": "Agent SDK not installed. Install with: uv pip install -e .",
         })
         return False
 
     # Use Agent SDK implementation
     return asyncio.run(process_pr_async(
-        pr, guidelines, commit_examples, default_branch, mode, interactive, db, repo_name
+        pr, guidelines, commit_examples, default_branch, mode, interactive, db, repo_name,
     ))
 
 
@@ -1790,7 +1810,7 @@ def process_issue(
     guidelines: str,
     commit_examples: str,
     default_branch: str = "main",
-    interactive: bool = False
+    interactive: bool = False,
 ) -> bool:
     """Process a GitHub issue labeled for implementation
 
@@ -1817,7 +1837,7 @@ def process_issue(
         log_json("process_issue", {
             "action": "validation_error",
             "error": "Missing issue number",
-            "issue": issue
+            "issue": issue,
         })
         return False
 
@@ -1825,7 +1845,7 @@ def process_issue(
         log_json("process_issue", {
             "action": "validation_error",
             "issue_number": issue_number,
-            "error": "Missing issue URL"
+            "error": "Missing issue URL",
         })
         return False
 
@@ -1839,7 +1859,7 @@ def process_issue(
                 "issue_number": issue_number,
                 "title": title,
                 "url": url,
-            }
+            },
         )
 
         if not approved:
@@ -1859,11 +1879,10 @@ def process_issue(
     send_notification(
         f"Implementing issue #{issue_number}: {title}",
         title=f"Issue #{issue_number} - Implementation Started",
-        tags=["construction", "bulb"]
+        tags=["construction", "bulb"],
     )
 
-    # Create branch name from issue
-    # Format: issue-{number}-{sanitized-title}
+    # Create branch name from issue (format: issue-NUMBER-sanitized-title)
     sanitized_title = title.lower().replace(" ", "-")[:50]
     # Remove unsafe characters
     sanitized_title = "".join(c for c in sanitized_title if c.isalnum() or c == "-")
@@ -1874,14 +1893,14 @@ def process_issue(
         log_json("process_issue", {
             "action": "validation_error",
             "issue_number": issue_number,
-            "error": f"Invalid branch name: {branch_name}"
+            "error": f"Invalid branch name: {branch_name}",
         })
         return False
 
     # Sync with default branch first
     log_json("process_issue", {
         "action": "sync_branch",
-        "branch": default_branch
+        "branch": default_branch,
     })
 
     returncode, stdout, stderr = run_command(["git", "checkout", default_branch])
@@ -1889,7 +1908,7 @@ def process_issue(
         log_json("process_issue", {
             "action": "checkout_error",
             "issue_number": issue_number,
-            "error": stderr
+            "error": stderr,
         })
         return False
 
@@ -1898,7 +1917,7 @@ def process_issue(
         log_json("process_issue", {
             "action": "pull_error",
             "issue_number": issue_number,
-            "error": stderr
+            "error": stderr,
         })
         return False
 
@@ -1906,7 +1925,7 @@ def process_issue(
     log_json("process_issue", {
         "action": "create_branch",
         "issue_number": issue_number,
-        "branch": branch_name
+        "branch": branch_name,
     })
 
     returncode, stdout, stderr = run_command(["git", "checkout", "-b", branch_name])
@@ -1917,7 +1936,7 @@ def process_issue(
             log_json("process_issue", {
                 "action": "branch_error",
                 "issue_number": issue_number,
-                "error": stderr
+                "error": stderr,
             })
             return False
 
@@ -2009,7 +2028,7 @@ Begin implementing the issue now.
         send_notification(
             f"Issue #{issue_number} implementation completed: {title}\nCheck the created PR for details",
             title=f"Issue #{issue_number} - Complete",
-            tags=["white_check_mark", "bulb"]
+            tags=["white_check_mark", "bulb"],
         )
     else:
         # Send failure notification
@@ -2017,7 +2036,7 @@ Begin implementing the issue now.
             f"Issue #{issue_number} implementation failed: {title}\nCheck logs for details",
             title=f"Issue #{issue_number} - Failed",
             priority="high",
-            tags=["x", "warning"]
+            tags=["x", "warning"],
         )
 
     log_json("process_issue", {
@@ -2034,14 +2053,14 @@ def validate_repository(repo_path: Path) -> bool:
     if not repo_path.exists():
         log_json("validation_error", {
             "error": "Repository path does not exist",
-            "path": str(repo_path)
+            "path": str(repo_path),
         })
         return False
 
     if not repo_path.is_dir():
         log_json("validation_error", {
             "error": "Repository path is not a directory",
-            "path": str(repo_path)
+            "path": str(repo_path),
         })
         return False
 
@@ -2049,32 +2068,32 @@ def validate_repository(repo_path: Path) -> bool:
     if not git_dir.exists():
         log_json("validation_error", {
             "error": "Not a git repository (no .git directory)",
-            "path": str(repo_path)
+            "path": str(repo_path),
         })
         return False
 
     # Test git command works in this directory
-    returncode, stdout, stderr = run_command(["git", "status"], cwd=repo_path)
+    returncode, _, stderr = run_command(["git", "status"], cwd=repo_path)
     if returncode != 0:
         log_json("validation_error", {
             "error": "Git command failed",
             "path": str(repo_path),
-            "stderr": stderr
+            "stderr": stderr,
         })
         return False
 
     # Check if gh CLI is authenticated and works
-    returncode, stdout, stderr = run_command(["gh", "auth", "status"])
+    returncode, _stdout, stderr = run_command(["gh", "auth", "status"])
     if returncode != 0:
         log_json("validation_error", {
             "error": "GitHub CLI not authenticated. Run 'gh auth login'",
-            "stderr": stderr
+            "stderr": stderr,
         })
         return False
 
     log_json("validation", {
         "success": True,
-        "path": str(repo_path)
+        "path": str(repo_path),
     })
     return True
 
@@ -2097,25 +2116,25 @@ Use GitHub labels to control processing mode:
   - Add 'for-landing' label for basic processing (conflicts, reviews, CI)
   - Add 'for-review' label for comprehensive code review
   - No label = PR is skipped
-        """
+        """,
     )
 
     parser.add_argument(
         "repo_path",
         type=Path,
-        help="Path to the git repository to process"
+        help="Path to the git repository to process",
     )
 
     parser.add_argument(
         "--watch-issues",
         action="store_true",
-        help="Monitor and process issues labeled 'for-impl' (processed before PRs)"
+        help="Monitor and process issues labeled 'for-impl' (processed before PRs)",
     )
 
     parser.add_argument(
         "--interactive",
         action="store_true",
-        help="Request user confirmation before taking actions (for TUI mode)"
+        help="Request user confirmation before taking actions (for TUI mode)",
     )
 
     return parser.parse_args()
@@ -2151,24 +2170,24 @@ def main() -> None:
             log_json("startup", {
                 "database_enabled": True,
                 "db_path": str(db_path),
-                "repo_name": repo_name
+                "repo_name": repo_name,
             })
         except Exception as e:
             log_json("startup", {
                 "database_error": str(e),
-                "warning": "Continuing without database persistence"
+                "warning": "Continuing without database persistence",
             })
             db = None
     else:
         log_json("startup", {
             "database_enabled": False,
-            "warning": "Database operations module not available"
+            "warning": "Database operations module not available",
         })
 
     # Detect default branch
     default_branch = detect_default_branch()
     log_json("startup", {
-        "default_branch": default_branch
+        "default_branch": default_branch,
     })
 
     # Get guidelines and commit examples once at startup
@@ -2181,8 +2200,8 @@ def main() -> None:
     })
 
     iteration = 0
-    processing_prs = set()  # Track PRs being processed to avoid duplicates
-    processing_issues = set()  # Track issues being processed to avoid duplicates
+    processing_prs: set[int] = set()  # Track PRs being processed to avoid duplicates
+    processing_issues: set[int] = set()  # Track issues being processed to avoid duplicates
 
     while True:
         iteration += 1
@@ -2296,7 +2315,7 @@ def main() -> None:
                     log_json("process_pr", {
                         "action": "skip_duplicate",
                         "pr_number": pr_number,
-                        "mode": mode
+                        "mode": mode,
                     })
                     continue
 
