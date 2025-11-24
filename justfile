@@ -1,6 +1,6 @@
 # Justfile for merge-god local development automation
-# Requires: just (https://github.com/casey/just)
-# Install: brew install just
+# Requires: just (https://github.com/casey/just), uv (https://docs.astral.sh/uv/)
+# Install: brew install just && brew install uv
 
 # Default recipe - show available commands
 default:
@@ -61,12 +61,12 @@ ruff-format:
 # Run mypy type checking
 mypy:
     @echo "🔍 Running mypy type checking..."
-    @mypy --strict-optional --warn-return-any --exclude '^(test_.*\.py|.*_test\.py)$' .
+    @uv run mypy --strict-optional --warn-return-any --exclude '^(test_.*\.py|.*_test\.py)$' .
 
 # Run Bandit security checks
 bandit:
     @echo "🔍 Running Bandit security checks..."
-    @bandit -c pyproject.toml -r . --exclude './test_*.py'
+    @uv run bandit -c pyproject.toml -r . --exclude './test_*.py'
 
 # Run Markdown linting
 markdownlint:
@@ -86,62 +86,62 @@ fix: isort-fix ruff-fix ruff-format
 # Run all tests
 test:
     @echo "🧪 Running tests..."
-    @python -m pytest tests/ -v
+    @uv run pytest tests/ -v
 
 # Run tests with coverage
 test-coverage:
     @echo "🧪 Running tests with coverage..."
-    @python -m pytest tests/ --cov=merge_god --cov-report=html --cov-report=term
+    @uv run pytest tests/ --cov=merge_god --cov-report=html --cov-report=term
 
 # Run specific test file
 test-file FILE:
     @echo "🧪 Running test file: {{FILE}}"
-    @python -m pytest {{FILE}} -v
+    @uv run pytest {{FILE}} -v
 
 # Run tests matching pattern
 test-pattern PATTERN:
     @echo "🧪 Running tests matching: {{PATTERN}}"
-    @python -m pytest tests/ -k "{{PATTERN}}" -v
+    @uv run pytest tests/ -k "{{PATTERN}}" -v
 
 # Run tests and show output
 test-verbose:
     @echo "🧪 Running tests (verbose)..."
-    @python -m pytest tests/ -vv -s
+    @uv run pytest tests/ -vv -s
 
 # === Building and Publishing ===
 
 # Build distribution packages
 build:
     @echo "📦 Building distribution packages..."
-    @python -m build
+    @uv run python -m build
 
 # Build and check distribution
 build-check: build
     @echo "🔍 Checking distribution..."
-    @twine check dist/*
+    @uv run twine check dist/*
 
 # Publish to PyPI (requires credentials)
 publish: build-check
     @echo "📤 Publishing to PyPI..."
-    @twine upload dist/*
+    @uv run twine upload dist/*
 
 # Publish to TestPyPI (for testing)
 publish-test: build-check
     @echo "📤 Publishing to TestPyPI..."
-    @twine upload --repository testpypi dist/*
+    @uv run twine upload --repository testpypi dist/*
 
 # === Installation and Setup ===
 
 # Install package in development mode
 install-dev:
     @echo "📥 Installing package in development mode..."
-    @pip install -e .
+    @uv pip install -e .
 
 # Install all development dependencies
 install-deps:
     @echo "📥 Installing development dependencies..."
-    @pip install -r requirements.txt
-    @pip install build twine pytest pytest-cov pre-commit
+    @uv pip install -r requirements.txt
+    @uv pip install build twine pytest pytest-cov pre-commit
 
 # Install pre-commit hooks
 install-hooks:
@@ -189,31 +189,31 @@ clean-all: clean
 # Run the dashboard in non-TUI mode
 dashboard:
     @echo "🖥️  Starting dashboard (non-TUI mode)..."
-    @python -m merge_god.dashboard | cat
+    @uv run python -m merge_god.dashboard | cat
 
 # Run the dashboard in TUI mode
 dashboard-tui:
     @echo "🖥️  Starting dashboard (TUI mode)..."
-    @python -m merge_god.dashboard
+    @uv run python -m merge_god.dashboard
 
 # Validate configuration file
 validate-config FILE="config.yaml":
     @echo "✅ Validating configuration: {{FILE}}"
-    @python -m merge_god.validate {{FILE}}
+    @uv run python -m merge_god.validate {{FILE}}
 
 # Sync PR context to database
 sync-pr REPO PR:
     @echo "🔄 Syncing PR context for {{REPO}}#{{PR}}..."
-    @python -m merge_god.sync {{REPO}} {{PR}}
+    @uv run python -m merge_god.sync {{REPO}} {{PR}}
 
 # Run agent from database
 run-agent REPO PR:
     @echo "🤖 Running agent for {{REPO}}#{{PR}}..."
-    @python -m merge_god.run_agent {{REPO}} {{PR}}
+    @uv run python -m merge_god.run_agent {{REPO}} {{PR}}
 
 # Show help for merge-god CLI
 help:
-    @python -m merge_god --help
+    @uv run python -m merge_god --help
 
 # === Git Helpers ===
 
@@ -279,7 +279,7 @@ tree:
 # Check for security vulnerabilities with pip-audit (requires pip-audit)
 security-audit:
     @echo "🔒 Running security audit..."
-    @pip-audit
+    @uv run pip-audit
 
 # Update pre-commit hooks
 update-hooks:
@@ -290,9 +290,11 @@ update-hooks:
 versions:
     @echo "🐍 Python version:"
     @python --version
+    @echo "\n📦 uv version:"
+    @uv --version
     @echo "\n📦 Tool versions:"
     @ruff --version || echo "ruff not installed"
-    @mypy --version || echo "mypy not installed"
+    @uv run mypy --version || echo "mypy not installed"
     @isort --version || echo "isort not installed"
-    @pytest --version || echo "pytest not installed"
+    @uv run pytest --version || echo "pytest not installed"
     @pre-commit --version || echo "pre-commit not installed"
