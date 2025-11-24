@@ -9,16 +9,19 @@ All scripts in this project use [uv](https://github.com/astral-sh/uv) for Python
 ## Why uv?
 
 ### Performance
+
 - ⚡ **10-100x faster** than pip
 - 🚀 **Instant startup** with cached environments
 - 💾 **Efficient caching** across projects
 
 ### Simplicity
+
 - 📦 **No virtual environments** needed for scripts
 - 🔧 **Single tool** for all Python needs
 - 📝 **Inline metadata** (PEP 723) in scripts
 
 ### Reliability
+
 - 🔒 **Reproducible** builds
 - ✅ **Type-safe** dependency resolution
 - 🎯 **Cross-platform** compatibility
@@ -40,6 +43,7 @@ All Python scripts include this header:
 ```python
 #!/usr/bin/env -S uv run --quiet --script
 ```
+
 - `#!/usr/bin/env -S` - Use env with `-S` flag for multi-arg shebang
 - `uv run` - Execute script with uv
 - `--quiet` - Suppress uv output
@@ -51,6 +55,7 @@ All Python scripts include this header:
 # dependencies = []
 # ///
 ```
+
 - PEP 723 inline script metadata
 - `requires-python` - Minimum Python version
 - `dependencies` - External packages (empty for this project)
@@ -104,6 +109,7 @@ Scripts can be executed directly with the shebang:
 ```
 
 uv automatically:
+
 1. Checks Python version requirement
 2. Creates isolated environment if needed
 3. Installs dependencies (none for this project)
@@ -139,6 +145,7 @@ uv will automatically install and cache these dependencies.
 ## Benefits for This Project
 
 ### 1. No Setup Overhead
+
 ```bash
 # Traditional approach
 python -m venv venv
@@ -151,16 +158,19 @@ python pr-loop.py
 ```
 
 ### 2. Consistent Environments
+
 - Each script runs in its own isolated environment
 - No conflicts between script dependencies
 - Reproducible across machines
 
 ### 3. Fast Iteration
+
 - First run: uv creates environment (~100ms)
 - Subsequent runs: Instant from cache
 - No activation/deactivation needed
 
 ### 4. Distribution
+
 - Scripts are self-contained
 - No separate requirements.txt
 - Dependencies documented in script header
@@ -168,11 +178,13 @@ python pr-loop.py
 ## Troubleshooting
 
 ### Script not executable
+
 ```bash
 chmod +x pr-loop.py test-prompt.py test_fixes.py
 ```
 
 ### uv not found
+
 ```bash
 # Check installation
 which uv
@@ -182,12 +194,14 @@ export PATH="$HOME/.local/bin:$PATH"  # Linux/macOS
 ```
 
 ### Python version mismatch
+
 ```bash
 # uv will show clear error if Python < 3.12
 # Install Python 3.12+ first
 ```
 
 ### Permission denied on macOS
+
 ```bash
 # macOS may block scripts from internet
 xattr -d com.apple.quarantine pr-loop.py

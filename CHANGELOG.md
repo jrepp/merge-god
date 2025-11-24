@@ -9,6 +9,7 @@ Added the ability to monitor and automatically implement GitHub issues labeled w
 #### Configuration
 
 Enable per-repository in `config.yaml`:
+
 ```yaml
 repos:
   - path: /path/to/repo
@@ -31,6 +32,7 @@ When `watch_issues: true` is set for a repository:
 #### Agent Workflow
 
 The agent receives a comprehensive prompt with:
+
 - Issue number, title, description, and URL
 - Project guidelines and commit examples
 - Instructions to implement, test, and create PR
@@ -39,6 +41,7 @@ The agent receives a comprehensive prompt with:
 #### Selection Criteria Display
 
 The dashboard startup now shows:
+
 - **⚡ PRIMARY: Issues** (if watching enabled)
   - `for-impl` - Feature/fix implementation requests
   - Creates branch, implements, creates PR, links to issue
@@ -49,6 +52,7 @@ The dashboard startup now shows:
 #### CLI Flag
 
 pr-loop.py now supports:
+
 ```bash
 ./pr-loop.py /path/to/repo --watch-issues
 ```
@@ -79,12 +83,12 @@ pr-loop.py now supports:
 - **Tag Selection Criteria Display**: Dashboard now shows PR processing criteria at startup
   - Displayed in both TUI and non-TUI modes
   - Shows which labels trigger PR processing:
-    * `for-review` - Comprehensive review with code improvements
-    * `for-landing` - Basic processing to merge (conflicts, reviews, CI)
+    - `for-review` - Comprehensive review with code improvements
+    - `for-landing` - Basic processing to merge (conflicts, reviews, CI)
   - Shows what gets skipped:
-    * Draft PRs
-    * WIP labels (wip, work-in-process, work in process)
-    * PRs without processing labels
+    - Draft PRs
+    - WIP labels (wip, work-in-process, work in process)
+    - PRs without processing labels
   - Color-coded in TUI mode (green for processed, red for skipped)
   - Plain text in non-TUI mode
 
@@ -115,10 +119,10 @@ pr-loop.py now supports:
   - Simple text-based output for no-TTY environments
   - Periodic status updates (every 60 seconds)
   - Perfect for:
-    * CI/CD pipelines
-    * Background processes
-    * SSH sessions without proper TTY
-    * Testing locally with `./dashboard.py | cat`
+    - CI/CD pipelines
+    - Background processes
+    - SSH sessions without proper TTY
+    - Testing locally with `./dashboard.py | cat`
   - Shows all repository status and statistics
   - Same monitoring capabilities as TUI mode
 
@@ -155,20 +159,22 @@ pr-loop.py now supports:
 
 - **Fixed doormat command error**: Replaced hardcoded `doormat refresh` with flexible command detection
   - Dashboard now tries multiple doormat commands automatically:
-    * `doormat` (some versions run credential refresh by default)
-    * `doormat login` (common pattern)
-    * `doormat aws login` (AWS-specific installations)
-    * `doormat exec` (exec-based pattern)
+    - `doormat` (some versions run credential refresh by default)
+    - `doormat login` (common pattern)
+    - `doormat aws login` (AWS-specific installations)
+    - `doormat exec` (exec-based pattern)
   - Tries commands in order until one succeeds
   - Better error handling and logging
   - Shows which command succeeded in logs
 
 - **Added doormat configuration support**: Specify custom doormat command in config.yaml
+
   ```yaml
   doormat:
     command: ["doormat", "your-command"]
     timeout: 30  # optional
   ```
+
   - Useful for different doormat installations
   - Overrides automatic command detection
   - Configurable timeout per installation
@@ -183,8 +189,8 @@ pr-loop.py now supports:
 ### Documentation
 
 - README.md: Updated Doormat Integration section
-  * Lists all auto-detected commands
-  * Examples for custom configuration
+  - Lists all auto-detected commands
+  - Examples for custom configuration
 - config.example.yaml: Added doormat config section with examples
 
 ---
@@ -196,11 +202,11 @@ pr-loop.py now supports:
 - **Interactive Configuration Wizard**: Automatic setup when config.yaml doesn't exist
   - Dashboard detects missing config file and offers to create it
   - Interactive prompts for repository configuration:
-    * Repository path with live validation
-    * Automatic path expansion (~/ and relative paths)
-    * Display name (defaults to directory name)
-    * Enable/disable toggle
-    * Add multiple repositories in one session
+    - Repository path with live validation
+    - Automatic path expansion (~/ and relative paths)
+    - Display name (defaults to directory name)
+    - Enable/disable toggle
+    - Add multiple repositories in one session
   - Real-time git repository validation
   - Shows summary table before saving
   - Option to validate immediately after creation (dry-run)
@@ -308,6 +314,7 @@ pr-loop.py now supports:
 ### Usage
 
 **Dashboard (recommended):**
+
 ```bash
 cp config.example.yaml config.yaml
 vi config.yaml  # Add your repos
@@ -315,6 +322,7 @@ vi config.yaml  # Add your repos
 ```
 
 **Single repo (as before):**
+
 ```bash
 ./pr-loop.py /path/to/repo
 ```
@@ -342,7 +350,7 @@ repos:
 
 - **Real-Time Notifications**: Added ntfy.sh integration
   - Notifications for: Processing start, complete, failure, review results
-  - Topic: `merge-god-sez` at https://ntfy.sh/merge-god-sez
+  - Topic: `merge-god-sez` at <https://ntfy.sh/merge-god-sez>
   - Emoji tags and priorities for visual identification
   - No external dependencies (uses urllib)
 
@@ -371,11 +379,13 @@ repos:
 ### Migration
 
 **Before:**
+
 ```bash
 ./pr-loop.py /path/to/repo --review
 ```
 
 **After:**
+
 ```bash
 # No command-line flag needed
 ./pr-loop.py /path/to/repo
@@ -395,21 +405,21 @@ repos:
 - **Repository Argument Required**: Script now requires a repository path as an argument
   - Usage: `./pr-loop.py <repo_path>`
   - Example: `./pr-loop.py /path/to/repo` or `./pr-loop.py .`
-  
+
 - **Repository Validation**: Added comprehensive validation before starting
   - Checks if path exists and is a directory
   - Verifies it's a git repository (has `.git` directory)
   - Tests git commands work in the directory
   - Validates GitHub CLI is authenticated (`gh auth status`)
-  
+
 - **Argument Parsing**: Added `argparse` with helpful usage examples
   - `./pr-loop.py --help` shows usage information
   - Clear error messages for missing or invalid arguments
-  
+
 - **Updated test-prompt.py**: Now also requires repository path
   - Usage: `./test-prompt.py <repo_path> <pr_number>`
   - Example: `./test-prompt.py /path/to/repo 123`
-  
+
 - **Fixed Deprecation Warning**: Updated `datetime.utcnow()` to `datetime.now(timezone.utc)`
   - Removed Python 3.13+ deprecation warning
   - Compatible with Python 3.12+
@@ -425,12 +435,14 @@ repos:
 If you were using the script without arguments (running in current directory):
 
 **Before:**
+
 ```bash
 cd /path/to/repo
 ./pr-loop.py
 ```
 
 **After:**
+
 ```bash
 ./pr-loop.py /path/to/repo
 # or if already in the repo directory:

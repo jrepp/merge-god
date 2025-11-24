@@ -47,11 +47,10 @@ Examples:
 """
 
 import argparse
-import asyncio
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +60,7 @@ import yaml
 def log_json(event_type: str, data: dict[str, Any]) -> None:
     """Emit structured JSON logs with timestamp"""
     log_entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "event": event_type,
         "data": data,
     }
@@ -71,10 +70,10 @@ def log_json(event_type: str, data: dict[str, Any]) -> None:
 def log_text(message: str, level: str = "info") -> None:
     """Emit text log with color"""
     colors = {
-        "info": "\033[0;36m",     # Cyan
+        "info": "\033[0;36m",  # Cyan
         "success": "\033[0;32m",  # Green
         "warning": "\033[1;33m",  # Yellow
-        "error": "\033[0;31m",    # Red
+        "error": "\033[0;31m",  # Red
     }
     reset = "\033[0m"
     prefix = {
@@ -157,7 +156,8 @@ def cmd_agent(args: argparse.Namespace) -> int:
         "./run_agent_from_db.py",
         args.repo,
         str(args.pr),
-        "--mode", args.mode or "for-landing"
+        "--mode",
+        args.mode or "for-landing",
     ]
 
     if args.db:
@@ -194,7 +194,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         if result.returncode == 0:
             log_text("Validation passed", "success")
         else:
-            log_text(f"Validation failed", "error")
+            log_text("Validation failed", "error")
         return result.returncode
     except Exception as e:
         log_text(f"Failed to run validation: {e}", "error")
@@ -242,6 +242,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
         try:
             from db_operations import StateDatabase
+
             db = StateDatabase(db_path)
 
             # Query stats
@@ -260,17 +261,22 @@ def cmd_status(args: argparse.Namespace) -> int:
 
                 if session_count > 0:
                     # Recent session
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT repo_name, pr_number, status, success, duration_seconds
                         FROM agent_sessions
                         ORDER BY started_at DESC
                         LIMIT 1
-                    """)
+                    """
+                    )
                     row = cursor.fetchone()
                     if row:
                         repo, pr, status, success, duration = row
                         status_icon = "✓" if success else "✗"
-                        log_text(f"  Last session: {repo} PR #{pr} - {status} {status_icon} ({duration:.1f}s)", "info")
+                        log_text(
+                            f"  Last session: {repo} PR #{pr} - {status} {status_icon} ({duration:.1f}s)",
+                            "info",
+                        )
 
                 # Total actions
                 cursor.execute("SELECT COUNT(*) FROM agent_actions")
@@ -422,19 +428,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="merge-god - Unified CLI for PR automation pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Run './merge-god.py help' for detailed usage information."
+        epilog="Run './merge-god.py help' for detailed usage information.",
     )
 
     # Global options
     parser.add_argument(
         "--config",
         type=Path,
-        help="Path to config.yaml file"
+        help="Path to config.yaml file",
     )
     parser.add_argument(
         "--db",
         type=Path,
-        help="Path to database file"
+        help="Path to database file",
     )
 
     # Subcommands
@@ -442,7 +448,9 @@ def main() -> int:
 
     # Dashboard command
     dashboard_parser = subparsers.add_parser("dashboard", help="Run TUI dashboard")
-    dashboard_parser.add_argument("--non-interactive", action="store_true", help="Run without prompts")
+    dashboard_parser.add_argument(
+        "--non-interactive", action="store_true", help="Run without prompts"
+    )
     dashboard_parser.add_argument("--log-file", type=str, help="Write logs to file")
 
     # Scan command
@@ -454,7 +462,9 @@ def main() -> int:
     agent_parser = subparsers.add_parser("agent", help="Run agent on cached data")
     agent_parser.add_argument("--repo", type=str, required=True, help="Repository name")
     agent_parser.add_argument("--pr", type=int, required=True, help="PR number")
-    agent_parser.add_argument("--mode", type=str, choices=["for-landing", "for-review"], help="Processing mode")
+    agent_parser.add_argument(
+        "--mode", type=str, choices=["for-landing", "for-review"], help="Processing mode"
+    )
     agent_parser.add_argument("--repo-path", type=Path, help="Repository path")
 
     # Validate command
@@ -464,15 +474,19 @@ def main() -> int:
 
     # Test command
     test_parser = subparsers.add_parser("test", help="Run test suite")
-    test_parser.add_argument("--type", type=str, default="all",
-                            choices=["all", "isolation", "db", "agent"],
-                            help="Test type to run")
+    test_parser.add_argument(
+        "--type",
+        type=str,
+        default="all",
+        choices=["all", "isolation", "db", "agent"],
+        help="Test type to run",
+    )
 
     # Status command
-    status_parser = subparsers.add_parser("status", help="Show system status")
+    subparsers.add_parser("status", help="Show system status")
 
     # Help command
-    help_parser = subparsers.add_parser("help", help="Show detailed help")
+    subparsers.add_parser("help", help="Show detailed help")
 
     args = parser.parse_args()
 

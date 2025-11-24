@@ -76,136 +76,184 @@ async def run_agent_from_db(
     """
     # Validate inputs
     if not repo_name or not isinstance(repo_name, str):
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": "repo_name must be a non-empty string",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": "repo_name must be a non-empty string",
+            },
+        )
         return False
 
     if not isinstance(pr_number, int) or pr_number <= 0:
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": f"pr_number must be a positive integer, got: {pr_number}",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": f"pr_number must be a positive integer, got: {pr_number}",
+            },
+        )
         return False
 
     if mode not in ["for-review", "for-landing"]:
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": f"mode must be 'for-review' or 'for-landing', got: {mode}",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": f"mode must be 'for-review' or 'for-landing', got: {mode}",
+            },
+        )
         return False
 
-    log_json("agent_from_db", {
-        "action": "start",
-        "repo_name": repo_name,
-        "pr_number": pr_number,
-        "mode": mode,
-        "db_path": str(db_path),
-    })
+    log_json(
+        "agent_from_db",
+        {
+            "action": "start",
+            "repo_name": repo_name,
+            "pr_number": pr_number,
+            "mode": mode,
+            "db_path": str(db_path),
+        },
+    )
 
     # Initialize database
     try:
         db = StateDatabase(db_path)
     except Exception as e:
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": f"Failed to initialize database: {e}",
-            "hint": "Check database file exists and is not corrupted",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": f"Failed to initialize database: {e}",
+                "hint": "Check database file exists and is not corrupted",
+            },
+        )
         return False
 
     # Load PR context from database
-    log_json("agent_from_db", {
-        "action": "loading_context",
-        "pr_number": pr_number,
-    })
+    log_json(
+        "agent_from_db",
+        {
+            "action": "loading_context",
+            "pr_number": pr_number,
+        },
+    )
 
     try:
         pr_data = db.get_pr_context_for_agent(repo_name, pr_number)
         if not pr_data:
-            log_json("agent_from_db", {
-                "action": "error",
-                "error": f"No PR context found in database for {repo_name} PR #{pr_number}",
-                "hint": "Run pr-loop.py first to capture PR context, or use the sync script",
-            })
+            log_json(
+                "agent_from_db",
+                {
+                    "action": "error",
+                    "error": f"No PR context found in database for {repo_name} PR #{pr_number}",
+                    "hint": "Run pr-loop.py first to capture PR context, or use the sync script",
+                },
+            )
             return False
 
         pr_details, pr_context_dict = pr_data
 
-        log_json("agent_from_db", {
-            "action": "context_loaded",
-            "pr_number": pr_number,
-            "has_diff": bool(pr_context_dict.get("diff")),
-            "has_comments": bool(pr_context_dict.get("comments")),
-            "has_review_comments": bool(pr_context_dict.get("review_comments")),
-            "has_conflicts": pr_context_dict.get("conflicts", {}).get("has_conflicts", False),
-            "has_failing_ci": pr_context_dict.get("ci_status", {}).get("failed", 0) > 0,
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "context_loaded",
+                "pr_number": pr_number,
+                "has_diff": bool(pr_context_dict.get("diff")),
+                "has_comments": bool(pr_context_dict.get("comments")),
+                "has_review_comments": bool(pr_context_dict.get("review_comments")),
+                "has_conflicts": pr_context_dict.get("conflicts", {}).get("has_conflicts", False),
+                "has_failing_ci": pr_context_dict.get("ci_status", {}).get("failed", 0) > 0,
+            },
+        )
 
     except Exception as e:
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": f"Failed to load PR context: {e}",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": f"Failed to load PR context: {e}",
+            },
+        )
         return False
 
     # Convert to PRContext
-    log_json("agent_from_db", {
-        "action": "building_pr_context",
-        "pr_number": pr_number,
-    })
+    log_json(
+        "agent_from_db",
+        {
+            "action": "building_pr_context",
+            "pr_number": pr_number,
+        },
+    )
 
     try:
         pr_context = PRContext.from_dict(pr_details, pr_context_dict)
 
         # Validate PRContext has required data
         if not pr_context.diff:
-            log_json("agent_from_db", {
-                "action": "warning",
-                "warning": "PR context has no diff - this may be an empty PR or incomplete data",
-            })
+            log_json(
+                "agent_from_db",
+                {
+                    "action": "warning",
+                    "warning": "PR context has no diff - this may be an empty PR or incomplete data",
+                },
+            )
 
         # Log context summary for debugging
-        log_json("agent_from_db", {
-            "action": "context_summary",
-            "pr_number": pr_number,
-            "diff_size": len(pr_context.diff),
-            "comment_count": len(pr_context.general_comments),
-            "review_comment_count": len(pr_context.review_comments),
-            "commit_count": len(pr_context.commits),
-            "file_count": len(pr_context.changed_files),
-            "has_conflicts": pr_context.has_conflicts,
-            "has_failing_ci": pr_context.has_failing_ci,
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "context_summary",
+                "pr_number": pr_number,
+                "diff_size": len(pr_context.diff),
+                "comment_count": len(pr_context.general_comments),
+                "review_comment_count": len(pr_context.review_comments),
+                "commit_count": len(pr_context.commits),
+                "file_count": len(pr_context.changed_files),
+                "has_conflicts": pr_context.has_conflicts,
+                "has_failing_ci": pr_context.has_failing_ci,
+            },
+        )
 
     except Exception as e:
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": f"Failed to build PR context: {e}",
-            "hint": "PR data in database may be incomplete or corrupted",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": f"Failed to build PR context: {e}",
+                "hint": "PR data in database may be incomplete or corrupted",
+            },
+        )
         return False
 
     # Initialize agent client
-    log_json("agent_from_db", {
-        "action": "initializing_agent",
-        "pr_number": pr_number,
-    })
+    log_json(
+        "agent_from_db",
+        {
+            "action": "initializing_agent",
+            "pr_number": pr_number,
+        },
+    )
 
     try:
         client = create_claude_client()
         model = get_model_name()
 
-        log_json("agent_from_db", {
-            "action": "agent_initialized",
-            "model": model,
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "agent_initialized",
+                "model": model,
+            },
+        )
     except Exception as e:
-        log_json("agent_from_db", {
-            "action": "error",
-            "error": f"Failed to initialize agent client: {e}",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "error",
+                "error": f"Failed to initialize agent client: {e}",
+            },
+        )
         return False
 
     # Generate session ID and create session record
@@ -222,16 +270,22 @@ async def run_agent_from_db(
             agent_version="1.0",
         )
         session_id = generated_session_id
-        log_json("agent_from_db", {
-            "action": "session_created",
-            "session_id": session_id,
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "session_created",
+                "session_id": session_id,
+            },
+        )
     except Exception as e:
-        log_json("agent_from_db", {
-            "action": "warning",
-            "warning": f"Failed to create session record: {e}",
-            "hint": "Session telemetry will not be recorded",
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "warning",
+                "warning": f"Failed to create session record: {e}",
+                "hint": "Session telemetry will not be recorded",
+            },
+        )
 
     # Create agent
     agent = PRAgent(
@@ -254,11 +308,14 @@ async def run_agent_from_db(
     )
 
     # Run agent
-    log_json("agent_from_db", {
-        "action": "agent_processing",
-        "pr_number": pr_number,
-        "mode": mode,
-    })
+    log_json(
+        "agent_from_db",
+        {
+            "action": "agent_processing",
+            "pr_number": pr_number,
+            "mode": mode,
+        },
+    )
 
     try:
         result = await agent.process_pr_streaming(
@@ -280,23 +337,29 @@ async def run_agent_from_db(
                     actions_total=len(result.actions),
                 )
             except Exception as e:
-                log_json("agent_from_db", {
-                    "action": "warning",
-                    "warning": f"Failed to update session record: {e}",
-                })
+                log_json(
+                    "agent_from_db",
+                    {
+                        "action": "warning",
+                        "warning": f"Failed to update session record: {e}",
+                    },
+                )
 
-        log_json("agent_from_db", {
-            "action": "complete",
-            "pr_number": pr_number,
-            "session_id": session_id,
-            "success": result.success,
-            "duration": result.duration,
-            "tasks_total": len(result.tasks),
-            "tasks_completed": len([t for t in result.tasks if t.status == "completed"]),
-            "tasks_failed": len([t for t in result.tasks if t.status == "failed"]),
-            "actions_taken": len(result.actions),
-            "mode": mode,
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "complete",
+                "pr_number": pr_number,
+                "session_id": session_id,
+                "success": result.success,
+                "duration": result.duration,
+                "tasks_total": len(result.tasks),
+                "tasks_completed": len([t for t in result.tasks if t.status == "completed"]),
+                "tasks_failed": len([t for t in result.tasks if t.status == "failed"]),
+                "actions_taken": len(result.actions),
+                "mode": mode,
+            },
+        )
 
         return result.success
 
@@ -317,18 +380,24 @@ async def run_agent_from_db(
                     is_transient=False,
                 )
             except Exception as db_error:
-                log_json("agent_from_db", {
-                    "action": "warning",
-                    "warning": f"Failed to record error in session: {db_error}",
-                })
+                log_json(
+                    "agent_from_db",
+                    {
+                        "action": "warning",
+                        "warning": f"Failed to record error in session: {db_error}",
+                    },
+                )
 
-        log_json("agent_from_db", {
-            "action": "exception",
-            "pr_number": pr_number,
-            "session_id": session_id,
-            "error": str(e),
-            "error_type": type(e).__name__,
-        })
+        log_json(
+            "agent_from_db",
+            {
+                "action": "exception",
+                "pr_number": pr_number,
+                "session_id": session_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
         return False
 
 
@@ -391,46 +460,61 @@ cached data from the database, without any GitHub API calls or git fetches.
 
     # Validate database exists
     if not args.db.exists():
-        log_json("error", {
-            "error": f"Database not found: {args.db}",
-            "hint": "Run pr-loop.py first to create and populate the database",
-        })
+        log_json(
+            "error",
+            {
+                "error": f"Database not found: {args.db}",
+                "hint": "Run pr-loop.py first to create and populate the database",
+            },
+        )
         sys.exit(1)
 
     # Validate database is not empty
     try:
         import sqlite3
+
         with sqlite3.connect(args.db) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM pr_context")
             count = cursor.fetchone()[0]
             if count == 0:
-                log_json("warning", {
-                    "warning": "Database has no PR context data",
-                    "hint": "Run pr-loop.py to populate the database with PR data",
-                })
+                log_json(
+                    "warning",
+                    {
+                        "warning": "Database has no PR context data",
+                        "hint": "Run pr-loop.py to populate the database with PR data",
+                    },
+                )
     except Exception as e:
-        log_json("warning", {
-            "warning": f"Could not check database: {e}",
-            "hint": "Database may be corrupted or incomplete",
-        })
+        log_json(
+            "warning",
+            {
+                "warning": f"Could not check database: {e}",
+                "hint": "Database may be corrupted or incomplete",
+            },
+        )
 
     # Validate PR number is positive
     if args.pr_number <= 0:
-        log_json("error", {
-            "error": f"Invalid PR number: {args.pr_number}",
-            "hint": "PR number must be a positive integer",
-        })
+        log_json(
+            "error",
+            {
+                "error": f"Invalid PR number: {args.pr_number}",
+                "hint": "PR number must be a positive integer",
+            },
+        )
         sys.exit(1)
 
     # Run agent
-    success = asyncio.run(run_agent_from_db(
-        db_path=args.db,
-        repo_name=args.repo_name,
-        pr_number=args.pr_number,
-        mode=args.mode,
-        repo_path=args.repo_path,
-    ))
+    success = asyncio.run(
+        run_agent_from_db(
+            db_path=args.db,
+            repo_name=args.repo_name,
+            pr_number=args.pr_number,
+            mode=args.mode,
+            repo_path=args.repo_path,
+        )
+    )
 
     sys.exit(0 if success else 1)
 
@@ -442,8 +526,11 @@ if __name__ == "__main__":
         log_json("shutdown", {"reason": "keyboard_interrupt"})
         sys.exit(130)
     except Exception as e:
-        log_json("fatal_error", {
-            "error": str(e),
-            "error_type": type(e).__name__,
-        })
+        log_json(
+            "fatal_error",
+            {
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
         sys.exit(1)

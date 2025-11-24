@@ -5,11 +5,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-001: Automated PR Processing Loop
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-20
 **Priority**: P0 (Critical)
 
 ### Requirements
+
 - [x] Continuous loop that processes open PRs
 - [x] Exclude draft PRs from processing
 - [x] Exclude WIP-labeled PRs
@@ -19,6 +21,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] Modern Python 3.12+ with uv shebang support
 
 ### Success Criteria
+
 - Script runs indefinitely without crashing
 - All operations logged as structured JSON
 - PRs processed in order with proper filtering
@@ -26,11 +29,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-002: Comprehensive PR Context Gathering
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-20
 **Priority**: P0 (Critical)
 
 ### Requirements
+
 - [x] Fetch full PR details (title, description, author, dates)
 - [x] Gather all discussion comments
 - [x] Gather all inline code review comments
@@ -41,6 +46,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] Retrieve full PR diff
 
 ### Success Criteria
+
 - Agent receives complete context before processing
 - All relevant PR information included in prompt
 - No manual context gathering needed
@@ -48,11 +54,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-003: Security and Resilience
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-20
 **Priority**: P0 (Critical)
 
 ### Requirements
+
 - [x] Input validation (branch names, ref validation)
 - [x] Type safety (validate JSON structures)
 - [x] Resource limits (50MB output cap)
@@ -62,6 +70,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] PR deduplication tracking
 
 ### Success Criteria
+
 - No command injection vulnerabilities
 - Graceful handling of malformed data
 - Memory-safe operation on large PRs
@@ -70,11 +79,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-004: Label-Based Processing Control
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-21
 **Priority**: P0 (Critical)
 
 ### Requirements
+
 - [x] `for-landing` label: Basic PR processing
   - Resolve merge conflicts
   - Address code review comments
@@ -87,6 +98,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] Categorize PRs by label at fetch time
 
 ### Success Criteria
+
 - PRs processed according to their labels
 - Two-pass system works for `for-review` PRs
 - Unlabeled PRs are skipped
@@ -95,11 +107,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-005: Real-Time Notifications
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-21
 **Priority**: P1 (High)
 
 ### Requirements
+
 - [x] Send notifications to ntfy.sh topic
 - [x] Notify on processing start
 - [x] Notify on processing complete
@@ -109,6 +123,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] No external dependencies (use urllib)
 
 ### Success Criteria
+
 - Notifications delivered within seconds of events
 - Different priorities for success vs failure
 - Mobile/desktop/web notification support
@@ -117,11 +132,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-006: Testing and Documentation
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-20
 **Priority**: P1 (High)
 
 ### Requirements
+
 - [x] Unit tests for validation functions
 - [x] Test prompt generation utility
 - [x] Comprehensive README documentation
@@ -130,6 +147,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] Usage examples and troubleshooting
 
 ### Success Criteria
+
 - All tests pass
 - Documentation covers all features
 - New users can set up and run system
@@ -138,11 +156,13 @@ This document tracks product requirements and features for the merge-god PR auto
 ---
 
 ## PRD-007: TUI Dashboard with Multi-Repo Support
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-21
 **Priority**: P1 (High)
 
 ### Requirements
+
 - [x] TUI (Text User Interface) dashboard for monitoring
 - [x] Support for multiple repositories via config file
 - [x] Real-time display of PR processing status
@@ -154,6 +174,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] Live updates without refreshing
 
 ### Success Criteria
+
 - Dashboard displays all configured repos
 - Shows live processing status for each repo
 - Updates in real-time as PRs are processed
@@ -162,6 +183,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - Works well in tmux sessions
 
 ### Configuration Format
+
 ```yaml
 repos:
   - path: /path/to/repo1
@@ -175,11 +197,13 @@ repos:
 ---
 
 ## PRD-008: Interactive Bootstrap Wizard
+
 **Status**: ✅ Implemented
 **Date**: 2025-11-21
 **Priority**: P1 (High)
 
 ### Requirements
+
 - [x] Detect missing config file
 - [x] Offer interactive setup
 - [x] Prompt for repository paths
@@ -193,6 +217,7 @@ repos:
 - [x] Optional dry-run validation after creation
 
 ### Success Criteria
+
 - New users can run `./dashboard.py` without any config file
 - Wizard validates inputs as they're entered
 - Generated config file is properly formatted
@@ -200,6 +225,7 @@ repos:
 - Works with any config file name (not just config.yaml)
 
 ### User Flow
+
 1. User runs dashboard without config file
 2. Dashboard detects missing config and prompts
 3. User confirms they want to create config
@@ -217,40 +243,48 @@ repos:
 ## Future PRD Ideas (Not Prioritized)
 
 ### PRD-XXX: Merge Automation
+
 **Status**: 💡 Idea
 **Priority**: TBD
 
 Auto-merge PRs after successful processing if:
+
 - All CI checks pass
 - Reviews approved
 - No conflicts
 - Label: `auto-merge`
 
 ### PRD-XXX: Metrics and Analytics
+
 **Status**: 💡 Idea
 **Priority**: TBD
 
 Track metrics:
+
 - PRs processed per day
 - Success/failure rates
 - Average processing time
 - Most common failure reasons
 
 ### PRD-XXX: Web Dashboard
+
 **Status**: 💡 Idea
 **Priority**: TBD
 
 Simple web UI to:
+
 - View processing status
 - See recent activity
 - Manually trigger processing
 - Export logs
 
 ### PRD-XXX: Templated Prompts
+
 **Status**: 💡 Idea
 **Priority**: TBD
 
 Add templating system for prompts:
+
 - Template files for different processing scenarios
 - Variable substitution (PR details, context, etc.)
 - Per-repo custom templates

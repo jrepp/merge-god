@@ -14,14 +14,17 @@ from typing import NotRequired, TypedDict
 # Enums
 # ============================================================================
 
+
 class ProcessingMode(str, Enum):
     """PR processing modes"""
+
     FOR_REVIEW = "for-review"
     FOR_LANDING = "for-landing"
 
 
 class AgentStatus(str, Enum):
     """Agent execution status"""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -31,6 +34,7 @@ class AgentStatus(str, Enum):
 
 class TaskStatus(str, Enum):
     """Task execution status"""
+
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -39,6 +43,7 @@ class TaskStatus(str, Enum):
 
 class ActionType(str, Enum):
     """Agent action types"""
+
     READ_FILE = "read_file"
     EDIT_FILE = "edit_file"
     LIST_FILES = "list_files"
@@ -48,6 +53,7 @@ class ActionType(str, Enum):
 
 class ProcessStatus(str, Enum):
     """Process execution status"""
+
     IDLE = "idle"
     RUNNING = "running"
     STOPPED = "stopped"
@@ -58,8 +64,10 @@ class ProcessStatus(str, Enum):
 # Configuration Types
 # ============================================================================
 
+
 class RepoConfig(TypedDict):
     """Repository configuration"""
+
     name: str
     path: str
     enabled: bool
@@ -69,6 +77,7 @@ class RepoConfig(TypedDict):
 
 class Config(TypedDict):
     """Application configuration"""
+
     repos: list[RepoConfig]
     default_mode: NotRequired[str]
     model: NotRequired[str]
@@ -79,8 +88,10 @@ class Config(TypedDict):
 # PR Context Types
 # ============================================================================
 
+
 class PRComment(TypedDict):
     """PR comment data"""
+
     id: int
     author: str
     body: str
@@ -90,6 +101,7 @@ class PRComment(TypedDict):
 
 class ReviewComment(TypedDict):
     """PR review comment data"""
+
     id: int
     author: str
     body: str
@@ -100,6 +112,7 @@ class ReviewComment(TypedDict):
 
 class CommitInfo(TypedDict):
     """Commit information"""
+
     sha: str
     message: str
     author: str
@@ -108,6 +121,7 @@ class CommitInfo(TypedDict):
 
 class FileChange(TypedDict):
     """File change information"""
+
     filename: str
     status: str
     additions: int
@@ -118,6 +132,7 @@ class FileChange(TypedDict):
 
 class ConflictInfo(TypedDict):
     """Merge conflict information"""
+
     has_conflicts: bool
     conflicting_files: list[str]
     conflict_count: NotRequired[int]
@@ -126,6 +141,7 @@ class ConflictInfo(TypedDict):
 
 class CIStatusInfo(TypedDict):
     """CI status information"""
+
     total: int
     passed: int
     failed: int
@@ -135,6 +151,7 @@ class CIStatusInfo(TypedDict):
 
 class PRDetails(TypedDict):
     """PR details from GitHub API"""
+
     number: int
     title: str
     body: NotRequired[str]
@@ -148,6 +165,7 @@ class PRDetails(TypedDict):
 
 class PRContextDict(TypedDict):
     """Complete PR context for agent processing"""
+
     url: str
     comments: list[PRComment]
     review_comments: list[ReviewComment]
@@ -164,8 +182,10 @@ class PRContextDict(TypedDict):
 # Agent Types
 # ============================================================================
 
+
 class ActionDetails(TypedDict, total=False):
     """Details for agent actions (total=False means all fields are optional)"""
+
     path: str
     pattern: str
     changes: list[dict[str, str]]
@@ -176,6 +196,7 @@ class ActionDetails(TypedDict, total=False):
 
 class ToolResult(TypedDict):
     """Result from tool execution"""
+
     success: bool
     data: NotRequired[dict[str, str | int | list[str]]]
     error: NotRequired[str]
@@ -183,6 +204,7 @@ class ToolResult(TypedDict):
 
 class AgentActionDict(TypedDict):
     """Agent action dictionary"""
+
     type: str
     details: ActionDetails
     status: str
@@ -191,6 +213,7 @@ class AgentActionDict(TypedDict):
 
 class SessionStats(TypedDict):
     """Agent session statistics"""
+
     tasks_total: int
     tasks_completed: int
     tasks_failed: int
@@ -205,8 +228,10 @@ class SessionStats(TypedDict):
 # Event/Log Types
 # ============================================================================
 
+
 class LogEvent(TypedDict):
     """Structured log event"""
+
     timestamp: str
     event: str
     data: dict[str, str | int | bool | list[str]]
@@ -214,18 +239,21 @@ class LogEvent(TypedDict):
 
 class ThinkingEvent(TypedDict):
     """Agent thinking event"""
+
     type: str  # "thinking"
     content: str
 
 
 class ActionEvent(TypedDict):
     """Agent action event"""
+
     type: str  # "action"
     action: AgentActionDict
 
 
 class ErrorEvent(TypedDict):
     """Agent error event"""
+
     type: str  # "error"
     error: str
 
@@ -234,8 +262,10 @@ class ErrorEvent(TypedDict):
 # Database Types
 # ============================================================================
 
+
 class PRSnapshot(TypedDict):
     """PR snapshot from database"""
+
     id: int
     repo_name: str
     pr_number: int
@@ -251,6 +281,7 @@ class PRSnapshot(TypedDict):
 
 class AgentSessionRecord(TypedDict):
     """Agent session database record"""
+
     id: int
     repo_name: str
     pr_number: int
@@ -276,6 +307,7 @@ class AgentSessionRecord(TypedDict):
 
 class FileOperationRecord(TypedDict):
     """File operation database record"""
+
     id: int
     session_id: str
     action_id: NotRequired[int]
@@ -293,8 +325,10 @@ class FileOperationRecord(TypedDict):
 # Dashboard Types
 # ============================================================================
 
+
 class PRQueueItem(TypedDict):
     """PR in the processing queue"""
+
     number: int
     title: str
     author: str
@@ -306,6 +340,7 @@ class PRQueueItem(TypedDict):
 
 class DashboardState(TypedDict):
     """Dashboard state"""
+
     prs_processed: int
     successes: int
     failures: int
@@ -314,6 +349,7 @@ class DashboardState(TypedDict):
 
 class ProcessingHistoryItem(TypedDict):
     """Processing history item"""
+
     id: int
     repo_name: str
     pr_number: int
@@ -329,8 +365,10 @@ class ProcessingHistoryItem(TypedDict):
 # Validation Types
 # ============================================================================
 
+
 class ValidationResult(TypedDict):
     """Validation result"""
+
     name: str
     valid: bool
     errors: list[str]
@@ -340,6 +378,7 @@ class ValidationResult(TypedDict):
 
 class ProcessValidationResults(TypedDict):
     """Process validation results"""
+
     process_1: ValidationResult
     process_2: ValidationResult
     process_3: ValidationResult
@@ -349,9 +388,11 @@ class ProcessValidationResults(TypedDict):
 # Dataclasses for Complex Structures
 # ============================================================================
 
+
 @dataclass
 class GitHubCredentials:
     """GitHub authentication credentials"""
+
     token: str
     api_url: str = "https://api.github.com"
 
@@ -359,6 +400,7 @@ class GitHubCredentials:
 @dataclass
 class AgentConfig:
     """Agent configuration"""
+
     model: str
     mode: ProcessingMode
     repo_path: str
@@ -370,6 +412,7 @@ class AgentConfig:
 @dataclass
 class ProcessingMetrics:
     """Processing metrics"""
+
     start_time: datetime
     end_time: datetime | None = None
     total_prs: int = 0

@@ -5,24 +5,17 @@ This module combines data from git and GitHub to create a unified view
 of repository state, matching branches with their corresponding PRs.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from models import (
-    Branch,
-    BranchPRState,
-    BranchStatus,
-    RepositoryState,
-    PullRequest,
-)
 from git_ops import GitOperations, GitOperationsError
 from github_ops import GitHubOperations, GitHubOperationsError
+from models import Branch, BranchPRState, PullRequest, RepositoryState
 
 
 class StateTrackerError(Exception):
     """Exception raised for state tracker errors"""
-    pass
 
 
 class StateTracker:
@@ -69,7 +62,7 @@ class StateTracker:
     def build_repository_state(
         self,
         fetch_first: bool = True,
-        include_closed_prs: bool = False
+        include_closed_prs: bool = False,
     ) -> RepositoryState:
         """
         Build complete repository state by correlating branches and PRs.
@@ -96,7 +89,7 @@ class StateTracker:
         # Create repository state
         repo_state = RepositoryState(
             repo_path=str(self.repo_path),
-            default_branch=default_branch
+            default_branch=default_branch,
         )
 
         # Get branches
@@ -119,15 +112,15 @@ class StateTracker:
             repo_state=repo_state,
             local_branches=local_branches,
             remote_branches=remote_branches,
-            prs=prs
+            prs=prs,
         )
 
         # Update timestamp
-        repo_state.last_updated = datetime.now(timezone.utc)
+        repo_state.last_updated = datetime.now(UTC)
 
         # Cache the state
         self._cached_state = repo_state
-        self._cache_time = datetime.now(timezone.utc)
+        self._cache_time = datetime.now(UTC)
 
         return repo_state
 
@@ -136,7 +129,7 @@ class StateTracker:
         repo_state: RepositoryState,
         local_branches: list[Branch],
         remote_branches: list[Branch],
-        prs: list[PullRequest]
+        prs: list[PullRequest],
     ) -> None:
         """
         Correlate branches with PRs and add to repository state.
@@ -154,7 +147,7 @@ class StateTracker:
             prs: List of pull requests
         """
         # Build lookup maps for efficient matching
-        local_lookup = {branch.name: branch for branch in local_branches}
+        {branch.name: branch for branch in local_branches}
         remote_lookup = {branch.name: branch for branch in remote_branches}
         pr_lookup = {pr.head_branch: pr for pr in prs}
 
@@ -171,7 +164,7 @@ class StateTracker:
                 branch_name=branch_name,
                 local_branch=local_branch,
                 remote_branch=remote_branch,
-                pr=pr
+                pr=pr,
             )
 
             repo_state.add_state(state)
@@ -190,7 +183,7 @@ class StateTracker:
                 branch_name=branch_name,
                 local_branch=None,
                 remote_branch=remote_branch,
-                pr=pr
+                pr=pr,
             )
 
             repo_state.add_state(state)
@@ -204,14 +197,14 @@ class StateTracker:
                     branch_name=pr.head_branch,
                     local_branch=None,
                     remote_branch=None,
-                    pr=pr
+                    pr=pr,
                 )
 
                 repo_state.add_state(state)
 
     def get_cached_state(
         self,
-        max_age_seconds: int | None = None
+        max_age_seconds: int | None = None,
     ) -> RepositoryState | None:
         """
         Get cached state if available and not too old.
@@ -226,7 +219,7 @@ class StateTracker:
             return None
 
         if max_age_seconds is not None:
-            age = (datetime.now(timezone.utc) - self._cache_time).total_seconds()
+            age = (datetime.now(UTC) - self._cache_time).total_seconds()
             if age > max_age_seconds:
                 return None
 
@@ -240,7 +233,7 @@ class StateTracker:
     def get_or_build_state(
         self,
         max_cache_age: int = 60,
-        fetch_first: bool = True
+        fetch_first: bool = True,
     ) -> RepositoryState:
         """
         Get cached state or build new one if cache is stale.

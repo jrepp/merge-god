@@ -5,9 +5,11 @@ This document summarizes all the correctness and resilience improvements applied
 ## Critical Fixes (High Priority)
 
 ### 1. ✅ Type Validation After JSON Parsing
+
 **Issue:** Script assumed JSON responses were always lists/dicts without validation.
 
 **Fix:**
+
 - Added `isinstance()` checks after all `json.loads()` calls
 - Validate expected type (list vs dict) before processing
 - Log errors with type information when validation fails
@@ -25,9 +27,11 @@ if not isinstance(all_prs, list):
 ```
 
 ### 2. ✅ Safe Dictionary Access
+
 **Issue:** Direct dictionary access with `pr["key"]` would raise `KeyError` if field missing.
 
 **Fix:**
+
 - Replaced all direct access with `.get()` with appropriate defaults
 - Added validation for required fields before processing
 - Return early with error logging if required fields missing
@@ -46,9 +50,11 @@ if not pr_number or not head_branch:
 ```
 
 ### 3. ✅ Input Validation and Sanitization
+
 **Issue:** Branch names used directly in shell commands without validation (command injection risk).
 
 **Fix:**
+
 - Added `validate_git_ref()` function to check branch names
 - Validates against unsafe characters and patterns
 - Checks length and format
@@ -66,9 +72,11 @@ def validate_git_ref(ref: str) -> bool:
 ```
 
 ### 4. ✅ Dynamic Default Branch Detection
+
 **Issue:** Hardcoded "main" branch fails for repos using "master" or other names.
 
 **Fix:**
+
 - Added `detect_default_branch()` function
 - Tries `git symbolic-ref` first
 - Falls back to checking common names (main, master, develop)
@@ -85,9 +93,11 @@ def detect_default_branch() -> str:
 ```
 
 ### 5. ✅ Resource Limits and Output Size Control
+
 **Issue:** Large command outputs could exhaust memory.
 
 **Fix:**
+
 - Added `max_output_size` parameter to `run_command()` (default 50MB)
 - Truncates stdout/stderr if exceeds limit
 - Logs warnings when truncation occurs
@@ -106,9 +116,11 @@ if stdout_size > max_output_size:
 ## Important Improvements (Medium Priority)
 
 ### 6. ✅ Configurable Timeouts
+
 **Issue:** All commands used same 1-hour timeout regardless of expected duration.
 
 **Fix:**
+
 - Made timeout configurable per command
 - Short timeout (10s) for quick commands (branch detection)
 - Medium timeout (60-120s) for git operations
@@ -128,9 +140,11 @@ process_pr() -> bob command: timeout=3600
 ```
 
 ### 7. ✅ Better Error Handling
+
 **Issue:** Errors were silently caught and ignored in some places.
 
 **Fix:**
+
 - More specific exception handling
 - Added `FileNotFoundError` catch for missing commands
 - Better error messages with context
@@ -146,9 +160,11 @@ except Exception as e:
 ```
 
 ### 8. ✅ Checked Git Fetch Results
+
 **Issue:** `check_merge_conflicts()` didn't verify fetch succeeded before using refs.
 
 **Fix:**
+
 - Check returncode from `git fetch`
 - Return error state if fetch fails
 - Log detailed error information
@@ -165,9 +181,11 @@ if returncode != 0:
 ```
 
 ### 9. ✅ Improved Conflict Detection
+
 **Issue:** Simple substring search for "<<<<<" could have false positives.
 
 **Fix:**
+
 - Check that line starts with conflict marker
 - Count conflict markers for validation
 - More robust file extraction logic
@@ -184,9 +202,11 @@ has_conflicts = conflict_marker_count > 0
 ```
 
 ### 10. ✅ PR Deduplication
+
 **Issue:** PRs could be processed multiple times if iteration takes > 5 minutes.
 
 **Fix:**
+
 - Track processing PRs in a set
 - Skip PRs already being processed
 - Clear set between iterations when no PRs
@@ -205,9 +225,11 @@ for pr in prs:
 ## Additional Improvements
 
 ### 11. ✅ Safe SHA Slicing
+
 **Issue:** `commit.get("sha", "")[:7]` could fail on short/missing SHAs.
 
 **Fix:**
+
 ```python
 # Before
 sha = commit.get("sha", "")[:7]
@@ -218,9 +240,11 @@ short_sha = sha[:7] if sha and len(sha) >= 7 else (sha if sha else "unknown")
 ```
 
 ### 12. ✅ Empty Response Handling
+
 **Issue:** Didn't check if command output was empty before parsing JSON.
 
 **Fix:**
+
 ```python
 if not stdout or not stdout.strip():
     log_json("fetch_prs", {"action": "empty_response"})
@@ -228,9 +252,11 @@ if not stdout or not stdout.strip():
 ```
 
 ### 13. ✅ Required Field Validation in PR List
+
 **Issue:** Assumed all PR objects had required fields.
 
 **Fix:**
+
 ```python
 # Validate required fields exist
 if not all(key in pr for key in ["number", "headRefName", "url"]):
@@ -239,9 +265,11 @@ if not all(key in pr for key in ["number", "headRefName", "url"]):
 ```
 
 ### 14. ✅ Safe Label Extraction
+
 **Issue:** Assumed labels had "name" field.
 
 **Fix:**
+
 ```python
 # Before
 labels = [label["name"].lower() for label in pr.get("labels", [])]
@@ -254,9 +282,11 @@ for label in pr.get("labels", []):
 ```
 
 ### 15. ✅ PR Details Validation
+
 **Issue:** Could build prompt with empty pr_details dict.
 
 **Fix:**
+
 ```python
 if not pr_details or not isinstance(pr_details, dict):
     log_json("process_pr", {
@@ -270,6 +300,7 @@ if not pr_details or not isinstance(pr_details, dict):
 ## Testing
 
 All fixes have been validated:
+
 - ✅ Python syntax check passes
 - ✅ Script starts successfully
 - ✅ Branch detection works with fallback
@@ -290,6 +321,7 @@ All fixes have been validated:
 ## Impact
 
 The script is now significantly more resilient:
+
 1. **No crashes** from unexpected API responses
 2. **No command injection** vulnerabilities
 3. **No memory exhaustion** from large outputs

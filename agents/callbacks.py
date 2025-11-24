@@ -5,8 +5,9 @@ This module provides callback implementations for different contexts
 (logging, notifications, dashboard updates, etc.)
 """
 
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from .claude_agent import AgentAction, AgentCallbacks
 
@@ -23,7 +24,7 @@ class PRProcessingCallbacks:
         pr_number: int,
         log_json: Callable[[str, dict[str, Any]], None],
         send_notification: Callable[[str, str | None, str, list[str] | None], bool] | None = None,
-        max_retries: int = 3
+        max_retries: int = 3,
     ):
         self.pr_number = pr_number
         self.log_json = log_json
@@ -40,25 +41,31 @@ class PRProcessingCallbacks:
         """Agent is thinking/planning"""
         # Log abbreviated thinking to avoid spam
         if len(content) > 50:
-            self.log_json("agent_thinking", {
-                "pr_number": self.pr_number,
-                "task": self.current_task,
-                "content": content[:100] + "...",
-                "full_length": len(content)
-            })
+            self.log_json(
+                "agent_thinking",
+                {
+                    "pr_number": self.pr_number,
+                    "task": self.current_task,
+                    "content": content[:100] + "...",
+                    "full_length": len(content),
+                },
+            )
 
     def on_action(self, action: AgentAction) -> None:
         """Agent is taking an action"""
         self.action_count += 1
 
-        self.log_json("agent_action", {
-            "pr_number": self.pr_number,
-            "action_number": self.action_count,
-            "action_type": action.type,
-            "target": action.target,
-            "status": action.status,
-            "timestamp": action.timestamp.isoformat()
-        })
+        self.log_json(
+            "agent_action",
+            {
+                "pr_number": self.pr_number,
+                "action_number": self.action_count,
+                "action_type": action.type,
+                "target": action.target,
+                "status": action.status,
+                "timestamp": action.timestamp.isoformat(),
+            },
+        )
 
         # Send notification for important actions
         if action.type in ["git_commit", "gh_comment", "merge_pr"]:
@@ -67,19 +74,24 @@ class PRProcessingCallbacks:
                     f"PR #{self.pr_number}: {action.type}",
                     f"Agent performed {action.type} on {action.target}",
                     "default",
-                    ["robot", "white_check_mark"] if action.status == "completed" else ["robot", "warning"]
+                    ["robot", "white_check_mark"]
+                    if action.status == "completed"
+                    else ["robot", "warning"],
                 )
 
     def on_progress(self, current: int, total: int) -> None:
         """Progress update"""
         percentage = (current / total) * 100 if total > 0 else 0
 
-        self.log_json("agent_progress", {
-            "pr_number": self.pr_number,
-            "current": current,
-            "total": total,
-            "percentage": round(percentage, 1)
-        })
+        self.log_json(
+            "agent_progress",
+            {
+                "pr_number": self.pr_number,
+                "current": current,
+                "total": total,
+                "percentage": round(percentage, 1),
+            },
+        )
 
     def on_error(self, error: Exception) -> bool:
         """
@@ -109,61 +121,71 @@ class PRProcessingCallbacks:
         # Determine if we should retry
         should_retry = is_transient and self.retry_count < self.max_retries
 
-        self.log_json("agent_error", {
-            "pr_number": self.pr_number,
-            "task": self.current_task,
-            "error": error_msg,
-            "error_type": error_type,
-            "action_count": self.action_count,
-            "error_count": self.error_count,
-            "retry_count": self.retry_count,
-            "is_transient": is_transient,
-            "will_retry": should_retry
-        })
+        self.log_json(
+            "agent_error",
+            {
+                "pr_number": self.pr_number,
+                "task": self.current_task,
+                "error": error_msg,
+                "error_type": error_type,
+                "action_count": self.action_count,
+                "error_count": self.error_count,
+                "retry_count": self.retry_count,
+                "is_transient": is_transient,
+                "will_retry": should_retry,
+            },
+        )
 
         if should_retry:
             self.retry_count += 1
-            backoff_delay = min(2 ** self.retry_count, 32)  # Max 32 seconds
+            backoff_delay = min(2**self.retry_count, 32)  # Max 32 seconds
 
-            self.log_json("agent_retry", {
-                "pr_number": self.pr_number,
-                "task": self.current_task,
-                "retry_attempt": self.retry_count,
-                "max_retries": self.max_retries,
-                "backoff_seconds": backoff_delay
-            })
+            self.log_json(
+                "agent_retry",
+                {
+                    "pr_number": self.pr_number,
+                    "task": self.current_task,
+                    "retry_attempt": self.retry_count,
+                    "max_retries": self.max_retries,
+                    "backoff_seconds": backoff_delay,
+                },
+            )
 
             if self.send_notification:
                 self.send_notification(
                     f"PR #{self.pr_number}: Retrying after error",
                     f"Attempt {self.retry_count}/{self.max_retries}, waiting {backoff_delay}s",
                     "default",
-                    ["warning", "arrows_counterclockwise"]
+                    ["warning", "arrows_counterclockwise"],
                 )
 
             time.sleep(backoff_delay)
             return True  # Continue/retry
 
-        else:
-            # Permanent error or max retries exceeded
-            self.log_json("agent_abort", {
+        # Permanent error or max retries exceeded
+        self.log_json(
+            "agent_abort",
+            {
                 "pr_number": self.pr_number,
                 "task": self.current_task,
                 "reason": "max_retries_exceeded" if is_transient else "permanent_error",
                 "total_errors": self.error_count,
-                "total_retries": self.retry_count
-            })
+                "total_retries": self.retry_count,
+            },
+        )
 
-            if self.send_notification:
-                reason = f"Max retries ({self.max_retries}) exceeded" if is_transient else "Permanent error"
-                self.send_notification(
-                    f"PR #{self.pr_number}: Agent Aborted",
-                    f"{reason}: {error_msg[:100]}",
-                    "high",
-                    ["x", "warning"]
-                )
+        if self.send_notification:
+            reason = (
+                f"Max retries ({self.max_retries}) exceeded" if is_transient else "Permanent error"
+            )
+            self.send_notification(
+                f"PR #{self.pr_number}: Agent Aborted",
+                f"{reason}: {error_msg[:100]}",
+                "high",
+                ["x", "warning"],
+            )
 
-            return False  # Abort
+        return False  # Abort
 
 
 class DashboardCallbacks:
@@ -200,17 +222,17 @@ class DashboardCallbacks:
             "edit_file": "✏️",
             "run_tests": "🧪",
             "git_commit": "💾",
-            "gh_comment": "💬"
+            "gh_comment": "💬",
         }.get(action.type, "⚙️")
 
         status_emoji = {
             "executing": "⏳",
             "completed": "✅",
-            "failed": "❌"
+            "failed": "❌",
         }.get(action.status, "❓")
 
         self.monitor.logs.append(
-            f"{action_emoji} {status_emoji} {action.type}: {action.target[:40]}"
+            f"{action_emoji} {status_emoji} {action.type}: {action.target[:40]}",
         )
 
     def on_progress(self, current: int, total: int) -> None:
@@ -274,9 +296,9 @@ class LoggingCallbacks:
     def _log(self, event_type: str, data: dict[str, Any]) -> None:
         """Log an event"""
         event = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "type": event_type,
-            "data": data
+            "data": data,
         }
         self.events.append(event)
 
@@ -286,18 +308,22 @@ class LoggingCallbacks:
         # Write to file if configured
         if self.log_file:
             import json
-            with open(self.log_file, 'a') as f:
+
+            with open(self.log_file, "a") as f:
                 f.write(json.dumps(event) + "\n")
 
     def on_thinking(self, content: str) -> None:
         self._log("thinking", {"content": content[:100]})
 
     def on_action(self, action: AgentAction) -> None:
-        self._log("action", {
-            "type": action.type,
-            "target": action.target,
-            "status": action.status
-        })
+        self._log(
+            "action",
+            {
+                "type": action.type,
+                "target": action.target,
+                "status": action.status,
+            },
+        )
 
     def on_progress(self, current: int, total: int) -> None:
         self._log("progress", {"current": current, "total": total})

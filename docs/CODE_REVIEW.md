@@ -3,7 +3,8 @@
 ## Critical Issues
 
 ### 1. **Unsafe Dictionary Access**
-**Severity: HIGH**
+
+#### Severity: HIGH
 
 ```python
 # Line 725-728: Direct dictionary access without defaults
@@ -17,7 +18,8 @@ url = pr["url"]  # KeyError if missing
 **Fix:** Use `.get()` with sensible defaults and validate.
 
 ### 2. **Type Validation Missing**
-**Severity: HIGH**
+
+#### Severity: HIGH
 
 ```python
 # Line 67: Assumes JSON is a list
@@ -30,7 +32,8 @@ for pr in all_prs:  # TypeError if not iterable
 **Fix:** Validate types after parsing JSON.
 
 ### 3. **Hardcoded Branch Name**
-**Severity: MEDIUM**
+
+#### Severity: MEDIUM
 
 ```python
 # Lines 364, 369, 402, 727: Assumes "main" branch
@@ -42,7 +45,8 @@ returncode, stdout, stderr = run_command(["git", "checkout", "main"])
 **Fix:** Detect default branch dynamically.
 
 ### 4. **Resource Exhaustion**
-**Severity: MEDIUM**
+
+#### Severity: MEDIUM
 
 ```python
 # Line 703: Stores entire diff in memory
@@ -54,7 +58,8 @@ context["diff"] = get_pr_diff(pr_number)  # Could be 100s of MB
 **Fix:** Add size limits or stream to disk.
 
 ### 5. **Shell Injection Risk**
-**Severity: MEDIUM**
+
+#### Severity: MEDIUM
 
 ```python
 # Line 215-217: Branch names used in shell commands
@@ -70,7 +75,8 @@ run_command([
 **Fix:** Validate branch names match git ref format.
 
 ### 6. **Error Swallowing**
-**Severity: MEDIUM**
+
+#### Severity: MEDIUM
 
 ```python
 # Line 62-64: Returns empty list on errors
@@ -84,7 +90,8 @@ if returncode != 0:
 **Fix:** Distinguish between "no PRs" and "error fetching PRs".
 
 ### 7. **Unchecked Fetch Result**
-**Severity: LOW**
+
+#### Severity: LOW
 
 ```python
 # Line 210-211: Fetch result not checked before use
@@ -100,7 +107,8 @@ returncode, stdout, stderr = run_command([...])  # Uses fetched refs
 ## Medium Issues
 
 ### 8. **Fragile Conflict Detection**
-**Severity: MEDIUM**
+
+#### Severity: MEDIUM
 
 ```python
 # Line 220: Simple string search
@@ -112,7 +120,8 @@ has_conflicts = "<<<<<" in stdout if returncode == 0 else False
 **Fix:** Use more robust conflict detection or git status.
 
 ### 9. **Array Index Out of Bounds**
-**Severity: LOW**
+
+#### Severity: LOW
 
 ```python
 # Line 579: Assumes SHA is at least 7 chars
@@ -124,7 +133,8 @@ sha = commit.get("sha", "")[:7]  # Could be empty string
 **Fix:** Add length check: `sha[:7] if len(sha) >= 7 else sha`
 
 ### 10. **Missing Field Validation**
-**Severity: LOW**
+
+#### Severity: LOW
 
 ```python
 # Line 78: Assumes label has "name" field
@@ -138,7 +148,8 @@ labels = [label["name"].lower() for label in pr.get("labels", [])]
 ## Low Issues
 
 ### 11. **Long Timeout**
-**Severity: LOW**
+
+#### Severity: LOW
 
 ```python
 # Line 43: 1 hour timeout for ALL commands
@@ -150,7 +161,8 @@ timeout=3600,  # 1 hour timeout
 **Fix:** Use different timeouts for different command types.
 
 ### 12. **Global State Change**
-**Severity: LOW**
+
+#### Severity: LOW
 
 ```python
 # Line 874: Changes working directory globally
@@ -162,14 +174,16 @@ os.chdir(repo_path)
 **Fix:** Not critical, but could use `cwd=` parameter throughout instead.
 
 ### 13. **No PR Deduplication**
-**Severity: LOW**
+
+#### Severity: LOW
 
 **Impact:** If PR processing takes > 5 minutes, same PR could be processed twice.
 
 **Fix:** Track currently processing PRs in a set.
 
 ### 14. **Silent Exception Handling**
-**Severity: LOW**
+
+#### Severity: LOW
 
 ```python
 # Line 393: Broad exception catch
@@ -184,6 +198,7 @@ except Exception:
 ## Recommendations
 
 ### Immediate Fixes (Critical)
+
 1. Add type validation after JSON parsing
 2. Use `.get()` for all dictionary access with appropriate defaults
 3. Detect default branch dynamically instead of hardcoding "main"
@@ -191,6 +206,7 @@ except Exception:
 5. Add data structure validation
 
 ### Important Improvements (Medium)
+
 1. Add size limits for diffs and command outputs
 2. Check git fetch results before using refs
 3. Improve conflict detection robustness
@@ -198,6 +214,7 @@ except Exception:
 5. Better error propagation vs. silent failures
 
 ### Nice to Have (Low)
+
 1. Configurable timeouts per command type
 2. Use cwd parameter instead of os.chdir()
 3. More specific exception handling

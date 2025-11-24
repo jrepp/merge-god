@@ -48,25 +48,31 @@ class PRProcessingCallbacks:
         """Agent is thinking/planning"""
         # Log abbreviated thinking to avoid spam
         if len(content) > MAX_THINKING_PREVIEW_LENGTH:
-            self.log_json("agent_thinking", {
-                "pr_number": self.pr_number,
-                "task": self.current_task,
-                "content": content[:MAX_THINKING_LOG_LENGTH] + "...",
-                "full_length": len(content),
-            })
+            self.log_json(
+                "agent_thinking",
+                {
+                    "pr_number": self.pr_number,
+                    "task": self.current_task,
+                    "content": content[:MAX_THINKING_LOG_LENGTH] + "...",
+                    "full_length": len(content),
+                },
+            )
 
     def on_action(self, action: AgentAction) -> None:
         """Agent is taking an action"""
         self.action_count += 1
 
-        self.log_json("agent_action", {
-            "pr_number": self.pr_number,
-            "action_number": self.action_count,
-            "action_type": action.type,
-            "target": action.target,
-            "status": action.status,
-            "timestamp": action.timestamp.isoformat(),
-        })
+        self.log_json(
+            "agent_action",
+            {
+                "pr_number": self.pr_number,
+                "action_number": self.action_count,
+                "action_type": action.type,
+                "target": action.target,
+                "status": action.status,
+                "timestamp": action.timestamp.isoformat(),
+            },
+        )
 
         # Send notification for important actions
         if action.type in ["git_commit", "gh_comment", "merge_pr"] and self.send_notification:
@@ -74,19 +80,24 @@ class PRProcessingCallbacks:
                 f"PR #{self.pr_number}: {action.type}",
                 f"Agent performed {action.type} on {action.target}",
                 "default",
-                ["robot", "white_check_mark"] if action.status == "completed" else ["robot", "warning"],
+                ["robot", "white_check_mark"]
+                if action.status == "completed"
+                else ["robot", "warning"],
             )
 
     def on_progress(self, current: int, total: int) -> None:
         """Progress update"""
         percentage = (current / total) * 100 if total > 0 else 0
 
-        self.log_json("agent_progress", {
-            "pr_number": self.pr_number,
-            "current": current,
-            "total": total,
-            "percentage": round(percentage, 1),
-        })
+        self.log_json(
+            "agent_progress",
+            {
+                "pr_number": self.pr_number,
+                "current": current,
+                "total": total,
+                "percentage": round(percentage, 1),
+            },
+        )
 
     def on_error(self, error: Exception) -> bool:
         """
@@ -114,29 +125,35 @@ class PRProcessingCallbacks:
         # Determine if we should retry
         should_retry = is_transient and self.retry_count < self.max_retries
 
-        self.log_json("agent_error", {
-            "pr_number": self.pr_number,
-            "task": self.current_task,
-            "error": error_msg,
-            "error_type": error_type,
-            "action_count": self.action_count,
-            "error_count": self.error_count,
-            "retry_count": self.retry_count,
-            "is_transient": is_transient,
-            "will_retry": should_retry,
-        })
+        self.log_json(
+            "agent_error",
+            {
+                "pr_number": self.pr_number,
+                "task": self.current_task,
+                "error": error_msg,
+                "error_type": error_type,
+                "action_count": self.action_count,
+                "error_count": self.error_count,
+                "retry_count": self.retry_count,
+                "is_transient": is_transient,
+                "will_retry": should_retry,
+            },
+        )
 
         if should_retry:
             self.retry_count += 1
-            backoff_delay = min(2 ** self.retry_count, 32)  # Max 32 seconds
+            backoff_delay = min(2**self.retry_count, 32)  # Max 32 seconds
 
-            self.log_json("agent_retry", {
-                "pr_number": self.pr_number,
-                "task": self.current_task,
-                "retry_attempt": self.retry_count,
-                "max_retries": self.max_retries,
-                "backoff_seconds": backoff_delay,
-            })
+            self.log_json(
+                "agent_retry",
+                {
+                    "pr_number": self.pr_number,
+                    "task": self.current_task,
+                    "retry_attempt": self.retry_count,
+                    "max_retries": self.max_retries,
+                    "backoff_seconds": backoff_delay,
+                },
+            )
 
             if self.send_notification:
                 self.send_notification(
@@ -150,16 +167,21 @@ class PRProcessingCallbacks:
             return True  # Continue/retry
 
         # Permanent error or max retries exceeded
-        self.log_json("agent_abort", {
-            "pr_number": self.pr_number,
-            "task": self.current_task,
-            "reason": "max_retries_exceeded" if is_transient else "permanent_error",
-            "total_errors": self.error_count,
-            "total_retries": self.retry_count,
-        })
+        self.log_json(
+            "agent_abort",
+            {
+                "pr_number": self.pr_number,
+                "task": self.current_task,
+                "reason": "max_retries_exceeded" if is_transient else "permanent_error",
+                "total_errors": self.error_count,
+                "total_retries": self.retry_count,
+            },
+        )
 
         if self.send_notification:
-            reason = f"Max retries ({self.max_retries}) exceeded" if is_transient else "Permanent error"
+            reason = (
+                f"Max retries ({self.max_retries}) exceeded" if is_transient else "Permanent error"
+            )
             self.send_notification(
                 f"PR #{self.pr_number}: Agent Aborted",
                 f"{reason}: {error_msg[:100]}",
@@ -296,11 +318,14 @@ class LoggingCallbacks:
         self._log("thinking", {"content": content[:100]})
 
     def on_action(self, action: AgentAction) -> None:
-        self._log("action", {
-            "type": action.type,
-            "target": action.target,
-            "status": action.status,
-        })
+        self._log(
+            "action",
+            {
+                "type": action.type,
+                "target": action.target,
+                "status": action.status,
+            },
+        )
 
     def on_progress(self, current: int, total: int) -> None:
         self._log("progress", {"current": current, "total": total})

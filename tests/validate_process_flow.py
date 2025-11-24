@@ -19,8 +19,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from db_operations import StateDatabase
 from agents import PRContext
+from db_operations import StateDatabase
 
 
 def validate_database_schema(db: StateDatabase) -> tuple[bool, list[str]]:
@@ -40,7 +40,7 @@ def validate_database_schema(db: StateDatabase) -> tuple[bool, list[str]]:
             "processing_history",
             "dashboard_state",
             "branch_states",
-            "pr_context"  # Critical for process isolation
+            "pr_context",  # Critical for process isolation
         ]
 
         for table in tables:
@@ -61,7 +61,7 @@ def validate_database_schema(db: StateDatabase) -> tuple[bool, list[str]]:
 def validate_pr_context_completeness(
     repo_name: str,
     pr_number: int,
-    db: StateDatabase
+    db: StateDatabase,
 ) -> tuple[bool, list[str]]:
     """
     Validate that PR context has all required fields for agent invocation.
@@ -92,7 +92,11 @@ def validate_pr_context_completeness(
 
         # Validate pr_details structure
         required_pr_details = [
-            "number", "title", "headRefName", "baseRefName", "author"
+            "number",
+            "title",
+            "headRefName",
+            "baseRefName",
+            "author",
         ]
         for field in required_pr_details:
             if field not in pr_details:
@@ -100,8 +104,16 @@ def validate_pr_context_completeness(
 
         # Validate pr_context structure
         required_pr_context = [
-            "url", "diff", "comments", "review_comments", "commits",
-            "files", "conflicts", "ci_status", "guidelines", "commit_examples"
+            "url",
+            "diff",
+            "comments",
+            "review_comments",
+            "commits",
+            "files",
+            "conflicts",
+            "ci_status",
+            "guidelines",
+            "commit_examples",
         ]
         for field in required_pr_context:
             if field not in pr_context:
@@ -134,10 +146,21 @@ def validate_pr_context_completeness(
 
             # Validate PRContext has required attributes
             required_attrs = [
-                "pr_number", "title", "head_branch", "base_branch",
-                "author", "url", "diff", "has_conflicts", "has_failing_ci",
-                "review_comments", "general_comments", "changed_files",
-                "commits", "guidelines", "commit_examples"
+                "pr_number",
+                "title",
+                "head_branch",
+                "base_branch",
+                "author",
+                "url",
+                "diff",
+                "has_conflicts",
+                "has_failing_ci",
+                "review_comments",
+                "general_comments",
+                "changed_files",
+                "commits",
+                "guidelines",
+                "commit_examples",
             ]
 
             for attr in required_attrs:
@@ -172,7 +195,7 @@ def validate_process_outputs(db: StateDatabase, repo_name: str) -> dict[str, Any
         prs = db.get_active_prs(repo_name)
         if len(prs) == 0:
             results["process_1"]["errors"].append(
-                "No PR snapshots found. Process 1 may not be running or saving data."
+                "No PR snapshots found. Process 1 may not be running or saving data.",
             )
         else:
             results["process_1"]["valid"] = True
@@ -189,7 +212,7 @@ def validate_process_outputs(db: StateDatabase, repo_name: str) -> dict[str, Any
         if not has_context and len(prs) > 0:
             results["process_1"]["errors"].append(
                 "PR snapshots exist but no PR context data. "
-                "Ensure pr-loop.py is using latest version that saves context."
+                "Ensure pr-loop.py is using latest version that saves context.",
             )
 
     except Exception as e:
@@ -208,7 +231,7 @@ def validate_process_outputs(db: StateDatabase, repo_name: str) -> dict[str, Any
                 results["process_2"]["errors"] = errors
         else:
             results["process_2"]["errors"].append(
-                "Cannot validate Process 2: no PRs available"
+                "Cannot validate Process 2: no PRs available",
             )
 
     except Exception as e:
@@ -235,15 +258,15 @@ def validate_process_outputs(db: StateDatabase, repo_name: str) -> dict[str, Any
                     )
                 else:
                     results["process_3"]["errors"].append(
-                        "PRContext object missing required attributes"
+                        "PRContext object missing required attributes",
                     )
             else:
                 results["process_3"]["errors"].append(
-                    "Cannot load PR context for agent invocation"
+                    "Cannot load PR context for agent invocation",
                 )
         else:
             results["process_3"]["errors"].append(
-                "Cannot validate Process 3: no PRs available"
+                "Cannot validate Process 3: no PRs available",
             )
 
     except Exception as e:
@@ -310,20 +333,20 @@ This script validates that:
 
 Example:
   ./validate_process_flow.py --db merge-god-state.db --repo merge-god
-        """
+        """,
     )
 
     parser.add_argument(
         "--db",
         type=Path,
         default=Path("merge-god-state.db"),
-        help="Path to SQLite database (default: merge-god-state.db)"
+        help="Path to SQLite database (default: merge-god-state.db)",
     )
 
     parser.add_argument(
         "--repo",
         required=True,
-        help="Repository name to validate"
+        help="Repository name to validate",
     )
 
     args = parser.parse_args()
@@ -374,5 +397,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n✗ Fatal error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

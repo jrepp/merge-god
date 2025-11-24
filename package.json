@@ -1,0 +1,12 @@
+{
+  "name": "merge-god",
+  "version": "0.1.0",
+  "description": "Automated PR processing and merging system using Claude Agent SDK",
+  "private": true,
+  "scripts": {
+    "markdownlint": "markdownlint --config .markdownlintrc ."
+  },
+  "devDependencies": {
+    "markdownlint-cli": "^0.43.0"
+  }
+}

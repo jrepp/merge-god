@@ -32,7 +32,7 @@ def test_git_ops(repo_path: str):
         print(f"   Path: {info['path']}")
         print(f"   Default branch: {info['default_branch']}")
         print(f"   Current branch: {info['current_branch']}")
-        if 'remote_url' in info:
+        if "remote_url" in info:
             print(f"   Remote URL: {info['remote_url']}")
         print()
 
@@ -47,7 +47,9 @@ def test_git_ops(repo_path: str):
             print(f"   - {branch.name}")
             print(f"     SHA: {branch.sha[:8]}")
             print(f"     Upstream: {branch.upstream or 'none'}")
-            print(f"     Last commit: {branch.last_commit_message[:50] if branch.last_commit_message else 'N/A'}")
+            print(
+                f"     Last commit: {branch.last_commit_message[:50] if branch.last_commit_message else 'N/A'}"
+            )
 
         if len(local_branches) > 5:
             print(f"   ... and {len(local_branches) - 5} more")
@@ -75,14 +77,16 @@ def test_git_ops(repo_path: str):
         print("7. Computing branch status...")
         try:
             local_branches, remote_branches = git_ops.get_all_branches_with_status()
-            print(f"   ✓ Status computed for all branches\n")
+            print("   ✓ Status computed for all branches\n")
 
             # Show branches that are ahead/behind
             print("8. Branch status summary:")
             for branch in local_branches:
-                if branch.status.value not in ['up_to_date', 'local_only']:
-                    print(f"   {branch.name}: {branch.status.value} "
-                          f"(ahead: {branch.ahead_by}, behind: {branch.behind_by})")
+                if branch.status.value not in ["up_to_date", "local_only"]:
+                    print(
+                        f"   {branch.name}: {branch.status.value} "
+                        f"(ahead: {branch.ahead_by}, behind: {branch.behind_by})"
+                    )
         except GitOperationsError as e:
             print(f"   (Could not compute status: {e})")
         print()
@@ -96,6 +100,7 @@ def test_git_ops(repo_path: str):
     except Exception as e:
         print(f"✗ Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

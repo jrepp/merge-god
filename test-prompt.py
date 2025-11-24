@@ -11,17 +11,16 @@ Usage: ./test-prompt.py <repo_path> <pr_number>
 
 import os
 import sys
-import subprocess
 from pathlib import Path
 
 # Import functions from pr-loop.py by executing it in a controlled namespace
 # We read the file content but strip the main execution block
 pr_loop_content = Path("pr-loop.py").read_text()
 # Remove the if __name__ == "__main__" block to prevent auto-execution
-lines = pr_loop_content.split('\n')
+lines = pr_loop_content.split("\n")
 filtered_lines = []
 skip_main_block = False
-for i, line in enumerate(lines):
+for _i, line in enumerate(lines):
     if 'if __name__ == "__main__"' in line:
         skip_main_block = True
         continue
@@ -30,7 +29,7 @@ for i, line in enumerate(lines):
         continue
     filtered_lines.append(line)
 
-exec('\n'.join(filtered_lines))
+exec("\n".join(filtered_lines))
 
 
 def main():
@@ -44,7 +43,7 @@ def main():
     repo_path = Path(sys.argv[1]).resolve()
 
     # Validate repository
-    if not validate_repository(repo_path):
+    if not validate_repository(repo_path):  # type: ignore[name-defined]
         sys.exit(1)
 
     # Change to repository directory
@@ -59,16 +58,23 @@ def main():
     print(f"Gathering context for PR #{pr_number}...\n", file=sys.stderr)
 
     # Get PR basic info
-    returncode, stdout, stderr = run_command([
-        "gh", "pr", "view", str(pr_number),
-        "--json", "number,title,headRefName,baseRefName,url"
-    ])
+    returncode, stdout, stderr = run_command(
+        [  # type: ignore[name-defined]
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--json",
+            "number,title,headRefName,baseRefName,url",
+        ]
+    )
 
     if returncode != 0:
         print(f"Error fetching PR #{pr_number}: {stderr}", file=sys.stderr)
         sys.exit(1)
 
     import json
+
     pr_info = json.loads(stdout)
 
     # Gather context
@@ -77,18 +83,18 @@ def main():
     url = pr_info["url"]
 
     # Get guidelines and commit examples
-    guidelines = get_pr_guidelines()
-    commit_examples = get_commit_history_examples(base_branch) if not guidelines else ""
+    guidelines = get_pr_guidelines()  # type: ignore[name-defined]
+    commit_examples = get_commit_history_examples(base_branch) if not guidelines else ""  # type: ignore[name-defined]
 
-    pr_details, pr_context = gather_pr_context(pr_number, head_branch, base_branch, url)
+    pr_details, pr_context = gather_pr_context(pr_number, head_branch, base_branch, url)  # type: ignore[name-defined]
 
     # Build prompt
-    prompt = build_pr_prompt(pr_details, pr_context, guidelines, commit_examples)
+    prompt = build_pr_prompt(pr_details, pr_context, guidelines, commit_examples)  # type: ignore[name-defined]
 
     # Print summary to stderr
-    print("\n" + "="*80, file=sys.stderr)
+    print("\n" + "=" * 80, file=sys.stderr)
     print("PROMPT GENERATION SUMMARY", file=sys.stderr)
-    print("="*80, file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
     print(f"PR: #{pr_number} - {pr_info['title']}", file=sys.stderr)
     print(f"Branch: {head_branch} → {base_branch}", file=sys.stderr)
     print(f"Prompt size: {len(prompt)} characters", file=sys.stderr)
@@ -99,7 +105,7 @@ def main():
     print(f"Has conflicts: {pr_context['conflicts'].get('has_conflicts', False)}", file=sys.stderr)
     print(f"CI checks: {pr_context['ci_status'].get('total_checks', 0)}", file=sys.stderr)
     print(f"Failed checks: {pr_context['ci_status'].get('failed', 0)}", file=sys.stderr)
-    print("="*80, file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
     print("\nGenerated prompt (stdout):\n", file=sys.stderr)
 
     # Print the actual prompt to stdout so it can be piped

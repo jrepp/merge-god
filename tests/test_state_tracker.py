@@ -13,7 +13,6 @@ This script tests the state tracker modules to ensure they work correctly.
 """
 
 import sys
-from pathlib import Path
 
 from state_tracker import StateTracker, StateTrackerError
 
@@ -60,7 +59,7 @@ def test_state_tracker(repo_path: str):
                     "success": "✓",
                     "failure": "✗",
                     "pending": "⏳",
-                    "none": "○"
+                    "none": "○",
                 }.get(branch_pr.ci_status.value, "?")
 
                 print(f"   {ci_emoji} {branch_pr.branch_name}")
@@ -86,8 +85,9 @@ def test_state_tracker(repo_path: str):
                 ahead = branch_pr.local_branch.ahead_by if branch_pr.local_branch else 0
                 behind = branch_pr.local_branch.behind_by if branch_pr.local_branch else 0
 
-                print(f"   {status_icon} {branch_pr.branch_name} "
-                      f"(ahead: {ahead}, behind: {behind})")
+                print(
+                    f"   {status_icon} {branch_pr.branch_name} (ahead: {ahead}, behind: {behind})"
+                )
 
             if len(needing_sync) > 5:
                 print(f"   ... and {len(needing_sync) - 5} more")
@@ -122,6 +122,7 @@ def test_state_tracker(repo_path: str):
     except Exception as e:
         print(f"✗ Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

@@ -8,7 +8,7 @@ This module handles all git-related operations including:
 """
 
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,6 @@ from models import Branch, BranchStatus
 
 class GitOperationsError(Exception):
     """Exception raised for git operation errors"""
-    pass
 
 
 class GitOperations:
@@ -46,7 +45,7 @@ class GitOperations:
         self,
         cmd: list[str],
         timeout: int = 30,
-        check: bool = True
+        check: bool = True,
     ) -> tuple[int, str, str]:
         """
         Run a git command in the repository.
@@ -62,17 +61,18 @@ class GitOperations:
         try:
             result = subprocess.run(
                 cmd,
+                check=False,
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
             )
 
             if check and result.returncode != 0:
                 raise GitOperationsError(
                     f"Command failed: {' '.join(cmd)}\n"
                     f"Exit code: {result.returncode}\n"
-                    f"Stderr: {result.stderr}"
+                    f"Stderr: {result.stderr}",
                 )
 
             return result.returncode, result.stdout, result.stderr
@@ -104,28 +104,29 @@ class GitOperations:
         """
         # Get branch info: name, sha, upstream, last commit details
         cmd = [
-            "git", "for-each-ref",
+            "git",
+            "for-each-ref",
             "--format=%(refname:short)|%(objectname)|%(upstream:short)|%(committerdate:iso8601)|%(authorname)|%(subject)",
-            "refs/heads/"
+            "refs/heads/",
         ]
 
-        returncode, stdout, stderr = self._run_command(cmd)
+        _returncode, stdout, _stderr = self._run_command(cmd)
 
         branches = []
-        for line in stdout.strip().split('\n'):
+        for line in stdout.strip().split("\n"):
             if not line:
                 continue
 
-            parts = line.split('|')
+            parts = line.split("|")
             if len(parts) < 6:
                 continue
 
             name, sha, upstream, date_str, author, message = parts
-            upstream = upstream if upstream else None
+            upstream_value: str | None = upstream if upstream else None
 
             # Parse date
             try:
-                commit_date = datetime.fromisoformat(date_str.replace(' ', 'T'))
+                commit_date = datetime.fromisoformat(date_str.replace(" ", "T"))
             except (ValueError, AttributeError):
                 commit_date = None
 
@@ -134,10 +135,10 @@ class GitOperations:
                 sha=sha,
                 is_local=True,
                 is_remote=False,
-                upstream=upstream,
+                upstream=upstream_value,
                 last_commit_date=commit_date,
                 last_commit_author=author,
-                last_commit_message=message
+                last_commit_message=message,
             )
 
             branches.append(branch)
@@ -155,19 +156,20 @@ class GitOperations:
             List of Branch objects for remote branches
         """
         cmd = [
-            "git", "for-each-ref",
+            "git",
+            "for-each-ref",
             "--format=%(refname:short)|%(objectname)|%(committerdate:iso8601)|%(authorname)|%(subject)",
-            f"refs/remotes/{remote}/"
+            f"refs/remotes/{remote}/",
         ]
 
-        returncode, stdout, stderr = self._run_command(cmd)
+        _returncode, stdout, _stderr = self._run_command(cmd)
 
         branches = []
-        for line in stdout.strip().split('\n'):
+        for line in stdout.strip().split("\n"):
             if not line:
                 continue
 
-            parts = line.split('|')
+            parts = line.split("|")
             if len(parts) < 5:
                 continue
 
@@ -182,7 +184,7 @@ class GitOperations:
 
             # Parse date
             try:
-                commit_date = datetime.fromisoformat(date_str.replace(' ', 'T'))
+                commit_date = datetime.fromisoformat(date_str.replace(" ", "T"))
             except (ValueError, AttributeError):
                 commit_date = None
 
@@ -193,7 +195,7 @@ class GitOperations:
                 is_remote=True,
                 last_commit_date=commit_date,
                 last_commit_author=author,
-                last_commit_message=message
+                last_commit_message=message,
             )
 
             branches.append(branch)
@@ -204,7 +206,7 @@ class GitOperations:
         self,
         local_branch: Branch,
         remote_branch: Branch | None,
-        remote: str = "origin"
+        remote: str = "origin",
     ) -> tuple[BranchStatus, int, int]:
         """
         Compute the status of a local branch relative to its remote.
@@ -227,12 +229,14 @@ class GitOperations:
         # Get ahead/behind counts
         try:
             cmd = [
-                "git", "rev-list",
-                "--left-right", "--count",
-                f"{local_branch.name}...{remote}/{remote_branch.name}"
+                "git",
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"{local_branch.name}...{remote}/{remote_branch.name}",
             ]
 
-            returncode, stdout, stderr = self._run_command(cmd, check=False)
+            returncode, stdout, _stderr = self._run_command(cmd, check=False)
 
             if returncode != 0:
                 return BranchStatus.UNKNOWN, 0, 0
@@ -246,19 +250,18 @@ class GitOperations:
 
             if ahead > 0 and behind > 0:
                 return BranchStatus.DIVERGED, ahead, behind
-            elif ahead > 0:
+            if ahead > 0:
                 return BranchStatus.AHEAD, ahead, behind
-            elif behind > 0:
+            if behind > 0:
                 return BranchStatus.BEHIND, ahead, behind
-            else:
-                return BranchStatus.UP_TO_DATE, ahead, behind
+            return BranchStatus.UP_TO_DATE, ahead, behind
 
         except (ValueError, GitOperationsError):
             return BranchStatus.UNKNOWN, 0, 0
 
     def get_all_branches_with_status(
         self,
-        remote: str = "origin"
+        remote: str = "origin",
     ) -> tuple[list[Branch], list[Branch]]:
         """
         Get all branches (local and remote) with computed status.
@@ -284,7 +287,9 @@ class GitOperations:
 
             if remote_branch:
                 status, ahead, behind = self.compute_branch_status(
-                    local_branch, remote_branch, remote
+                    local_branch,
+                    remote_branch,
+                    remote,
                 )
                 local_branch.status = status
                 local_branch.ahead_by = ahead
@@ -307,14 +312,14 @@ class GitOperations:
 
         if returncode == 0 and stdout:
             # Output is like "refs/remotes/origin/main"
-            branch = stdout.strip().split('/')[-1]
+            branch = stdout.strip().split("/")[-1]
             if branch:
                 return branch
 
         # Fallback: check common branch names
         for branch in ["main", "master", "develop"]:
             cmd = ["git", "rev-parse", "--verify", f"origin/{branch}"]
-            returncode, stdout, stderr = self._run_command(cmd, check=False)
+            returncode, stdout, _stderr = self._run_command(cmd, check=False)
             if returncode == 0:
                 return branch
 
@@ -329,7 +334,7 @@ class GitOperations:
             Branch name or None if in detached HEAD state
         """
         cmd = ["git", "rev-parse", "--abbrev-ref", "HEAD"]
-        returncode, stdout, stderr = self._run_command(cmd, check=False)
+        returncode, stdout, _stderr = self._run_command(cmd, check=False)
 
         if returncode == 0 and stdout:
             branch = stdout.strip()
@@ -353,7 +358,7 @@ class GitOperations:
 
         # Get remote URL
         cmd = ["git", "remote", "get-url", "origin"]
-        returncode, stdout, stderr = self._run_command(cmd, check=False)
+        returncode, stdout, _stderr = self._run_command(cmd, check=False)
         if returncode == 0:
             info["remote_url"] = stdout.strip()
 

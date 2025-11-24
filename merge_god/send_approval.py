@@ -2,6 +2,7 @@
 """
 Quick script to send approval to a waiting pr-loop.py process
 """
+
 import json
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ def find_pr_loop_process():
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return None
+
 
 def send_approval(pid):
     """Send approval JSON to process stdin"""
@@ -38,6 +40,7 @@ def send_approval(pid):
         print(f"✗ Failed to send approval: {e}", file=sys.stderr)
         return False
 
+
 def main():
     print("Looking for pr-loop.py process...")
     pid = find_pr_loop_process()
@@ -53,6 +56,7 @@ def main():
         sys.exit(0)
     else:
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

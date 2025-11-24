@@ -23,14 +23,13 @@ Or with Agent SDK enabled:
     USE_AGENT_SDK=1 ./test_agent_integration.py
 """
 
-import asyncio
 import os
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress
 
 console = Console()
 
@@ -41,14 +40,15 @@ def test_imports():
 
     try:
         from agents import (
-            PRAgent,
-            PRContext,
             AgentAction,
             AgentTask,
+            PRAgent,
+            PRContext,
             ProcessingResult,
             create_claude_client,
             get_model_name,
         )
+
         console.print("  ✓ All agent imports successful", style="green")
         return True
     except ImportError as e:
@@ -72,10 +72,10 @@ def test_client_creation():
             console.print(f"  • AWS region: {aws_region}")
 
         # Create client
-        client = create_claude_client()
+        create_claude_client()
         model = get_model_name()
 
-        console.print(f"  ✓ Client created successfully", style="green")
+        console.print("  ✓ Client created successfully", style="green")
         console.print(f"  ✓ Model: {model}", style="green")
         return True
 
@@ -105,14 +105,14 @@ def test_task_decomposition():
             has_failing_ci=True,
             failing_checks=[
                 {"name": "pytest", "conclusion": "failure"},
-                {"name": "lint", "conclusion": "failure"}
+                {"name": "lint", "conclusion": "failure"},
             ],
             review_comments=[
-                {"user": {"login": "reviewer"}, "body": "Please fix this", "path": "src/foo.py"}
+                {"user": {"login": "reviewer"}, "body": "Please fix this", "path": "src/foo.py"},
             ],
             general_comments=[],
             changed_files=[
-                {"filename": "src/foo.py", "additions": 10, "deletions": 5}
+                {"filename": "src/foo.py", "additions": 10, "deletions": 5},
             ],
             diff="... diff content ...",
             commits=[],
@@ -120,7 +120,7 @@ def test_task_decomposition():
             commit_examples="feat: add feature\nfix: fix bug",
             labels=["for-landing"],
             ci_checks={},
-            review_decision=None
+            review_decision=None,
         )
 
         # Create agent
@@ -150,6 +150,7 @@ def test_task_decomposition():
     except Exception as e:
         console.print(f"  ✗ Task decomposition failed: {e}", style="red")
         import traceback
+
         console.print(traceback.format_exc(), style="dim red")
         return False
 
@@ -159,7 +160,13 @@ def test_prompt_building():
     console.print("\n[bold cyan]4. Testing Prompt Building[/bold cyan]")
 
     try:
-        from agents import PRAgent, PRContext, AgentTask, create_claude_client, get_model_name
+        from agents import (
+            AgentTask,
+            PRAgent,
+            PRContext,
+            create_claude_client,
+            get_model_name,
+        )
 
         # Create mock PR context (minimal)
         pr_context = PRContext(
@@ -183,7 +190,7 @@ def test_prompt_building():
             commit_examples="",
             labels=[],
             ci_checks={},
-            review_decision=None
+            review_decision=None,
         )
 
         # Create agent
@@ -193,25 +200,38 @@ def test_prompt_building():
 
         # Test building prompts for different tasks
         test_tasks = [
-            AgentTask(id="analyze", description="Analyze PR", prompt_template="analyze_pr", required_context=[]),
-            AgentTask(id="validate", description="Validate changes", prompt_template="validate", required_context=[]),
+            AgentTask(
+                id="analyze",
+                description="Analyze PR",
+                prompt_template="analyze_pr",
+                required_context=[],
+            ),
+            AgentTask(
+                id="validate",
+                description="Validate changes",
+                prompt_template="validate",
+                required_context=[],
+            ),
         ]
 
         for task in test_tasks:
             prompt = agent._build_task_prompt(task, pr_context)
-            console.print(f"  ✓ Built prompt for task '{task.id}': {len(prompt)} chars", style="green")
+            console.print(
+                f"  ✓ Built prompt for task '{task.id}': {len(prompt)} chars", style="green"
+            )
 
             # Validate prompt contains key info
             if str(pr_context.pr_number) in prompt and pr_context.title in prompt:
-                console.print(f"    ✓ Prompt contains PR info", style="dim green")
+                console.print("    ✓ Prompt contains PR info", style="dim green")
             else:
-                console.print(f"    ✗ Prompt missing PR info", style="yellow")
+                console.print("    ✗ Prompt missing PR info", style="yellow")
 
         return True
 
     except Exception as e:
         console.print(f"  ✗ Prompt building failed: {e}", style="red")
         import traceback
+
         console.print(traceback.format_exc(), style="dim red")
         return False
 
@@ -237,7 +257,7 @@ def test_callbacks():
         callbacks = PRProcessingCallbacks(
             pr_number=789,
             log_json=mock_log_json,
-            send_notification=mock_send_notification
+            send_notification=mock_send_notification,
         )
 
         # Test thinking callback
@@ -250,7 +270,7 @@ def test_callbacks():
             target="src/test.py",
             details={"path": "src/test.py"},
             status="completed",
-            timestamp=datetime.now(timezone.utc)
+            timestamp=datetime.now(UTC),
         )
         callbacks.on_action(action)
         console.print("  ✓ Action callback works", style="green")
@@ -271,11 +291,13 @@ def test_callbacks():
 
 def main():
     """Run all tests"""
-    console.print(Panel.fit(
-        "[bold cyan]Agent SDK Integration Test Suite[/bold cyan]\n"
-        "Testing agent system components",
-        border_style="cyan"
-    ))
+    console.print(
+        Panel.fit(
+            "[bold cyan]Agent SDK Integration Test Suite[/bold cyan]\n"
+            "Testing agent system components",
+            border_style="cyan",
+        )
+    )
 
     results = []
 
@@ -307,10 +329,9 @@ def main():
         console.print("  2. Monitor logs for agent actions")
         console.print("  3. Review task breakdown and actions taken\n")
         return 0
-    else:
-        console.print("\n[bold red]❌ Some tests failed[/bold red]\n")
-        return 1
+    console.print("\n[bold red]❌ Some tests failed[/bold red]\n")
+    return 1
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

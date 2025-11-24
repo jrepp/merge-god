@@ -66,7 +66,8 @@ class GitOperations:
         try:
             result = subprocess.run(
                 cmd,
-                check=False, cwd=self.repo_path,
+                check=False,
+                cwd=self.repo_path,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -108,7 +109,8 @@ class GitOperations:
         """
         # Get branch info: name, sha, upstream, last commit details
         cmd = [
-            "git", "for-each-ref",
+            "git",
+            "for-each-ref",
             "--format=%(refname:short)|%(objectname)|%(upstream:short)|%(committerdate:iso8601)|%(authorname)|%(subject)",
             "refs/heads/",
         ]
@@ -159,7 +161,8 @@ class GitOperations:
             List of Branch objects for remote branches
         """
         cmd = [
-            "git", "for-each-ref",
+            "git",
+            "for-each-ref",
             "--format=%(refname:short)|%(objectname)|%(committerdate:iso8601)|%(authorname)|%(subject)",
             f"refs/remotes/{remote}/",
         ]
@@ -231,8 +234,10 @@ class GitOperations:
         # Get ahead/behind counts
         try:
             cmd = [
-                "git", "rev-list",
-                "--left-right", "--count",
+                "git",
+                "rev-list",
+                "--left-right",
+                "--count",
                 f"{local_branch.name}...{remote}/{remote_branch.name}",
             ]
 
@@ -287,7 +292,9 @@ class GitOperations:
 
             if remote_branch:
                 status, ahead, behind = self.compute_branch_status(
-                    local_branch, remote_branch, remote,
+                    local_branch,
+                    remote_branch,
+                    remote,
                 )
                 local_branch.status = status
                 local_branch.ahead_by = ahead

@@ -12,6 +12,7 @@ from typing import Any
 
 class BranchStatus(Enum):
     """Status of a branch relative to its remote"""
+
     UP_TO_DATE = "up_to_date"
     AHEAD = "ahead"
     BEHIND = "behind"
@@ -23,6 +24,7 @@ class BranchStatus(Enum):
 
 class PRState(Enum):
     """State of a pull request"""
+
     OPEN = "open"
     CLOSED = "closed"
     MERGED = "merged"
@@ -31,6 +33,7 @@ class PRState(Enum):
 
 class CIStatus(Enum):
     """CI/CD check status"""
+
     SUCCESS = "success"
     FAILURE = "failure"
     PENDING = "pending"
@@ -40,6 +43,7 @@ class CIStatus(Enum):
 @dataclass
 class Branch:
     """Represents a git branch with tracking information"""
+
     name: str
     sha: str
     is_local: bool
@@ -56,6 +60,7 @@ class Branch:
 @dataclass
 class CICheck:
     """Represents a single CI/CD check"""
+
     name: str
     status: CIStatus
     conclusion: str | None = None
@@ -67,6 +72,7 @@ class CICheck:
 @dataclass
 class PullRequest:
     """Represents a GitHub pull request with comprehensive tracking"""
+
     number: int
     title: str
     state: PRState
@@ -136,6 +142,7 @@ class BranchPRState:
     This is the primary data structure that correlates local/remote branches
     with their corresponding PRs, providing a unified view.
     """
+
     branch_name: str
 
     # Branch information
@@ -160,8 +167,14 @@ class BranchPRState:
         if self.local_branch and self.remote_branch:
             self.branch_status = self.local_branch.status
             self.is_tracked = True
-            self.needs_push = self.local_branch.status in [BranchStatus.AHEAD, BranchStatus.DIVERGED]
-            self.needs_pull = self.local_branch.status in [BranchStatus.BEHIND, BranchStatus.DIVERGED]
+            self.needs_push = self.local_branch.status in [
+                BranchStatus.AHEAD,
+                BranchStatus.DIVERGED,
+            ]
+            self.needs_pull = self.local_branch.status in [
+                BranchStatus.BEHIND,
+                BranchStatus.DIVERGED,
+            ]
         elif self.local_branch:
             self.branch_status = BranchStatus.LOCAL_ONLY
             self.is_tracked = False
@@ -195,6 +208,7 @@ class RepositoryState:
 
     This is the top-level data structure that aggregates all tracking information.
     """
+
     repo_path: str
     default_branch: str
 
@@ -233,13 +247,11 @@ class RepositoryState:
 
     def get_branches_needing_sync(self) -> list[BranchPRState]:
         """Get branches that need push or pull"""
-        return [state for state in self.branch_pr_states
-                if state.needs_push or state.needs_pull]
+        return [state for state in self.branch_pr_states if state.needs_push or state.needs_pull]
 
     def get_failing_ci(self) -> list[BranchPRState]:
         """Get branches with failing CI"""
-        return [state for state in self.branch_pr_states
-                if state.ci_status == CIStatus.FAILURE]
+        return [state for state in self.branch_pr_states if state.ci_status == CIStatus.FAILURE]
 
     def summary_dict(self) -> dict[str, Any]:
         """Get a summary dictionary for display/logging"""

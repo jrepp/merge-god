@@ -52,6 +52,7 @@ merge-god [subcommand] [options]
 ### Subcommands
 
 **Main Commands:**
+
 - `merge-god dashboard` - Run the TUI dashboard (all processes)
 - `merge-god scan` - Scan and cache PR context (Process 1+2)
 - `merge-god agent` - Run agent on cached PR data (Process 3)
@@ -60,11 +61,13 @@ merge-god [subcommand] [options]
 - `merge-god test` - Run test suite
 
 **Utility Commands:**
+
 - `merge-god pr-loop` - Legacy PR processing loop (single repository)
 - `merge-god send-approval` - Send approval signal to running pr-loop process
 - `merge-god help` - Show detailed help
 
 **Usage Examples:**
+
 ```bash
 # Run dashboard
 merge-god dashboard config.yaml
@@ -79,11 +82,13 @@ merge-god status
 ## Configuration
 
 1. **Create config file:**
+
    ```bash
    cp config.example.yaml config.yaml
    ```
 
 2. **Edit config.yaml** with your repositories:
+
    ```yaml
    repos:
      - path: /path/to/your/repo
@@ -94,6 +99,7 @@ merge-god status
 3. **Set up authentication:**
 
    **Option 1: AWS Bedrock (recommended)**
+
    ```bash
    export CLAUDE_CODE_USE_BEDROCK=1
    export ANTHROPIC_MODEL="global.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -101,12 +107,14 @@ merge-god status
    ```
 
    **Option 2: Direct Anthropic API**
+
    ```bash
    export ANTHROPIC_API_KEY="your-api-key"
    export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
    ```
 
 4. **Authenticate GitHub CLI:**
+
    ```bash
    gh auth login
    ```
@@ -139,6 +147,7 @@ uv pip install -e ".[dev]"
 ```
 
 This installs additional tools:
+
 - pytest - for running tests
 - pytest-asyncio - for async test support
 - ruff - for code linting and formatting
@@ -157,6 +166,7 @@ python -m build
 ```
 
 This creates:
+
 - `dist/merge_god-0.1.0-py3-none-any.whl` - Wheel distribution
 - `dist/merge_god-0.1.0.tar.gz` - Source distribution
 
@@ -263,4 +273,4 @@ merge-god status
 
 - Documentation: See README.md
 - Testing Guide: See AGENT_TESTING_GUIDE.md
-- Issues: https://github.com/yourusername/merge-god/issues
+- Issues: <https://github.com/yourusername/merge-god/issues>

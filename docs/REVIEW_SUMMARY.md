@@ -32,19 +32,19 @@ A comprehensive code review identified and fixed **15 significant issues** acros
 
 ### 🟡 Important Fixes
 
-6. **Configurable Timeouts** - Different timeouts per operation type
-7. **Better Error Handling** - Specific exceptions with clear messages
-8. **Checked Fetch Results** - Git fetch verified before using refs
-9. **Improved Conflict Detection** - More robust with fewer false positives
-10. **PR Deduplication** - Prevents processing same PR multiple times
+1. **Configurable Timeouts** - Different timeouts per operation type
+2. **Better Error Handling** - Specific exceptions with clear messages
+3. **Checked Fetch Results** - Git fetch verified before using refs
+4. **Improved Conflict Detection** - More robust with fewer false positives
+5. **PR Deduplication** - Prevents processing same PR multiple times
 
 ### 🟢 Additional Improvements
 
-11. **Safe SHA Slicing** - Handles short/missing commit SHAs
-12. **Empty Response Handling** - Checks for empty output before JSON parse
-13. **Required Field Validation** - Validates PR has necessary fields
-14. **Safe Label Extraction** - Defensive access to label data
-15. **PR Details Validation** - Ensures details exist before building prompt
+1. **Safe SHA Slicing** - Handles short/missing commit SHAs
+2. **Empty Response Handling** - Checks for empty output before JSON parse
+3. **Required Field Validation** - Validates PR has necessary fields
+4. **Safe Label Extraction** - Defensive access to label data
+5. **PR Details Validation** - Ensures details exist before building prompt
 
 ## What Changed
 
@@ -78,6 +78,7 @@ detect_default_branch() -> str
 ## Before vs After Examples
 
 ### Before (Crash Prone)
+
 ```python
 pr_number = pr["number"]  # KeyError if missing
 all_prs = json.loads(stdout)  # TypeError if not list
@@ -86,6 +87,7 @@ returncode, _, _ = run_command(["git", "checkout", "main"])  # Hardcoded
 ```
 
 ### After (Resilient)
+
 ```python
 pr_number = pr.get("number")
 if not pr_number:
@@ -108,12 +110,14 @@ returncode, _, _ = run_command(["git", "checkout", default_branch])
 ### Command Injection Prevention
 
 **Before:**
+
 ```python
 # Branch name used directly - vulnerable
 run_command(["git", "merge-tree", f"origin/{branch}"])
 ```
 
 **After:**
+
 ```python
 # Branch name validated first
 if not validate_git_ref(branch):
@@ -129,6 +133,7 @@ Invalid patterns rejected: Starts with `.` or `/`, ends with `.lock`
 ### Memory Exhaustion Prevention
 
 **Before:**
+
 ```python
 # No limits - could consume GBs of RAM
 result = subprocess.run(cmd, capture_output=True)
@@ -136,6 +141,7 @@ context["diff"] = get_pr_diff()  # Could be 100s of MB
 ```
 
 **After:**
+
 ```python
 # 50MB limit per command output
 if stdout_size > max_output_size:
@@ -148,12 +154,14 @@ if stdout_size > max_output_size:
 ### More Actionable Errors
 
 **Before:**
+
 ```python
 except Exception as e:
     return -1, "", str(e)  # Generic error
 ```
 
 **After:**
+
 ```python
 except subprocess.TimeoutExpired:
     return -1, "", f"Command timed out after {timeout} seconds"
@@ -188,6 +196,7 @@ except Exception as e:
 ## Conclusion
 
 The codebase is now **significantly more resilient** with proper:
+
 - ✅ Input validation
 - ✅ Type safety
 - ✅ Error handling

@@ -6,15 +6,19 @@ with task decomposition, streaming updates, and tool calling.
 """
 
 import asyncio
+import contextlib
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Protocol
+from typing import Any, Protocol
 
 from anthropic import AsyncAnthropic
+
 try:
     from anthropic import AsyncAnthropicBedrock
+
     BEDROCK_AVAILABLE = True
 except ImportError:
     AsyncAnthropicBedrock = None
@@ -37,25 +41,24 @@ def create_claude_client() -> AsyncAnthropic | AsyncAnthropicBedrock:
         if not BEDROCK_AVAILABLE:
             raise RuntimeError(
                 "Bedrock support requested but anthropic[bedrock] not installed. "
-                "Install with: uv add 'anthropic[bedrock]'"
+                "Install with: uv add 'anthropic[bedrock]'",
             )
 
         # Use AWS region from env or default
         aws_region = os.environ.get("ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION", "us-west-2")
 
         return AsyncAnthropicBedrock(
-            aws_region=aws_region
+            aws_region=aws_region,
         )
-    else:
-        # Use direct API
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY environment variable not set. "
-                "Either set this variable or use Bedrock with CLAUDE_CODE_USE_BEDROCK=1"
-            )
+    # Use direct API
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY environment variable not set. "
+            "Either set this variable or use Bedrock with CLAUDE_CODE_USE_BEDROCK=1",
+        )
 
-        return AsyncAnthropic(api_key=api_key)
+    return AsyncAnthropic(api_key=api_key)
 
 
 def get_model_name() -> str:
@@ -75,14 +78,14 @@ def get_model_name() -> str:
     if use_bedrock:
         # Bedrock format
         return "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    else:
-        # Direct API format
-        return "claude-sonnet-4-5-20250929"
+    # Direct API format
+    return "claude-sonnet-4-5-20250929"
 
 
 @dataclass
 class AgentAction:
     """Represents a single action taken by the agent"""
+
     type: str  # "git_commit", "file_edit", "run_tests", etc.
     target: str  # What the action applies to
     details: dict[str, Any]
@@ -95,6 +98,7 @@ class AgentAction:
 @dataclass
 class AgentTask:
     """Represents a discrete task in PR processing"""
+
     id: str
     description: str
     prompt_template: str
@@ -110,6 +114,7 @@ class AgentTask:
 @dataclass
 class AgentEvent:
     """Event emitted during agent execution"""
+
     type: str  # "thinking", "action", "progress", "error", "complete"
     content: str | None = None
     action: AgentAction | None = None
@@ -120,6 +125,7 @@ class AgentEvent:
 @dataclass
 class PRContext:
     """Context for PR processing"""
+
     pr_number: int
     title: str
     body: str | None
@@ -185,6 +191,7 @@ class PRContext:
 @dataclass
 class ProcessingResult:
     """Result of PR processing"""
+
     success: bool
     tasks: list[AgentTask]
     actions: list[AgentAction]
@@ -203,6 +210,7 @@ class ProcessingResult:
 @dataclass
 class ToolResult:
     """Result of a tool execution"""
+
     success: bool
     output: str | None = None
     error: str | None = None
@@ -211,15 +219,18 @@ class ToolResult:
     def to_content(self) -> list[dict[str, Any]]:
         """Convert to Claude API tool result format"""
         if self.success:
-            return [{
+            return [
+                {
+                    "type": "text",
+                    "text": self.output or "Operation completed successfully",
+                }
+            ]
+        return [
+            {
                 "type": "text",
-                "text": self.output or "Operation completed successfully"
-            }]
-        else:
-            return [{
-                "type": "text",
-                "text": f"Error: {self.error}"
-            }]
+                "text": f"Error: {self.error}",
+            }
+        ]
 
 
 class AgentCallbacks(Protocol):
@@ -316,8 +327,8 @@ pre-commit run --all-files
         client: AsyncAnthropic | AsyncAnthropicBedrock,
         model: str = "claude-sonnet-4-5-20250929",
         repo_path: Path | None = None,
-        database = None,
-        session_id: str | None = None
+        database=None,
+        session_id: str | None = None,
     ):
         self.client = client
         self.model = model
@@ -334,7 +345,7 @@ pre-commit run --all-files
         self,
         pr_context: PRContext,
         mode: str,
-        callbacks: AgentCallbacks
+        callbacks: AgentCallbacks,
     ) -> ProcessingResult:
         """
         Process a PR with streaming updates and structured actions.
@@ -349,7 +360,7 @@ pre-commit run --all-files
         Returns:
             ProcessingResult with all tasks and actions
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # Decompose PR into discrete tasks
         tasks = self._decompose_pr_tasks(pr_context, mode)
@@ -360,7 +371,7 @@ pre-commit run --all-files
                 callbacks.on_progress(i, len(tasks))
 
                 # Execute task with streaming
-                task.started_at = datetime.now(timezone.utc)
+                task.started_at = datetime.now(UTC)
                 task.status = "running"
 
                 async for event in self._execute_task_streaming(task, pr_context):
@@ -379,19 +390,19 @@ pre-commit run --all-files
                 # Mark task complete if no errors
                 if task.status == "running":
                     task.status = "completed"
-                    task.completed_at = datetime.now(timezone.utc)
+                    task.completed_at = datetime.now(UTC)
 
             except Exception as e:
                 task.status = "failed"
                 task.error = str(e)
-                task.completed_at = datetime.now(timezone.utc)
+                task.completed_at = datetime.now(UTC)
 
                 # Ask callback if we should abort entire processing
                 if not callbacks.on_error(e):
                     break
 
         # Calculate results
-        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        duration = (datetime.now(UTC) - start_time).total_seconds()
         all_successful = all(task.status == "completed" for task in tasks)
 
         return ProcessingResult(
@@ -399,7 +410,7 @@ pre-commit run --all-files
             tasks=tasks,
             actions=self.actions_taken,
             duration=duration,
-            error=None if all_successful else "Some tasks failed"
+            error=None if all_successful else "Some tasks failed",
         )
 
     def _decompose_pr_tasks(self, pr_context: PRContext, mode: str) -> list[AgentTask]:
@@ -411,63 +422,75 @@ pre-commit run --all-files
         tasks = []
 
         # Task 1: Always analyze the PR first
-        tasks.append(AgentTask(
-            id="analyze",
-            description=f"Analyze PR #{pr_context.pr_number} and identify issues",
-            prompt_template="analyze_pr",
-            required_context=["pr_details", "diff", "ci_status"]
-        ))
+        tasks.append(
+            AgentTask(
+                id="analyze",
+                description=f"Analyze PR #{pr_context.pr_number} and identify issues",
+                prompt_template="analyze_pr",
+                required_context=["pr_details", "diff", "ci_status"],
+            )
+        )
 
         # Task 2: Resolve merge conflicts (if any)
         if pr_context.has_conflicts:
-            tasks.append(AgentTask(
-                id="resolve_conflicts",
-                description=f"Resolve {len(pr_context.conflicting_files)} merge conflicts",
-                prompt_template="resolve_conflicts",
-                required_context=["conflicting_files", "base_branch", "diff"]
-            ))
+            tasks.append(
+                AgentTask(
+                    id="resolve_conflicts",
+                    description=f"Resolve {len(pr_context.conflicting_files)} merge conflicts",
+                    prompt_template="resolve_conflicts",
+                    required_context=["conflicting_files", "base_branch", "diff"],
+                )
+            )
 
         # Task 3: Address code review comments
         if pr_context.review_comments:
-            tasks.append(AgentTask(
-                id="address_reviews",
-                description=f"Address {len(pr_context.review_comments)} review comments",
-                prompt_template="address_reviews",
-                required_context=["review_comments", "changed_files"]
-            ))
+            tasks.append(
+                AgentTask(
+                    id="address_reviews",
+                    description=f"Address {len(pr_context.review_comments)} review comments",
+                    prompt_template="address_reviews",
+                    required_context=["review_comments", "changed_files"],
+                )
+            )
 
         # Task 4: Fix failing CI checks
         if pr_context.has_failing_ci:
-            tasks.append(AgentTask(
-                id="fix_ci",
-                description=f"Fix {len(pr_context.failing_checks)} failing CI checks",
-                prompt_template="fix_ci",
-                required_context=["failing_checks", "changed_files"]
-            ))
+            tasks.append(
+                AgentTask(
+                    id="fix_ci",
+                    description=f"Fix {len(pr_context.failing_checks)} failing CI checks",
+                    prompt_template="fix_ci",
+                    required_context=["failing_checks", "changed_files"],
+                )
+            )
 
         # Task 5: Comprehensive code review (for-review mode only)
         if mode == "for-review":
-            tasks.append(AgentTask(
-                id="code_review",
-                description="Conduct comprehensive code review and improvements",
-                prompt_template="code_review",
-                required_context=["full_diff", "guidelines", "changed_files"]
-            ))
+            tasks.append(
+                AgentTask(
+                    id="code_review",
+                    description="Conduct comprehensive code review and improvements",
+                    prompt_template="code_review",
+                    required_context=["full_diff", "guidelines", "changed_files"],
+                )
+            )
 
         # Task 6: Final validation
-        tasks.append(AgentTask(
-            id="validate",
-            description="Run tests and validate all changes",
-            prompt_template="validate",
-            required_context=["changed_files"]
-        ))
+        tasks.append(
+            AgentTask(
+                id="validate",
+                description="Run tests and validate all changes",
+                prompt_template="validate",
+                required_context=["changed_files"],
+            )
+        )
 
         return tasks
 
     async def _execute_task_streaming(
         self,
         task: AgentTask,
-        pr_context: PRContext
+        pr_context: PRContext,
     ) -> AsyncIterator[AgentEvent]:
         """
         Execute a single task with streaming updates.
@@ -482,10 +505,12 @@ pre-commit run --all-files
         tools = self._get_tools_for_task(task)
 
         # Add user message to conversation
-        self.conversation_history.append({
-            "role": "user",
-            "content": prompt
-        })
+        self.conversation_history.append(
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        )
 
         # Agentic loop: continue until agent doesn't use tools
         # Higher limit for complex tasks like code review
@@ -501,38 +526,43 @@ pre-commit run --all-files
                     model=self.model,
                     max_tokens=4096,
                     messages=self.conversation_history,
-                    tools=tools if tools else None
+                    tools=tools if tools else None,
                 ) as stream:
                     # Collect tool uses during streaming
                     tool_uses = []
                     text_content = []
 
                     async for event in stream:
-                        if hasattr(event, 'type'):
+                        if hasattr(event, "type"):
                             if event.type == "content_block_delta":
                                 # Agent is generating text response
-                                if hasattr(event, 'delta') and hasattr(event.delta, 'text'):
+                                if hasattr(event, "delta") and hasattr(event.delta, "text"):
                                     text_content.append(event.delta.text)
                                     yield AgentEvent(
                                         type="thinking",
-                                        content=event.delta.text
+                                        content=event.delta.text,
                                     )
 
                             elif event.type == "content_block_start":
                                 # Check if this is a tool use
-                                if hasattr(event, 'content_block'):
+                                if hasattr(event, "content_block"):
                                     content_block = event.content_block
-                                    if hasattr(content_block, 'type') and content_block.type == "tool_use":
+                                    if (
+                                        hasattr(content_block, "type")
+                                        and content_block.type == "tool_use"
+                                    ):
                                         tool_uses.append(content_block)
 
                     # Get final message
                     final_message = await stream.get_final_message()
 
                     # Add assistant response to conversation
-                    self.conversation_history.append({
-                        "role": "assistant",
-                        "content": final_message.content
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "assistant",
+                            "content": final_message.content,
+                        }
+                    )
 
                     # If no tool uses, we're done
                     if not tool_uses:
@@ -544,10 +574,10 @@ pre-commit run --all-files
                         # Create action for tracking
                         action = AgentAction(
                             type=tool_use.name,
-                            target=getattr(tool_use, 'input', {}).get("target", ""),
-                            details=getattr(tool_use, 'input', {}),
+                            target=getattr(tool_use, "input", {}).get("target", ""),
+                            details=getattr(tool_use, "input", {}),
                             status="executing",
-                            timestamp=datetime.now(timezone.utc)
+                            timestamp=datetime.now(UTC),
                         )
 
                         yield AgentEvent(type="action", action=action)
@@ -563,7 +593,7 @@ pre-commit run --all-files
                                     action_type=action.type,
                                     target=action.target,
                                     details=action.details,
-                                    status="executing"
+                                    status="executing",
                                 )
                             except Exception:
                                 pass  # Don't fail on telemetry errors
@@ -579,31 +609,33 @@ pre-commit run --all-files
 
                         # Update action in database
                         if self.database and self.session_id and action_id:
-                            try:
+                            with contextlib.suppress(Exception):
                                 self.database.update_agent_session(
                                     session_id=self.session_id,
-                                    actions_total=self.action_counter
+                                    actions_total=self.action_counter,
                                 )
-                            except Exception:
-                                pass
 
                         # Build tool result for API
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use.id,
-                            "content": tool_result.to_content()
-                        })
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "content": tool_result.to_content(),
+                            }
+                        )
 
                     # Add tool results to conversation for next iteration
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": tool_results
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": tool_results,
+                        }
+                    )
 
             if iteration >= max_iterations:
                 yield AgentEvent(
                     type="error",
-                    error=Exception(f"Agent exceeded maximum iterations ({max_iterations})")
+                    error=Exception(f"Agent exceeded maximum iterations ({max_iterations})"),
                 )
 
         except Exception as e:
@@ -628,7 +660,9 @@ pre-commit run --all-files
 
         # Add task-specific context
         if task.id == "analyze":
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Analyze this PR and identify:
 1. Any merge conflicts
@@ -648,10 +682,13 @@ Analyze this PR and identify:
 
 Provide a structured analysis of what needs to be done.
 """
+            )
 
-        elif task.id == "resolve_conflicts":
+        if task.id == "resolve_conflicts":
             conflicting_files_str = "\n".join(f"- {f}" for f in pr_context.conflicting_files)
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Resolve merge conflicts in the following files:
 {conflicting_files_str}
@@ -670,13 +707,16 @@ Resolve merge conflicts in the following files:
 
 Begin by reading the conflicting files to understand the conflicts.
 """
+            )
 
-        elif task.id == "address_reviews":
+        if task.id == "address_reviews":
             review_summary = "\n\n".join(
                 f"**{c.get('user', {}).get('login')}** on {c.get('path')}:{c.get('line')}\n{c.get('body')}"
                 for c in pr_context.review_comments[:5]  # Show first 5
             )
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Address the following code review comments:
 
@@ -711,13 +751,15 @@ For each change:
 
 Work through the comments systematically.
 """
-
-        elif task.id == "fix_ci":
-            failing_checks_str = "\n".join(
-                f"- **{c.get('name')}**: {c.get('conclusion')}"
-                for c in pr_context.failing_checks
             )
-            return base_context + f"""
+
+        if task.id == "fix_ci":
+            failing_checks_str = "\n".join(
+                f"- **{c.get('name')}**: {c.get('conclusion')}" for c in pr_context.failing_checks
+            )
+            return (
+                base_context
+                + f"""
 ## Your Task
 Fix the following failing CI checks:
 
@@ -750,9 +792,12 @@ Fix the following failing CI checks:
 
 Start by analyzing the failing checks.
 """
+            )
 
-        elif task.id == "code_review":
-            return base_context + f"""
+        if task.id == "code_review":
+            return (
+                base_context
+                + f"""
 ## Your Task
 Conduct a comprehensive code review of the changes in this PR.
 
@@ -797,9 +842,12 @@ pytest
 
 Review the code systematically and make targeted improvements.
 """
+            )
 
-        elif task.id == "validate":
-            return base_context + f"""
+        if task.id == "validate":
+            return (
+                base_context
+                + """
 ## Your Task
 Final validation before marking PR ready:
 
@@ -839,6 +887,7 @@ uv build                     # Should build cleanly
 
 Perform final validation and report status. Only mark as ready if all checks pass.
 """
+            )
 
         return base_context
 
@@ -858,11 +907,11 @@ Perform final validation and report status. Only mark as ready if all checks pas
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path to the file to read"
-                        }
+                            "description": "Path to the file to read",
+                        },
                     },
-                    "required": ["path"]
-                }
+                    "required": ["path"],
+                },
             },
             {
                 "name": "list_files",
@@ -872,87 +921,89 @@ Perform final validation and report status. Only mark as ready if all checks pas
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Directory path (default: repository root)"
+                            "description": "Directory path (default: repository root)",
                         },
                         "pattern": {
                             "type": "string",
-                            "description": "Optional glob pattern to filter files"
-                        }
-                    }
-                }
-            }
+                            "description": "Optional glob pattern to filter files",
+                        },
+                    },
+                },
+            },
         ]
 
         # Task-specific tools
         action_tools = []
 
         if task.id in ["resolve_conflicts", "address_reviews", "fix_ci", "code_review"]:
-            action_tools.extend([
-                {
-                    "name": "edit_file",
-                    "description": "Edit a file in the repository",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Path to the file to edit"
-                            },
-                            "changes": {
-                                "type": "array",
-                                "description": "List of changes to make",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "old": {
-                                            "type": "string",
-                                            "description": "Text to replace"
+            action_tools.extend(
+                [
+                    {
+                        "name": "edit_file",
+                        "description": "Edit a file in the repository",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Path to the file to edit",
+                                },
+                                "changes": {
+                                    "type": "array",
+                                    "description": "List of changes to make",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "old": {
+                                                "type": "string",
+                                                "description": "Text to replace",
+                                            },
+                                            "new": {
+                                                "type": "string",
+                                                "description": "Replacement text",
+                                            },
                                         },
-                                        "new": {
-                                            "type": "string",
-                                            "description": "Replacement text"
-                                        }
+                                        "required": ["old", "new"],
                                     },
-                                    "required": ["old", "new"]
-                                }
-                            }
-                        },
-                        "required": ["path", "changes"]
-                    }
-                },
-                {
-                    "name": "run_tests",
-                    "description": "Run test suite or specific tests",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "test_path": {
-                                "type": "string",
-                                "description": "Path to specific test file or directory (optional)"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "git_commit",
-                    "description": "Create a git commit with changes",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "message": {
-                                "type": "string",
-                                "description": "Commit message"
+                                },
                             },
-                            "files": {
-                                "type": "array",
-                                "description": "Specific files to commit (optional, defaults to all changes)",
-                                "items": {"type": "string"}
-                            }
+                            "required": ["path", "changes"],
                         },
-                        "required": ["message"]
-                    }
-                }
-            ])
+                    },
+                    {
+                        "name": "run_tests",
+                        "description": "Run test suite or specific tests",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "test_path": {
+                                    "type": "string",
+                                    "description": "Path to specific test file or directory (optional)",
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "name": "git_commit",
+                        "description": "Create a git commit with changes",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string",
+                                    "description": "Commit message",
+                                },
+                                "files": {
+                                    "type": "array",
+                                    "description": "Specific files to commit (optional, defaults to all changes)",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": ["message"],
+                        },
+                    },
+                ]
+            )
 
         return common_tools + action_tools if action_tools else common_tools
 
@@ -967,82 +1018,76 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 result = await self._tool_read_file(action.details.get("path"))
                 # Record file operation
                 if self.database and self.session_id and result.success:
-                    try:
+                    with contextlib.suppress(Exception):
                         self.database.record_file_operation(
                             session_id=self.session_id,
                             action_id=action_id,
                             operation_type="read",
                             file_path=action.details.get("path", ""),
                             file_size=result.data.get("size") if result.data else None,
-                            success=True
+                            success=True,
                         )
-                    except Exception:
-                        pass
                 return result
 
-            elif action.type == "list_files":
+            if action.type == "list_files":
                 return await self._tool_list_files(
                     action.details.get("path", "."),
-                    action.details.get("pattern")
+                    action.details.get("pattern"),
                 )
 
-            elif action.type == "edit_file":
+            if action.type == "edit_file":
                 result = await self._tool_edit_file(
                     action.details.get("path"),
-                    action.details.get("changes", [])
+                    action.details.get("changes", []),
                 )
                 # Record file operation
                 if self.database and self.session_id:
-                    try:
+                    with contextlib.suppress(Exception):
                         self.database.record_file_operation(
                             session_id=self.session_id,
                             action_id=action_id,
                             operation_type="edit",
                             file_path=action.details.get("path", ""),
-                            lines_added=result.data.get("changes") if result.data and result.success else 0,
+                            lines_added=result.data.get("changes")
+                            if result.data and result.success
+                            else 0,
                             success=result.success,
-                            error_message=result.error
+                            error_message=result.error,
                         )
-                    except Exception:
-                        pass
                 return result
 
-            elif action.type == "run_tests":
+            if action.type == "run_tests":
                 return await self._tool_run_tests(
-                    action.details.get("test_path")
+                    action.details.get("test_path"),
                 )
 
-            elif action.type == "git_commit":
-                result = await self._tool_git_commit(
+            if action.type == "git_commit":
+                return await self._tool_git_commit(
                     action.details.get("message"),
-                    action.details.get("files")
+                    action.details.get("files"),
                 )
                 # Git commits don't record as file operations
-                return result
 
-            else:
-                return ToolResult(
-                    success=False,
-                    error=f"Unknown tool: {action.type}"
-                )
+            return ToolResult(
+                success=False,
+                error=f"Unknown tool: {action.type}",
+            )
 
         except Exception as e:
             # Record error in database
             if self.database and self.session_id:
-                try:
+                with contextlib.suppress(Exception):
                     self.database.record_agent_error(
                         session_id=self.session_id,
                         error_type=type(e).__name__,
                         error_message=str(e),
                         error_details=f"Tool: {action.type}, Details: {action.details}",
-                        is_transient=False
+                        is_transient=False,
                     )
-                except Exception:
-                    pass
 
             return ToolResult(
                 success=False,
-                error=f"Tool execution failed: {str(e)}"
+                error=f"Tool execution failed: {e!s}",
             )
 
     async def _tool_read_file(self, path: str) -> ToolResult:
@@ -1051,7 +1096,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
         if not self.repo_path:
             return ToolResult(
                 success=False,
-                error="Repository path not configured. Cannot perform file operations."
+                error="Repository path not configured. Cannot perform file operations.",
             )
 
         try:
@@ -1064,7 +1109,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"Access denied: '{path}' is outside repository bounds. "
-                          f"Only files within the repository can be accessed."
+                    f"Only files within the repository can be accessed.",
                 )
 
             # Safety check: file must exist
@@ -1072,7 +1117,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"File not found: '{path}'. "
-                          f"Check the path is correct and the file exists in the repository."
+                    f"Check the path is correct and the file exists in the repository.",
                 )
 
             # Safety check: must be a file, not a directory
@@ -1080,7 +1125,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"Cannot read '{path}': path is a directory, not a file. "
-                          f"Use list_files tool to view directory contents."
+                    f"Use list_files tool to view directory contents.",
                 )
 
             # Safety check: file size limit (10MB)
@@ -1090,7 +1135,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"File too large: '{path}' is {file_size / 1024 / 1024:.1f}MB. "
-                          f"Maximum file size is {max_size / 1024 / 1024}MB."
+                    f"Maximum file size is {max_size / 1024 / 1024}MB.",
                 )
 
             # Try to read as text
@@ -1098,25 +1143,24 @@ Perform final validation and report status. Only mark as ready if all checks pas
             return ToolResult(
                 success=True,
                 output=content,
-                data={"path": path, "size": len(content)}
+                data={"path": path, "size": len(content)},
             )
 
         except UnicodeDecodeError:
             return ToolResult(
                 success=False,
                 error=f"Cannot read '{path}': file appears to be binary. "
-                      f"This tool only supports text files."
+                f"This tool only supports text files.",
             )
         except PermissionError:
             return ToolResult(
                 success=False,
-                error=f"Permission denied: cannot read '{path}'. "
-                      f"Check file permissions."
+                error=f"Permission denied: cannot read '{path}'. Check file permissions.",
             )
         except Exception as e:
             return ToolResult(
                 success=False,
-                error=f"Failed to read '{path}': {str(e)}"
+                error=f"Failed to read '{path}': {e!s}",
             )
 
     async def _tool_list_files(self, path: str, pattern: str | None) -> ToolResult:
@@ -1125,7 +1169,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
         if not self.repo_path:
             return ToolResult(
                 success=False,
-                error="Repository path not configured. Cannot perform file operations."
+                error="Repository path not configured. Cannot perform file operations.",
             )
 
         try:
@@ -1138,7 +1182,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"Access denied: '{path}' is outside repository bounds. "
-                          f"Only directories within the repository can be accessed."
+                    f"Only directories within the repository can be accessed.",
                 )
 
             # Safety check: directory must exist
@@ -1146,7 +1190,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"Directory not found: '{path}'. "
-                          f"Check the path is correct and the directory exists in the repository."
+                    f"Check the path is correct and the directory exists in the repository.",
                 )
 
             # Safety check: must be a directory, not a file
@@ -1154,14 +1198,11 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"Cannot list '{path}': path is a file, not a directory. "
-                          f"Use read_file tool to read file contents."
+                    f"Use read_file tool to read file contents.",
                 )
 
             # List files
-            if pattern:
-                files = list(dir_path.glob(pattern))
-            else:
-                files = list(dir_path.iterdir())
+            files = list(dir_path.glob(pattern)) if pattern else list(dir_path.iterdir())
 
             # Sort for consistent output
             files.sort()
@@ -1170,19 +1211,18 @@ Perform final validation and report status. Only mark as ready if all checks pas
             return ToolResult(
                 success=True,
                 output=file_list,
-                data={"count": len(files)}
+                data={"count": len(files)},
             )
 
         except PermissionError:
             return ToolResult(
                 success=False,
-                error=f"Permission denied: cannot list '{path}'. "
-                      f"Check directory permissions."
+                error=f"Permission denied: cannot list '{path}'. Check directory permissions.",
             )
         except Exception as e:
             return ToolResult(
                 success=False,
-                error=f"Failed to list files in '{path}': {str(e)}"
+                error=f"Failed to list files in '{path}': {e!s}",
             )
 
     async def _tool_edit_file(self, path: str, changes: list[dict]) -> ToolResult:
@@ -1191,14 +1231,14 @@ Perform final validation and report status. Only mark as ready if all checks pas
         if not self.repo_path:
             return ToolResult(
                 success=False,
-                error="Repository path not configured. Cannot perform file operations."
+                error="Repository path not configured. Cannot perform file operations.",
             )
 
         # Validate changes parameter
         if not changes or not isinstance(changes, list):
             return ToolResult(
                 success=False,
-                error="Invalid changes parameter. Must provide a list of change objects."
+                error="Invalid changes parameter. Must provide a list of change objects.",
             )
 
         try:
@@ -1211,18 +1251,18 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"Access denied: '{path}' is outside repository bounds. "
-                          f"Only files within the repository can be edited."
+                    f"Only files within the repository can be edited.",
                 )
 
             # Safety check: prevent editing .git directory
             try:
                 relative_path = resolved_path.relative_to(resolved_repo)
                 path_parts = relative_path.parts
-                if path_parts and path_parts[0] == '.git':
+                if path_parts and path_parts[0] == ".git":
                     return ToolResult(
                         success=False,
-                        error=f"Access denied: cannot edit files in .git directory. "
-                              f"This would corrupt the git repository."
+                        error="Access denied: cannot edit files in .git directory. "
+                        "This would corrupt the git repository.",
                     )
             except ValueError:
                 pass  # Not relative to repo, caught by earlier check
@@ -1232,14 +1272,14 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error=f"File not found: '{path}'. "
-                          f"File must exist before it can be edited. Use git to create new files."
+                    f"File must exist before it can be edited. Use git to create new files.",
                 )
 
             # Safety check: must be a file, not a directory
             if not file_path.is_file():
                 return ToolResult(
                     success=False,
-                    error=f"Cannot edit '{path}': path is a directory, not a file."
+                    error=f"Cannot edit '{path}': path is a directory, not a file.",
                 )
 
             # Read current content
@@ -1255,13 +1295,13 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 if not old:
                     return ToolResult(
                         success=False,
-                        error=f"Change #{i+1}: 'old' field is required but missing or empty."
+                        error=f"Change #{i + 1}: 'old' field is required but missing or empty.",
                     )
 
                 if new is None:
                     return ToolResult(
                         success=False,
-                        error=f"Change #{i+1}: 'new' field is required but missing."
+                        error=f"Change #{i + 1}: 'new' field is required but missing.",
                     )
 
                 if old in content:
@@ -1270,25 +1310,25 @@ Perform final validation and report status. Only mark as ready if all checks pas
                     if occurrences > 1:
                         return ToolResult(
                             success=False,
-                            error=f"Change #{i+1}: Text appears {occurrences} times in file. "
-                                  f"Provide more context in 'old' to make replacement unique, "
-                                  f"or use multiple specific changes."
+                            error=f"Change #{i + 1}: Text appears {occurrences} times in file. "
+                            f"Provide more context in 'old' to make replacement unique, "
+                            f"or use multiple specific changes.",
                         )
                     content = content.replace(old, new)
                     changes_applied += 1
                 else:
                     return ToolResult(
                         success=False,
-                        error=f"Change #{i+1}: Could not find text to replace: '{old[:100]}...'. "
-                              f"Text may have already been changed, or the context doesn't match. "
-                              f"Try reading the file first to see current contents."
+                        error=f"Change #{i + 1}: Could not find text to replace: '{old[:100]}...'. "
+                        f"Text may have already been changed, or the context doesn't match. "
+                        f"Try reading the file first to see current contents.",
                     )
 
             # Safety check: don't write if no changes
             if content == original_content:
                 return ToolResult(
                     success=False,
-                    error="No changes were made to the file. Content is identical to original."
+                    error="No changes were made to the file. Content is identical to original.",
                 )
 
             # Write back
@@ -1297,25 +1337,24 @@ Perform final validation and report status. Only mark as ready if all checks pas
             return ToolResult(
                 success=True,
                 output=f"Successfully applied {changes_applied} change(s) to {path}",
-                data={"changes": changes_applied, "path": path}
+                data={"changes": changes_applied, "path": path},
             )
 
         except UnicodeDecodeError:
             return ToolResult(
                 success=False,
                 error=f"Cannot edit '{path}': file appears to be binary. "
-                      f"This tool only supports text files."
+                f"This tool only supports text files.",
             )
         except PermissionError:
             return ToolResult(
                 success=False,
-                error=f"Permission denied: cannot edit '{path}'. "
-                      f"Check file permissions."
+                error=f"Permission denied: cannot edit '{path}'. Check file permissions.",
             )
         except Exception as e:
             return ToolResult(
                 success=False,
-                error=f"Failed to edit '{path}': {str(e)}"
+                error=f"Failed to edit '{path}': {e!s}",
             )
 
     async def _tool_run_tests(self, test_path: str | None) -> ToolResult:
@@ -1324,7 +1363,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
         if not self.repo_path:
             return ToolResult(
                 success=False,
-                error="Repository path not configured. Cannot run tests."
+                error="Repository path not configured. Cannot run tests.",
             )
 
         try:
@@ -1338,31 +1377,30 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 if not resolved_path.is_relative_to(resolved_repo):
                     return ToolResult(
                         success=False,
-                        error=f"Access denied: test path '{test_path}' is outside repository bounds."
+                        error=f"Access denied: test path '{test_path}' is outside repository bounds.",
                     )
 
                 # Check if test path exists
                 if not full_test_path.exists():
                     return ToolResult(
                         success=False,
-                        error=f"Test path not found: '{test_path}'. "
-                              f"Check the path is correct."
+                        error=f"Test path not found: '{test_path}'. Check the path is correct.",
                     )
 
             # Check if pytest is available
             # Try to find pytest
             check_pytest = await asyncio.create_subprocess_exec(
-                "which", "pytest",
+                "which",
+                "pytest",
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             await check_pytest.communicate()
 
             if check_pytest.returncode != 0:
                 return ToolResult(
                     success=False,
-                    error="Test runner 'pytest' not found. "
-                          "Install it with: pip install pytest"
+                    error="Test runner 'pytest' not found. Install it with: pip install pytest",
                 )
 
             # Run tests with timeout
@@ -1372,23 +1410,23 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 *cmd,
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
 
             # Wait with timeout (5 minutes)
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=300  # 5 minutes
+                    timeout=300,  # 5 minutes
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 return ToolResult(
                     success=False,
                     error="Tests timed out after 5 minutes. "
-                          "This may indicate hanging tests or an infinite loop. "
-                          "Consider running specific test files instead of the entire suite."
+                    "This may indicate hanging tests or an infinite loop. "
+                    "Consider running specific test files instead of the entire suite.",
                 )
 
             stdout_str = stdout.decode() if stdout else ""
@@ -1398,29 +1436,27 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=True,
                     output=stdout_str,
-                    data={"exit_code": 0, "test_path": test_path}
+                    data={"exit_code": 0, "test_path": test_path},
                 )
-            else:
-                # Provide helpful error message
-                error_msg = stderr_str if stderr_str else stdout_str
-                return ToolResult(
-                    success=False,
-                    output=stdout_str,
-                    error=f"Tests failed with exit code {process.returncode}. "
-                          f"Review the output to identify failing tests.",
-                    data={"exit_code": process.returncode, "stderr": error_msg[:500]}
-                )
+            # Provide helpful error message
+            error_msg = stderr_str if stderr_str else stdout_str
+            return ToolResult(
+                success=False,
+                output=stdout_str,
+                error=f"Tests failed with exit code {process.returncode}. "
+                f"Review the output to identify failing tests.",
+                data={"exit_code": process.returncode, "stderr": error_msg[:500]},
+            )
 
         except FileNotFoundError as e:
             return ToolResult(
                 success=False,
-                error=f"Command not found: {str(e)}. "
-                      f"Ensure pytest is installed and in PATH."
+                error=f"Command not found: {e!s}. Ensure pytest is installed and in PATH.",
             )
         except Exception as e:
             return ToolResult(
                 success=False,
-                error=f"Failed to run tests: {str(e)}"
+                error=f"Failed to run tests: {e!s}",
             )
 
     async def _tool_git_commit(self, message: str, files: list[str] | None) -> ToolResult:
@@ -1429,39 +1465,42 @@ Perform final validation and report status. Only mark as ready if all checks pas
         if not self.repo_path:
             return ToolResult(
                 success=False,
-                error="Repository path not configured. Cannot perform git operations."
+                error="Repository path not configured. Cannot perform git operations.",
             )
 
         # Validate commit message
         if not message or not message.strip():
             return ToolResult(
                 success=False,
-                error="Commit message cannot be empty. Provide a descriptive commit message."
+                error="Commit message cannot be empty. Provide a descriptive commit message.",
             )
 
         try:
             # Safety check: verify we're in a git repository
             check_git = await asyncio.create_subprocess_exec(
-                "git", "rev-parse", "--git-dir",
+                "git",
+                "rev-parse",
+                "--git-dir",
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             await check_git.communicate()
 
             if check_git.returncode != 0:
                 return ToolResult(
                     success=False,
-                    error=f"Not a git repository: {self.repo_path}. "
-                          f"Cannot perform git operations."
+                    error=f"Not a git repository: {self.repo_path}. Cannot perform git operations.",
                 )
 
             # Safety check: verify there are changes to commit
             status_process = await asyncio.create_subprocess_exec(
-                "git", "status", "--porcelain",
+                "git",
+                "status",
+                "--porcelain",
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             status_stdout, _ = await status_process.communicate()
 
@@ -1469,7 +1508,7 @@ Perform final validation and report status. Only mark as ready if all checks pas
                 return ToolResult(
                     success=False,
                     error="No changes to commit. Working tree is clean. "
-                          "Make changes to files before creating a commit."
+                    "Make changes to files before creating a commit.",
                 )
 
             # Validate and add files
@@ -1483,17 +1522,17 @@ Perform final validation and report status. Only mark as ready if all checks pas
                     if not resolved_path.is_relative_to(resolved_repo):
                         return ToolResult(
                             success=False,
-                            error=f"Access denied: '{file}' is outside repository bounds."
+                            error=f"Access denied: '{file}' is outside repository bounds.",
                         )
 
                     # Safety check: prevent adding .git directory
                     try:
                         relative_path = resolved_path.relative_to(resolved_repo)
                         path_parts = relative_path.parts
-                        if path_parts and path_parts[0] == '.git':
+                        if path_parts and path_parts[0] == ".git":
                             return ToolResult(
                                 success=False,
-                                error=f"Access denied: cannot add files from .git directory."
+                                error="Access denied: cannot add files from .git directory.",
                             )
                     except ValueError:
                         pass
@@ -1503,83 +1542,88 @@ Perform final validation and report status. Only mark as ready if all checks pas
                         return ToolResult(
                             success=False,
                             error=f"File not found: '{file}'. "
-                                  f"Cannot add non-existent file to commit."
+                            f"Cannot add non-existent file to commit.",
                         )
 
                     # Add the file
                     process = await asyncio.create_subprocess_exec(
-                        "git", "add", file,
+                        "git",
+                        "add",
+                        file,
                         cwd=self.repo_path,
                         stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
+                        stderr=asyncio.subprocess.PIPE,
                     )
                     stdout, stderr = await process.communicate()
 
                     if process.returncode != 0:
                         return ToolResult(
                             success=False,
-                            error=f"Failed to add '{file}': {stderr.decode() if stderr else 'Unknown error'}"
+                            error=f"Failed to add '{file}': {stderr.decode() if stderr else 'Unknown error'}",
                         )
             else:
                 # Add all changes
                 process = await asyncio.create_subprocess_exec(
-                    "git", "add", "-A",
+                    "git",
+                    "add",
+                    "-A",
                     cwd=self.repo_path,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 await process.communicate()
 
                 if process.returncode != 0:
                     return ToolResult(
                         success=False,
-                        error="Failed to stage changes. Check git status."
+                        error="Failed to stage changes. Check git status.",
                     )
 
             # Create commit
             process = await asyncio.create_subprocess_exec(
-                "git", "commit", "-m", message,
+                "git",
+                "commit",
+                "-m",
+                message,
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
 
-            stdout, stderr = await process.communicate()
+            _stdout, stderr = await process.communicate()
 
             if process.returncode == 0:
                 return ToolResult(
                     success=True,
                     output=f"Successfully created commit: {message[:60]}{'...' if len(message) > 60 else ''}",
-                    data={"message": message, "files": files if files else "all changes"}
+                    data={"message": message, "files": files if files else "all changes"},
                 )
-            else:
-                error_output = stderr.decode() if stderr else "Unknown error"
+            error_output = stderr.decode() if stderr else "Unknown error"
 
-                # Provide helpful error messages
-                if "nothing to commit" in error_output.lower():
-                    return ToolResult(
-                        success=False,
-                        error="No changes to commit. All changes may have been already committed."
-                    )
-                elif "hook" in error_output.lower():
-                    return ToolResult(
-                        success=False,
-                        error=f"Git hook failed: {error_output}. "
-                              f"Fix the issues identified by the pre-commit hook."
-                    )
-                else:
-                    return ToolResult(
-                        success=False,
-                        error=f"Commit failed: {error_output}"
-                    )
+            # Provide helpful error messages
+            if "nothing to commit" in error_output.lower():
+                return ToolResult(
+                    success=False,
+                    error="No changes to commit. All changes may have been already committed.",
+                )
+            if "hook" in error_output.lower():
+                return ToolResult(
+                    success=False,
+                    error=f"Git hook failed: {error_output}. "
+                    f"Fix the issues identified by the pre-commit hook.",
+                )
+            return ToolResult(
+                success=False,
+                error=f"Commit failed: {error_output}",
+            )
 
         except FileNotFoundError:
             return ToolResult(
                 success=False,
-                error="Git command not found. Ensure git is installed and in PATH."
+                error="Git command not found. Ensure git is installed and in PATH.",
             )
         except Exception as e:
             return ToolResult(
                 success=False,
-                error=f"Failed to create commit: {str(e)}"
+                error=f"Failed to create commit: {e!s}",
             )

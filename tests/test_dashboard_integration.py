@@ -5,19 +5,22 @@ Tests the complete flow including state recovery, processing tracking,
 and dashboard operations with database integration.
 """
 
-import json
 import tempfile
-import time
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
 
-from dashboard import RepoMonitor, LogWriter, WIP_LABELS
+from dashboard import RepoMonitor
 from db_operations import StateDatabase
 from models import (
-    RepositoryState, BranchPRState, PullRequest, Branch,
-    CIStatus, PRState, BranchStatus, CICheck
+    Branch,
+    BranchPRState,
+    BranchStatus,
+    CICheck,
+    CIStatus,
+    PRState,
+    PullRequest,
+    RepositoryState,
 )
 
 
@@ -35,7 +38,7 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
             "path": "/path/to/test-repo",
             "enabled": True,
             "watch_issues": False,
-            "interactive": False
+            "interactive": False,
         }
 
         self.script_path = Path("/fake/pr-loop.py")
@@ -55,33 +58,33 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
                 "prs_processed": 10,
                 "successes": 8,
                 "failures": 2,
-                "iteration": 5
-            }
+                "iteration": 5,
+            },
         )
 
         # Create monitor - should recover state
         monitor = RepoMonitor(
             self.repo_config,
             self.script_path,
-            db=self.db
+            db=self.db,
         )
 
         # Verify state recovered
-        self.assertEqual(monitor.stats["prs_processed"], 10)
-        self.assertEqual(monitor.stats["successes"], 8)
-        self.assertEqual(monitor.stats["failures"], 2)
-        self.assertEqual(monitor.stats["iteration"], 5)
+        assert monitor.stats["prs_processed"] == 10
+        assert monitor.stats["successes"] == 8
+        assert monitor.stats["failures"] == 2
+        assert monitor.stats["iteration"] == 5
 
         # Check logs show recovery
         logs = list(monitor.logs)
-        self.assertTrue(any("Recovered state" in log for log in logs))
+        assert any("Recovered state" in log for log in logs)
 
     def test_persist_state_after_pr_completion(self):
         """Test that state is persisted after PR completion"""
         monitor = RepoMonitor(
             self.repo_config,
             self.script_path,
-            db=self.db
+            db=self.db,
         )
 
         # Simulate PR processing start
@@ -93,16 +96,16 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
                 "title": "Test PR",
                 "mode": "for-review",
                 "head_branch": "feature",
-                "base_branch": "main"
-            }
+                "base_branch": "main",
+            },
         }
         monitor.process_event(start_event)
 
         # Verify processing record created
-        self.assertIsNotNone(monitor.current_processing_id)
+        assert monitor.current_processing_id is not None
         history = self.db.get_processing_history("test-repo", pr_number=123)
-        self.assertEqual(len(history), 1)
-        self.assertIsNone(history[0]["completed_at"])
+        assert len(history) == 1
+        assert history[0]["completed_at"] is None
 
         # Simulate PR completion
         complete_event = {
@@ -110,74 +113,78 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
             "data": {
                 "action": "complete",
                 "pr_number": 123,
-                "success": True
-            }
+                "success": True,
+            },
         }
         monitor.process_event(complete_event)
 
         # Verify processing completion recorded
         history = self.db.get_processing_history("test-repo", pr_number=123)
-        self.assertEqual(history[0]["success"], 1)
-        self.assertIsNotNone(history[0]["completed_at"])
-        self.assertIsNotNone(history[0]["duration_seconds"])
+        assert history[0]["success"] == 1
+        assert history[0]["completed_at"] is not None
+        assert history[0]["duration_seconds"] is not None
 
         # Verify dashboard state persisted
         state = self.db.get_dashboard_state("test-repo")
-        self.assertIsNotNone(state)
-        self.assertEqual(state["prs_processed"], 1)
-        self.assertEqual(state["successes"], 1)
+        assert state is not None
+        assert state["prs_processed"] == 1
+        assert state["successes"] == 1
 
     def test_persist_state_after_pr_failure(self):
         """Test that failures are properly recorded"""
         monitor = RepoMonitor(
             self.repo_config,
             self.script_path,
-            db=self.db
+            db=self.db,
         )
 
         # Start and fail a PR
-        monitor.process_event({
-            "event": "process_pr",
-            "data": {
-                "action": "start",
-                "pr_number": 456,
-                "title": "Failing PR",
-                "mode": "for-landing",
-                "head_branch": "bugfix",
-                "base_branch": "main"
+        monitor.process_event(
+            {
+                "event": "process_pr",
+                "data": {
+                    "action": "start",
+                    "pr_number": 456,
+                    "title": "Failing PR",
+                    "mode": "for-landing",
+                    "head_branch": "bugfix",
+                    "base_branch": "main",
+                },
             }
-        })
+        )
 
-        monitor.process_event({
-            "event": "process_pr",
-            "data": {
-                "action": "complete",
-                "pr_number": 456,
-                "success": False,
-                "reason": "CI checks failed"
+        monitor.process_event(
+            {
+                "event": "process_pr",
+                "data": {
+                    "action": "complete",
+                    "pr_number": 456,
+                    "success": False,
+                    "reason": "CI checks failed",
+                },
             }
-        })
+        )
 
         # Verify failure recorded
         history = self.db.get_processing_history("test-repo", pr_number=456)
-        self.assertEqual(history[0]["success"], 0)
-        self.assertEqual(history[0]["error_message"], "CI checks failed")
+        assert history[0]["success"] == 0
+        assert history[0]["error_message"] == "CI checks failed"
 
         state = self.db.get_dashboard_state("test-repo")
-        self.assertEqual(state["failures"], 1)
+        assert state["failures"] == 1
 
     def test_repository_state_persistence(self):
         """Test saving repository state to database"""
         monitor = RepoMonitor(
             self.repo_config,
             self.script_path,
-            db=self.db
+            db=self.db,
         )
 
         # Create mock repository state
         repo_state = RepositoryState(
             repo_path="/path/to/test-repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         pr = PullRequest(
@@ -188,10 +195,10 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
             base_branch="main",
             author="developer",
             url="https://github.com/test/repo/pull/789",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             labels=["for-review"],
-            ci_checks=[CICheck(name="test", status=CIStatus.SUCCESS)]
+            ci_checks=[CICheck(name="test", status=CIStatus.SUCCESS)],
         )
 
         branch = Branch(
@@ -199,14 +206,14 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
             sha="abc123",
             is_local=True,
             is_remote=True,
-            status=BranchStatus.UP_TO_DATE
+            status=BranchStatus.UP_TO_DATE,
         )
 
         branch_state = BranchPRState(
             branch_name="state-test",
             local_branch=branch,
             remote_branch=branch,
-            pr=pr
+            pr=pr,
         )
 
         repo_state.add_state(branch_state)
@@ -217,21 +224,21 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
 
         # Verify state saved
         summary = self.db.get_repository_state_summary("test-repo")
-        self.assertIsNotNone(summary)
-        self.assertEqual(summary["total_branches"], 1)
-        self.assertEqual(summary["branches_with_prs"], 1)
+        assert summary is not None
+        assert summary["total_branches"] == 1
+        assert summary["branches_with_prs"] == 1
 
         # Verify PR snapshot saved
         pr_snapshot = self.db.get_latest_pr_snapshot("test-repo", 789)
-        self.assertIsNotNone(pr_snapshot)
-        self.assertEqual(pr_snapshot["title"], "Test PR for State")
+        assert pr_snapshot is not None
+        assert pr_snapshot["title"] == "Test PR for State"
 
     def test_multiple_processing_cycles(self):
         """Test tracking multiple PR processing cycles"""
         monitor = RepoMonitor(
             self.repo_config,
             self.script_path,
-            db=self.db
+            db=self.db,
         )
 
         # Process multiple PRs
@@ -240,45 +247,49 @@ class TestRepoMonitorWithDatabase(unittest.TestCase):
             (2, False, "Merge conflict"),
             (3, True, None),
             (4, True, None),
-            (5, False, "CI failed")
+            (5, False, "CI failed"),
         ]
 
         for pr_num, success, reason in prs:
-            monitor.process_event({
-                "event": "process_pr",
-                "data": {
-                    "action": "start",
-                    "pr_number": pr_num,
-                    "title": f"PR {pr_num}",
-                    "mode": "for-review",
-                    "head_branch": f"feature-{pr_num}",
-                    "base_branch": "main"
+            monitor.process_event(
+                {
+                    "event": "process_pr",
+                    "data": {
+                        "action": "start",
+                        "pr_number": pr_num,
+                        "title": f"PR {pr_num}",
+                        "mode": "for-review",
+                        "head_branch": f"feature-{pr_num}",
+                        "base_branch": "main",
+                    },
                 }
-            })
+            )
 
-            monitor.process_event({
-                "event": "process_pr",
-                "data": {
-                    "action": "complete",
-                    "pr_number": pr_num,
-                    "success": success,
-                    "reason": reason
+            monitor.process_event(
+                {
+                    "event": "process_pr",
+                    "data": {
+                        "action": "complete",
+                        "pr_number": pr_num,
+                        "success": success,
+                        "reason": reason,
+                    },
                 }
-            })
+            )
 
         # Verify all tracked
         history = self.db.get_processing_history("test-repo", limit=10)
-        self.assertEqual(len(history), 5)
+        assert len(history) == 5
 
         # Verify statistics
         state = self.db.get_dashboard_state("test-repo")
-        self.assertEqual(state["prs_processed"], 5)
-        self.assertEqual(state["successes"], 3)
-        self.assertEqual(state["failures"], 2)
+        assert state["prs_processed"] == 5
+        assert state["successes"] == 3
+        assert state["failures"] == 2
 
         # Verify success rate
         stats = self.db.get_statistics()
-        self.assertEqual(stats["success_rate"], 60.0)
+        assert stats["success_rate"] == 60.0
 
 
 class TestDatabasePersistenceScenarios(unittest.TestCase):
@@ -302,27 +313,29 @@ class TestDatabasePersistenceScenarios(unittest.TestCase):
         repo_config = {
             "name": "crash-test",
             "path": "/path/to/repo",
-            "enabled": True
+            "enabled": True,
         }
 
         monitor1 = RepoMonitor(
             repo_config,
             Path("/fake/script.py"),
-            db=db1
+            db=db1,
         )
 
         # Start processing a PR
-        monitor1.process_event({
-            "event": "process_pr",
-            "data": {
-                "action": "start",
-                "pr_number": 999,
-                "title": "Crashed PR",
-                "mode": "for-review",
-                "head_branch": "crash",
-                "base_branch": "main"
+        monitor1.process_event(
+            {
+                "event": "process_pr",
+                "data": {
+                    "action": "start",
+                    "pr_number": 999,
+                    "title": "Crashed PR",
+                    "mode": "for-review",
+                    "head_branch": "crash",
+                    "base_branch": "main",
+                },
             }
-        })
+        )
 
         # Simulate crash (don't complete processing)
         del monitor1
@@ -332,24 +345,24 @@ class TestDatabasePersistenceScenarios(unittest.TestCase):
         db2 = StateDatabase(self.db_path)
 
         # Create new monitor - should recover stats
-        monitor2 = RepoMonitor(
+        RepoMonitor(
             repo_config,
             Path("/fake/script.py"),
-            db=db2
+            db=db2,
         )
 
         # Check that incomplete processing is recorded
         history = db2.get_processing_history("crash-test", pr_number=999)
-        self.assertEqual(len(history), 1)
-        self.assertIsNone(history[0]["completed_at"])  # Incomplete
-        self.assertEqual(history[0]["pr_number"], 999)
+        assert len(history) == 1
+        assert history[0]["completed_at"] is None  # Incomplete
+        assert history[0]["pr_number"] == 999
 
     def test_state_continuity_across_restarts(self):
         """Test that state persists across multiple restarts"""
         repo_config = {
             "name": "continuity-test",
             "path": "/path/to/repo",
-            "enabled": True
+            "enabled": True,
         }
 
         # First session
@@ -357,27 +370,31 @@ class TestDatabasePersistenceScenarios(unittest.TestCase):
         monitor1 = RepoMonitor(repo_config, Path("/fake/script.py"), db=db1)
 
         for i in range(3):
-            monitor1.process_event({
-                "event": "process_pr",
-                "data": {
-                    "action": "start",
-                    "pr_number": i,
-                    "title": f"PR {i}",
-                    "mode": "for-review",
-                    "head_branch": f"feature-{i}",
-                    "base_branch": "main"
+            monitor1.process_event(
+                {
+                    "event": "process_pr",
+                    "data": {
+                        "action": "start",
+                        "pr_number": i,
+                        "title": f"PR {i}",
+                        "mode": "for-review",
+                        "head_branch": f"feature-{i}",
+                        "base_branch": "main",
+                    },
                 }
-            })
-            monitor1.process_event({
-                "event": "process_pr",
-                "data": {
-                    "action": "complete",
-                    "pr_number": i,
-                    "success": True
+            )
+            monitor1.process_event(
+                {
+                    "event": "process_pr",
+                    "data": {
+                        "action": "complete",
+                        "pr_number": i,
+                        "success": True,
+                    },
                 }
-            })
+            )
 
-        self.assertEqual(monitor1.stats["prs_processed"], 3)
+        assert monitor1.stats["prs_processed"] == 3
         del monitor1
         del db1
 
@@ -386,36 +403,40 @@ class TestDatabasePersistenceScenarios(unittest.TestCase):
         monitor2 = RepoMonitor(repo_config, Path("/fake/script.py"), db=db2)
 
         # Should start with previous stats
-        self.assertEqual(monitor2.stats["prs_processed"], 3)
-        self.assertEqual(monitor2.stats["successes"], 3)
+        assert monitor2.stats["prs_processed"] == 3
+        assert monitor2.stats["successes"] == 3
 
         # Process more PRs
         for i in range(3, 5):
-            monitor2.process_event({
-                "event": "process_pr",
-                "data": {
-                    "action": "start",
-                    "pr_number": i,
-                    "title": f"PR {i}",
-                    "mode": "for-review",
-                    "head_branch": f"feature-{i}",
-                    "base_branch": "main"
+            monitor2.process_event(
+                {
+                    "event": "process_pr",
+                    "data": {
+                        "action": "start",
+                        "pr_number": i,
+                        "title": f"PR {i}",
+                        "mode": "for-review",
+                        "head_branch": f"feature-{i}",
+                        "base_branch": "main",
+                    },
                 }
-            })
-            monitor2.process_event({
-                "event": "process_pr",
-                "data": {
-                    "action": "complete",
-                    "pr_number": i,
-                    "success": True
+            )
+            monitor2.process_event(
+                {
+                    "event": "process_pr",
+                    "data": {
+                        "action": "complete",
+                        "pr_number": i,
+                        "success": True,
+                    },
                 }
-            })
+            )
 
-        self.assertEqual(monitor2.stats["prs_processed"], 5)
+        assert monitor2.stats["prs_processed"] == 5
 
         # Verify all history present
         history = db2.get_processing_history("continuity-test", limit=10)
-        self.assertEqual(len(history), 5)
+        assert len(history) == 5
 
 
 class TestPRQueueWithDatabase(unittest.TestCase):
@@ -430,7 +451,7 @@ class TestPRQueueWithDatabase(unittest.TestCase):
         self.repo_config = {
             "name": "queue-test",
             "path": "/path/to/repo",
-            "enabled": True
+            "enabled": True,
         }
 
     def tearDown(self):
@@ -443,13 +464,13 @@ class TestPRQueueWithDatabase(unittest.TestCase):
         monitor = RepoMonitor(
             self.repo_config,
             Path("/fake/script.py"),
-            db=self.db
+            db=self.db,
         )
 
         # Create repository state with PRs
         repo_state = RepositoryState(
             repo_path="/path/to/repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         # Add for-review PR
@@ -461,10 +482,10 @@ class TestPRQueueWithDatabase(unittest.TestCase):
             base_branch="main",
             author="dev1",
             url="https://github.com/test/repo/pull/1",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             labels=["for-review"],
-            ci_checks=[CICheck(name="ci", status=CIStatus.SUCCESS)]
+            ci_checks=[CICheck(name="ci", status=CIStatus.SUCCESS)],
         )
 
         # Add for-landing PR with failing CI
@@ -476,10 +497,10 @@ class TestPRQueueWithDatabase(unittest.TestCase):
             base_branch="main",
             author="dev2",
             url="https://github.com/test/repo/pull/2",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             labels=["for-landing"],
-            ci_checks=[CICheck(name="ci", status=CIStatus.FAILURE)]
+            ci_checks=[CICheck(name="ci", status=CIStatus.FAILURE)],
         )
 
         for pr in [pr1, pr2]:
@@ -488,13 +509,13 @@ class TestPRQueueWithDatabase(unittest.TestCase):
                 sha="abc123",
                 is_local=True,
                 is_remote=True,
-                status=BranchStatus.UP_TO_DATE
+                status=BranchStatus.UP_TO_DATE,
             )
             branch_state = BranchPRState(
                 branch_name=pr.head_branch,
                 local_branch=branch,
                 remote_branch=branch,
-                pr=pr
+                pr=pr,
             )
             repo_state.add_state(branch_state)
 
@@ -502,24 +523,24 @@ class TestPRQueueWithDatabase(unittest.TestCase):
         monitor.populate_pr_queue_from_state(force=True)
 
         # Verify queue populated
-        self.assertEqual(len(monitor.pr_queue["for_review"]), 1)
-        self.assertEqual(len(monitor.pr_queue["for_landing"]), 1)
+        assert len(monitor.pr_queue["for_review"]) == 1
+        assert len(monitor.pr_queue["for_landing"]) == 1
 
         # Verify sorting (failing CI first)
         landing = monitor.pr_queue["for_landing"][0]
-        self.assertTrue(landing["ci_failing"])
+        assert landing["ci_failing"]
 
     def test_pr_queue_filters_correctly(self):
         """Test that PR queue correctly filters draft and WIP PRs"""
         monitor = RepoMonitor(
             self.repo_config,
             Path("/fake/script.py"),
-            db=self.db
+            db=self.db,
         )
 
         repo_state = RepositoryState(
             repo_path="/path/to/repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         # Add draft PR (should be filtered)
@@ -532,9 +553,9 @@ class TestPRQueueWithDatabase(unittest.TestCase):
             base_branch="main",
             author="dev",
             url="https://github.com/test/repo/pull/10",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            labels=["for-review"]
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            labels=["for-review"],
         )
 
         # Add WIP PR (should be filtered)
@@ -546,9 +567,9 @@ class TestPRQueueWithDatabase(unittest.TestCase):
             base_branch="main",
             author="dev",
             url="https://github.com/test/repo/pull/11",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            labels=["for-review", "wip"]
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            labels=["for-review", "wip"],
         )
 
         # Add normal PR (should be included)
@@ -560,9 +581,9 @@ class TestPRQueueWithDatabase(unittest.TestCase):
             base_branch="main",
             author="dev",
             url="https://github.com/test/repo/pull/12",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            labels=["for-review"]
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            labels=["for-review"],
         )
 
         for pr in [draft_pr, wip_pr, normal_pr]:
@@ -571,13 +592,13 @@ class TestPRQueueWithDatabase(unittest.TestCase):
                 sha="abc123",
                 is_local=True,
                 is_remote=True,
-                status=BranchStatus.UP_TO_DATE
+                status=BranchStatus.UP_TO_DATE,
             )
             branch_state = BranchPRState(
                 branch_name=pr.head_branch,
                 local_branch=branch,
                 remote_branch=branch,
-                pr=pr
+                pr=pr,
             )
             repo_state.add_state(branch_state)
 
@@ -585,8 +606,8 @@ class TestPRQueueWithDatabase(unittest.TestCase):
         monitor.populate_pr_queue_from_state(force=True)
 
         # Only normal PR should be in queue
-        self.assertEqual(len(monitor.pr_queue["for_review"]), 1)
-        self.assertEqual(monitor.pr_queue["for_review"][0]["number"], 12)
+        assert len(monitor.pr_queue["for_review"]) == 1
+        assert monitor.pr_queue["for_review"][0]["number"] == 12
 
 
 def run_tests():
@@ -607,5 +628,6 @@ def run_tests():
 
 if __name__ == "__main__":
     import sys
+
     success = run_tests()
     sys.exit(0 if success else 1)

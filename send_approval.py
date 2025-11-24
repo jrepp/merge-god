@@ -2,20 +2,24 @@
 """
 Quick script to send approval to a waiting pr-loop.py process
 """
+
 import json
-import psutil
 import sys
+
+import psutil
+
 
 def find_pr_loop_process():
     """Find the running pr-loop.py process"""
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
-            cmdline = proc.info.get('cmdline', [])
-            if cmdline and 'pr-loop.py' in ' '.join(cmdline):
-                return proc.info['pid']
+            cmdline = proc.info.get("cmdline", [])
+            if cmdline and "pr-loop.py" in " ".join(cmdline):
+                return proc.info["pid"]
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return None
+
 
 def send_approval(pid):
     """Send approval JSON to process stdin"""
@@ -25,7 +29,7 @@ def send_approval(pid):
         approval = {"approved": True}
 
         # Try to write to stdin
-        with open(stdin_path, 'w') as stdin:
+        with open(stdin_path, "w") as stdin:
             stdin.write(json.dumps(approval) + "\n")
             stdin.flush()
 
@@ -34,6 +38,7 @@ def send_approval(pid):
     except Exception as e:
         print(f"✗ Failed to send approval: {e}", file=sys.stderr)
         return False
+
 
 def main():
     print("Looking for pr-loop.py process...")
@@ -50,6 +55,7 @@ def main():
         sys.exit(0)
     else:
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

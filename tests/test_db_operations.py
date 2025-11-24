@@ -4,17 +4,22 @@ Unit tests for database operations module.
 Tests all CRUD operations, state persistence, and recovery scenarios.
 """
 
-import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from db_operations import StateDatabase, DatabaseError
+from db_operations import StateDatabase
 from models import (
-    RepositoryState, BranchPRState, PullRequest, Branch, CIStatus,
-    PRState, BranchStatus, CICheck
+    Branch,
+    BranchPRState,
+    BranchStatus,
+    CICheck,
+    CIStatus,
+    PRState,
+    PullRequest,
+    RepositoryState,
 )
 
 
@@ -34,41 +39,43 @@ class TestStateDatabase(unittest.TestCase):
 
     def test_database_initialization(self):
         """Test that database schema is created correctly"""
-        self.assertTrue(self.db_path.exists())
+        assert self.db_path.exists()
 
         # Verify all tables exist
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT name FROM sqlite_master
                 WHERE type='table'
                 ORDER BY name
-            """)
+            """
+            )
             tables = [row[0] for row in cursor.fetchall()]
 
             expected_tables = [
-                'branch_states',
-                'dashboard_state',
-                'processing_history',
-                'pull_requests',
-                'repositories'
+                "branch_states",
+                "dashboard_state",
+                "processing_history",
+                "pull_requests",
+                "repositories",
             ]
             for table in expected_tables:
-                self.assertIn(table, tables)
+                assert table in tables
 
     def test_save_and_get_repository(self):
         """Test saving and retrieving repository metadata"""
         self.db.save_repository(
             name="test-repo",
             path="/path/to/repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         repo = self.db.get_repository("test-repo")
-        self.assertIsNotNone(repo)
-        self.assertEqual(repo["name"], "test-repo")
-        self.assertEqual(repo["path"], "/path/to/repo")
-        self.assertEqual(repo["default_branch"], "main")
+        assert repo is not None
+        assert repo["name"] == "test-repo"
+        assert repo["path"] == "/path/to/repo"
+        assert repo["default_branch"] == "main"
 
     def test_update_repository(self):
         """Test updating existing repository"""
@@ -76,8 +83,8 @@ class TestStateDatabase(unittest.TestCase):
         self.db.save_repository("test-repo", "/new/path", "main")
 
         repo = self.db.get_repository("test-repo")
-        self.assertEqual(repo["path"], "/new/path")
-        self.assertEqual(repo["default_branch"], "main")
+        assert repo["path"] == "/new/path"
+        assert repo["default_branch"] == "main"
 
     def test_save_pr_snapshot(self):
         """Test saving PR snapshot"""
@@ -91,18 +98,18 @@ class TestStateDatabase(unittest.TestCase):
             "draft": False,
             "ci_status": "success",
             "labels": ["for-review", "bug"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
 
         self.db.save_pr_snapshot("test-repo", pr_data)
 
         # Retrieve and verify
         retrieved = self.db.get_latest_pr_snapshot("test-repo", 123)
-        self.assertIsNotNone(retrieved)
-        self.assertEqual(retrieved["pr_number"], 123)
-        self.assertEqual(retrieved["title"], "Test PR")
-        self.assertEqual(retrieved["labels"], ["for-review", "bug"])
+        assert retrieved is not None
+        assert retrieved["pr_number"] == 123
+        assert retrieved["title"] == "Test PR"
+        assert retrieved["labels"] == ["for-review", "bug"]
 
     def test_multiple_pr_snapshots(self):
         """Test that multiple snapshots are saved and latest is retrieved"""
@@ -112,7 +119,7 @@ class TestStateDatabase(unittest.TestCase):
             "state": "open",
             "head_branch": "feature",
             "base_branch": "main",
-            "ci_status": "pending"
+            "ci_status": "pending",
         }
 
         # Save first snapshot
@@ -125,8 +132,8 @@ class TestStateDatabase(unittest.TestCase):
 
         # Should get latest
         latest = self.db.get_latest_pr_snapshot("test-repo", 123)
-        self.assertEqual(latest["title"], "Test PR v2")
-        self.assertEqual(latest["ci_status"], "success")
+        assert latest["title"] == "Test PR v2"
+        assert latest["ci_status"] == "success"
 
     def test_get_active_prs(self):
         """Test retrieving all active PRs for a repository"""
@@ -138,7 +145,7 @@ class TestStateDatabase(unittest.TestCase):
                 "state": "open",
                 "head_branch": f"feature-{i}",
                 "base_branch": "main",
-                "ci_status": "success"
+                "ci_status": "success",
             }
             self.db.save_pr_snapshot("test-repo", pr_data)
 
@@ -148,15 +155,15 @@ class TestStateDatabase(unittest.TestCase):
             "title": "PR 4",
             "state": "closed",
             "head_branch": "feature-4",
-            "base_branch": "main"
+            "base_branch": "main",
         }
         self.db.save_pr_snapshot("test-repo", pr_data)
 
         # Get active PRs
         active_prs = self.db.get_active_prs("test-repo")
-        self.assertEqual(len(active_prs), 3)
-        self.assertEqual(active_prs[0]["pr_number"], 1)
-        self.assertEqual(active_prs[2]["pr_number"], 3)
+        assert len(active_prs) == 3
+        assert active_prs[0]["pr_number"] == 1
+        assert active_prs[2]["pr_number"] == 3
 
     def test_processing_history(self):
         """Test recording and retrieving processing history"""
@@ -165,46 +172,46 @@ class TestStateDatabase(unittest.TestCase):
             repo_name="test-repo",
             pr_number=123,
             action_type="review",
-            metadata={"mode": "for-review", "commit": "abc123"}
+            metadata={"mode": "for-review", "commit": "abc123"},
         )
 
-        self.assertIsNotNone(record_id)
-        self.assertGreater(record_id, 0)
+        assert record_id is not None
+        assert record_id > 0
 
         # Complete processing
         self.db.record_processing_complete(
             record_id=record_id,
             success=True,
-            error_message=None
+            error_message=None,
         )
 
         # Retrieve history
         history = self.db.get_processing_history("test-repo", pr_number=123)
-        self.assertEqual(len(history), 1)
-        self.assertEqual(history[0]["pr_number"], 123)
-        self.assertEqual(history[0]["action_type"], "review")
-        self.assertEqual(history[0]["success"], 1)
-        self.assertIsNotNone(history[0]["completed_at"])
-        self.assertIsNotNone(history[0]["duration_seconds"])
-        self.assertEqual(history[0]["metadata"]["mode"], "for-review")
+        assert len(history) == 1
+        assert history[0]["pr_number"] == 123
+        assert history[0]["action_type"] == "review"
+        assert history[0]["success"] == 1
+        assert history[0]["completed_at"] is not None
+        assert history[0]["duration_seconds"] is not None
+        assert history[0]["metadata"]["mode"] == "for-review"
 
     def test_processing_failure(self):
         """Test recording processing failure"""
         record_id = self.db.record_processing_start(
             repo_name="test-repo",
             pr_number=456,
-            action_type="landing"
+            action_type="landing",
         )
 
         self.db.record_processing_complete(
             record_id=record_id,
             success=False,
-            error_message="CI checks failed"
+            error_message="CI checks failed",
         )
 
         history = self.db.get_processing_history("test-repo", pr_number=456)
-        self.assertEqual(history[0]["success"], 0)
-        self.assertEqual(history[0]["error_message"], "CI checks failed")
+        assert history[0]["success"] == 0
+        assert history[0]["error_message"] == "CI checks failed"
 
     def test_processing_history_limit(self):
         """Test that processing history respects limit parameter"""
@@ -213,16 +220,16 @@ class TestStateDatabase(unittest.TestCase):
             record_id = self.db.record_processing_start(
                 repo_name="test-repo",
                 pr_number=i,
-                action_type="review"
+                action_type="review",
             )
             self.db.record_processing_complete(record_id, success=True)
 
         # Get with limit
         history = self.db.get_processing_history("test-repo", limit=10)
-        self.assertEqual(len(history), 10)
+        assert len(history) == 10
 
         # Verify most recent first
-        self.assertEqual(history[0]["pr_number"], 14)
+        assert history[0]["pr_number"] == 14
 
     def test_dashboard_state_save_and_get(self):
         """Test saving and retrieving dashboard state"""
@@ -230,12 +237,12 @@ class TestStateDatabase(unittest.TestCase):
             "prs_processed": 10,
             "successes": 8,
             "failures": 2,
-            "iteration": 5
+            "iteration": 5,
         }
 
         state_data = {
             "pr_queue": {"for_review": [1, 2], "for_landing": [3]},
-            "last_error": None
+            "last_error": None,
         }
 
         self.db.save_dashboard_state(
@@ -243,17 +250,17 @@ class TestStateDatabase(unittest.TestCase):
             status="running",
             stats=stats,
             current_pr_number=123,
-            state_data=state_data
+            state_data=state_data,
         )
 
         # Retrieve state
         state = self.db.get_dashboard_state("test-repo")
-        self.assertIsNotNone(state)
-        self.assertEqual(state["status"], "running")
-        self.assertEqual(state["prs_processed"], 10)
-        self.assertEqual(state["successes"], 8)
-        self.assertEqual(state["current_pr_number"], 123)
-        self.assertEqual(state["state_data"]["pr_queue"]["for_review"], [1, 2])
+        assert state is not None
+        assert state["status"] == "running"
+        assert state["prs_processed"] == 10
+        assert state["successes"] == 8
+        assert state["current_pr_number"] == 123
+        assert state["state_data"]["pr_queue"]["for_review"] == [1, 2]
 
     def test_dashboard_state_update(self):
         """Test updating existing dashboard state"""
@@ -264,16 +271,16 @@ class TestStateDatabase(unittest.TestCase):
         self.db.save_dashboard_state("test-repo", "idle", stats2)
 
         state = self.db.get_dashboard_state("test-repo")
-        self.assertEqual(state["status"], "idle")
-        self.assertEqual(state["prs_processed"], 10)
-        self.assertEqual(state["successes"], 9)
+        assert state["status"] == "idle"
+        assert state["prs_processed"] == 10
+        assert state["successes"] == 9
 
     def test_save_repository_state(self):
         """Test saving complete repository state"""
         # Create mock repository state
         repo_state = RepositoryState(
             repo_path="/path/to/repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         # Add branch with PR
@@ -285,12 +292,12 @@ class TestStateDatabase(unittest.TestCase):
             base_branch="main",
             author="testuser",
             url="https://github.com/test/repo/pull/123",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             labels=["for-review"],
             ci_checks=[
-                CICheck(name="test", status=CIStatus.SUCCESS)
-            ]
+                CICheck(name="test", status=CIStatus.SUCCESS),
+            ],
         )
 
         local_branch = Branch(
@@ -300,14 +307,14 @@ class TestStateDatabase(unittest.TestCase):
             is_remote=True,
             status=BranchStatus.UP_TO_DATE,
             ahead_by=0,
-            behind_by=0
+            behind_by=0,
         )
 
         branch_state = BranchPRState(
             branch_name="feature-branch",
             local_branch=local_branch,
             remote_branch=local_branch,
-            pr=pr
+            pr=pr,
         )
 
         repo_state.add_state(branch_state)
@@ -317,26 +324,26 @@ class TestStateDatabase(unittest.TestCase):
 
         # Verify repository saved
         repo = self.db.get_repository("test-repo")
-        self.assertIsNotNone(repo)
-        self.assertEqual(repo["default_branch"], "main")
+        assert repo is not None
+        assert repo["default_branch"] == "main"
 
         # Verify PR saved
         pr_snapshot = self.db.get_latest_pr_snapshot("test-repo", 123)
-        self.assertIsNotNone(pr_snapshot)
-        self.assertEqual(pr_snapshot["title"], "Test PR")
+        assert pr_snapshot is not None
+        assert pr_snapshot["title"] == "Test PR"
 
         # Verify branch state saved
         summary = self.db.get_repository_state_summary("test-repo")
-        self.assertIsNotNone(summary)
-        self.assertEqual(summary["total_branches"], 1)
-        self.assertEqual(summary["branches_with_prs"], 1)
+        assert summary is not None
+        assert summary["total_branches"] == 1
+        assert summary["branches_with_prs"] == 1
 
     def test_repository_state_summary(self):
         """Test getting repository state summary"""
         # Create repository with multiple branches
         repo_state = RepositoryState(
             repo_path="/path/to/repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         # Add branches with different states
@@ -346,20 +353,20 @@ class TestStateDatabase(unittest.TestCase):
             if has_pr:
                 pr = PullRequest(
                     number=i + 1,
-                    title=f"PR {i+1}",
+                    title=f"PR {i + 1}",
                     state=PRState.OPEN,
                     head_branch=f"branch-{i}",
                     base_branch="main",
                     author="testuser",
-                    url=f"https://github.com/test/repo/pull/{i+1}",
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
+                    url=f"https://github.com/test/repo/pull/{i + 1}",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
                     ci_checks=[
                         CICheck(
                             name="test",
-                            status=CIStatus.FAILURE if i == 0 else CIStatus.SUCCESS
-                        )
-                    ]
+                            status=CIStatus.FAILURE if i == 0 else CIStatus.SUCCESS,
+                        ),
+                    ],
                 )
 
             branch = Branch(
@@ -369,14 +376,14 @@ class TestStateDatabase(unittest.TestCase):
                 is_remote=True,
                 status=BranchStatus.AHEAD if i == 2 else BranchStatus.UP_TO_DATE,
                 ahead_by=1 if i == 2 else 0,
-                behind_by=0
+                behind_by=0,
             )
 
             branch_state = BranchPRState(
                 branch_name=f"branch-{i}",
                 local_branch=branch,
                 remote_branch=branch,
-                pr=pr
+                pr=pr,
             )
 
             repo_state.add_state(branch_state)
@@ -386,34 +393,40 @@ class TestStateDatabase(unittest.TestCase):
 
         # Get summary
         summary = self.db.get_repository_state_summary("test-repo")
-        self.assertIsNotNone(summary)
-        self.assertEqual(summary["total_branches"], 3)
-        self.assertEqual(summary["branches_with_prs"], 2)
-        self.assertEqual(summary["branches_needing_sync"], 1)
-        self.assertEqual(summary["failing_ci"], 1)
+        assert summary is not None
+        assert summary["total_branches"] == 3
+        assert summary["branches_with_prs"] == 2
+        assert summary["branches_needing_sync"] == 1
+        assert summary["failing_ci"] == 1
 
     def test_cleanup_old_snapshots(self):
         """Test cleaning up old snapshots"""
         # Create old snapshots
-        old_time = datetime.now(timezone.utc) - timedelta(days=10)
+        old_time = datetime.now(UTC) - timedelta(days=10)
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Insert old PR snapshot
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO pull_requests (
                     repo_name, pr_number, title, state,
                     head_branch, base_branch, snapshot_time
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, ("test-repo", 1, "Old PR", "open", "feature", "main", old_time))
+            """,
+                ("test-repo", 1, "Old PR", "open", "feature", "main", old_time),
+            )
 
             # Insert old branch state
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO branch_states (
                     repo_name, branch_name, is_local, is_remote, snapshot_time
                 ) VALUES (?, ?, ?, ?, ?)
-            """, ("test-repo", "old-branch", 1, 1, old_time))
+            """,
+                ("test-repo", "old-branch", 1, 1, old_time),
+            )
 
             conn.commit()
 
@@ -423,18 +436,18 @@ class TestStateDatabase(unittest.TestCase):
             "title": "Recent PR",
             "state": "open",
             "head_branch": "new-feature",
-            "base_branch": "main"
+            "base_branch": "main",
         }
         self.db.save_pr_snapshot("test-repo", pr_data)
 
         # Cleanup old snapshots
         deleted = self.db.cleanup_old_snapshots(days=7)
-        self.assertGreater(deleted, 0)
+        assert deleted > 0
 
         # Verify recent snapshots remain
         recent_prs = self.db.get_active_prs("test-repo")
-        self.assertEqual(len(recent_prs), 1)
-        self.assertEqual(recent_prs[0]["pr_number"], 2)
+        assert len(recent_prs) == 1
+        assert recent_prs[0]["pr_number"] == 2
 
     def test_get_statistics(self):
         """Test getting overall database statistics"""
@@ -446,7 +459,7 @@ class TestStateDatabase(unittest.TestCase):
             "title": "Test PR",
             "state": "open",
             "head_branch": "feature",
-            "base_branch": "main"
+            "base_branch": "main",
         }
         self.db.save_pr_snapshot("test-repo", pr_data)
 
@@ -455,21 +468,21 @@ class TestStateDatabase(unittest.TestCase):
 
         # Get statistics
         stats = self.db.get_statistics()
-        self.assertEqual(stats["repositories"], 1)
-        self.assertEqual(stats["pr_snapshots"], 1)
-        self.assertEqual(stats["processing_records"], 1)
-        self.assertEqual(stats["success_rate"], 100.0)
-        self.assertGreater(stats["database_size_bytes"], 0)
+        assert stats["repositories"] == 1
+        assert stats["pr_snapshots"] == 1
+        assert stats["processing_records"] == 1
+        assert stats["success_rate"] == 100.0
+        assert stats["database_size_bytes"] > 0
 
     def test_database_error_handling(self):
         """Test that database errors are properly handled"""
         # Try to get non-existent repository
         repo = self.db.get_repository("nonexistent")
-        self.assertIsNone(repo)
+        assert repo is None
 
         # Try to get non-existent PR
         pr = self.db.get_latest_pr_snapshot("nonexistent", 999)
-        self.assertIsNone(pr)
+        assert pr is None
 
     def test_concurrent_snapshots(self):
         """Test handling multiple snapshots for same PR"""
@@ -481,13 +494,13 @@ class TestStateDatabase(unittest.TestCase):
                 "state": "open",
                 "head_branch": "feature",
                 "base_branch": "main",
-                "ci_status": status
+                "ci_status": status,
             }
             self.db.save_pr_snapshot("test-repo", pr_data)
 
         # Latest should be 'failure'
         latest = self.db.get_latest_pr_snapshot("test-repo", 123)
-        self.assertEqual(latest["ci_status"], "failure")
+        assert latest["ci_status"] == "failure"
 
     def test_null_values_handling(self):
         """Test handling of null/optional values"""
@@ -496,36 +509,36 @@ class TestStateDatabase(unittest.TestCase):
             "title": "Minimal PR",
             "state": "open",
             "head_branch": "feature",
-            "base_branch": "main"
+            "base_branch": "main",
             # No author, draft, ci_status, labels
         }
 
         self.db.save_pr_snapshot("test-repo", pr_data)
 
         retrieved = self.db.get_latest_pr_snapshot("test-repo", 123)
-        self.assertIsNotNone(retrieved)
-        self.assertEqual(retrieved["pr_number"], 123)
-        self.assertEqual(retrieved["labels"], [])
+        assert retrieved is not None
+        assert retrieved["pr_number"] == 123
+        assert retrieved["labels"] == []
 
     def test_json_serialization(self):
         """Test that complex data structures are properly serialized"""
         metadata = {
             "commits": ["abc123", "def456"],
             "reviewers": ["user1", "user2"],
-            "nested": {"key": "value", "list": [1, 2, 3]}
+            "nested": {"key": "value", "list": [1, 2, 3]},
         }
 
         record_id = self.db.record_processing_start(
             repo_name="test-repo",
             pr_number=123,
             action_type="review",
-            metadata=metadata
+            metadata=metadata,
         )
         self.db.record_processing_complete(record_id, success=True)
 
         history = self.db.get_processing_history("test-repo", pr_number=123)
-        self.assertEqual(history[0]["metadata"]["commits"], ["abc123", "def456"])
-        self.assertEqual(history[0]["metadata"]["nested"]["list"], [1, 2, 3])
+        assert history[0]["metadata"]["commits"] == ["abc123", "def456"]
+        assert history[0]["metadata"]["nested"]["list"] == [1, 2, 3]
 
 
 class TestDatabaseIntegration(unittest.TestCase):
@@ -550,7 +563,7 @@ class TestDatabaseIntegration(unittest.TestCase):
         # 2. Create and save repository state
         repo_state = RepositoryState(
             repo_path="/path/to/repo",
-            default_branch="main"
+            default_branch="main",
         )
 
         pr = PullRequest(
@@ -561,10 +574,10 @@ class TestDatabaseIntegration(unittest.TestCase):
             base_branch="main",
             author="developer",
             url="https://github.com/test/repo/pull/42",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
             labels=["for-landing", "urgent"],
-            ci_checks=[CICheck(name="ci", status=CIStatus.SUCCESS)]
+            ci_checks=[CICheck(name="ci", status=CIStatus.SUCCESS)],
         )
 
         branch = Branch(
@@ -572,14 +585,14 @@ class TestDatabaseIntegration(unittest.TestCase):
             sha="abc123",
             is_local=True,
             is_remote=True,
-            status=BranchStatus.UP_TO_DATE
+            status=BranchStatus.UP_TO_DATE,
         )
 
         branch_state = BranchPRState(
             branch_name="bugfix",
             local_branch=branch,
             remote_branch=branch,
-            pr=pr
+            pr=pr,
         )
 
         repo_state.add_state(branch_state)
@@ -590,7 +603,7 @@ class TestDatabaseIntegration(unittest.TestCase):
             "my-repo",
             42,
             "landing",
-            metadata={"urgency": "high"}
+            metadata={"urgency": "high"},
         )
         self.db.record_processing_complete(record_id, success=True)
 
@@ -600,26 +613,26 @@ class TestDatabaseIntegration(unittest.TestCase):
 
         # 5. Verify all data
         repo = self.db.get_repository("my-repo")
-        self.assertEqual(repo["name"], "my-repo")
+        assert repo["name"] == "my-repo"
 
         pr_snapshot = self.db.get_latest_pr_snapshot("my-repo", 42)
-        self.assertEqual(pr_snapshot["title"], "Fix critical bug")
-        self.assertIn("urgent", pr_snapshot["labels"])
+        assert pr_snapshot["title"] == "Fix critical bug"
+        assert "urgent" in pr_snapshot["labels"]
 
         history = self.db.get_processing_history("my-repo")
-        self.assertEqual(len(history), 1)
-        self.assertEqual(history[0]["success"], 1)
+        assert len(history) == 1
+        assert history[0]["success"] == 1
 
         dashboard = self.db.get_dashboard_state("my-repo")
-        self.assertEqual(dashboard["prs_processed"], 1)
+        assert dashboard["prs_processed"] == 1
 
         summary = self.db.get_repository_state_summary("my-repo")
-        self.assertEqual(summary["branches_with_prs"], 1)
+        assert summary["branches_with_prs"] == 1
 
         # 6. Check statistics
         stats = self.db.get_statistics()
-        self.assertEqual(stats["repositories"], 1)
-        self.assertEqual(stats["success_rate"], 100.0)
+        assert stats["repositories"] == 1
+        assert stats["success_rate"] == 100.0
 
 
 def run_tests():
@@ -639,5 +652,6 @@ def run_tests():
 
 if __name__ == "__main__":
     import sys
+
     success = run_tests()
     sys.exit(0 if success else 1)

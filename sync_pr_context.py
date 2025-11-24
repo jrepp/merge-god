@@ -30,21 +30,24 @@ Examples:
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from db_operations import StateDatabase
-from github_ops import gather_pr_context
-from git_ops import get_repo_prs_with_labels, get_default_branch
+from git_ops import (  # type: ignore[attr-defined]
+    get_default_branch,
+    get_repo_prs_with_labels,
+)
+from github_ops import gather_pr_context  # type: ignore[attr-defined]
 
 
 def log_json(event_type: str, data: dict[str, Any]) -> None:
     """Emit structured JSON logs with timestamp"""
     log_entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "event": event_type,
         "data": data,
     }
@@ -60,16 +63,16 @@ def load_config(config_path: Path) -> dict[str, Any]:
         config = yaml.safe_load(f)
 
     if not config or "repos" not in config:
-        raise ValueError(f"Invalid config file: missing 'repos' section")
+        raise ValueError("Invalid config file: missing 'repos' section")
 
-    return config
+    return config  # type: ignore[return-value]
 
 
 def sync_pr_to_database(
     db: StateDatabase,
     repo_path: Path,
     repo_name: str,
-    pr_number: int
+    pr_number: int,
 ) -> bool:
     """
     Sync a single PR's context to the database.
@@ -83,27 +86,33 @@ def sync_pr_to_database(
     Returns:
         True if sync successful, False otherwise
     """
-    log_json("sync_pr", {
-        "action": "start",
-        "repo": repo_name,
-        "pr_number": pr_number
-    })
+    log_json(
+        "sync_pr",
+        {
+            "action": "start",
+            "repo": repo_name,
+            "pr_number": pr_number,
+        },
+    )
 
     try:
         # Gather PR context using existing functions
         pr_details, pr_context = gather_pr_context(
             repo_path=repo_path,
             pr_number=pr_number,
-            mode="for-landing"  # Default mode, doesn't matter for context gathering
+            mode="for-landing",  # Default mode, doesn't matter for context gathering
         )
 
         if not pr_details or not pr_context:
-            log_json("sync_pr", {
-                "action": "error",
-                "repo": repo_name,
-                "pr_number": pr_number,
-                "error": "Failed to gather PR context"
-            })
+            log_json(
+                "sync_pr",
+                {
+                    "action": "error",
+                    "repo": repo_name,
+                    "pr_number": pr_number,
+                    "error": "Failed to gather PR context",
+                },
+            )
             return False
 
         # Save to database
@@ -111,7 +120,7 @@ def sync_pr_to_database(
             repo_name=repo_name,
             pr_number=pr_number,
             pr_details=pr_details,
-            pr_context=pr_context
+            pr_context=pr_context,
         )
 
         # Also save PR snapshot
@@ -125,38 +134,44 @@ def sync_pr_to_database(
             "draft": False,
             "ci_status": "unknown",
             "labels": pr_details.get("labels", []),
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
         db.save_pr_snapshot(repo_name, pr_snapshot)
 
-        log_json("sync_pr", {
-            "action": "complete",
-            "repo": repo_name,
-            "pr_number": pr_number,
-            "diff_size": len(pr_context.get("diff", "")),
-            "comment_count": len(pr_context.get("comments", [])),
-            "review_comment_count": len(pr_context.get("review_comments", [])),
-            "file_count": len(pr_context.get("files", []))
-        })
+        log_json(
+            "sync_pr",
+            {
+                "action": "complete",
+                "repo": repo_name,
+                "pr_number": pr_number,
+                "diff_size": len(pr_context.get("diff", "")),
+                "comment_count": len(pr_context.get("comments", [])),
+                "review_comment_count": len(pr_context.get("review_comments", [])),
+                "file_count": len(pr_context.get("files", [])),
+            },
+        )
 
         return True
 
     except Exception as e:
-        log_json("sync_pr", {
-            "action": "error",
-            "repo": repo_name,
-            "pr_number": pr_number,
-            "error": str(e),
-            "error_type": type(e).__name__
-        })
+        log_json(
+            "sync_pr",
+            {
+                "action": "error",
+                "repo": repo_name,
+                "pr_number": pr_number,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
         return False
 
 
 def sync_repo(
     db: StateDatabase,
     repo_config: dict[str, Any],
-    specific_pr: int | None = None
+    specific_pr: int | None = None,
 ) -> dict[str, Any]:
     """
     Sync all PRs (or specific PR) from a repository.
@@ -173,26 +188,32 @@ def sync_repo(
     repo_name = repo_config.get("name", repo_path.name)
 
     if not repo_path.exists():
-        log_json("sync_repo", {
-            "action": "error",
-            "repo": repo_name,
-            "error": f"Repository path does not exist: {repo_path}"
-        })
+        log_json(
+            "sync_repo",
+            {
+                "action": "error",
+                "repo": repo_name,
+                "error": f"Repository path does not exist: {repo_path}",
+            },
+        )
         return {"success": False, "error": "path_not_found"}
 
-    log_json("sync_repo", {
-        "action": "start",
-        "repo": repo_name,
-        "path": str(repo_path),
-        "specific_pr": specific_pr
-    })
+    log_json(
+        "sync_repo",
+        {
+            "action": "start",
+            "repo": repo_name,
+            "path": str(repo_path),
+            "specific_pr": specific_pr,
+        },
+    )
 
     stats = {
         "repo": repo_name,
         "total": 0,
         "succeeded": 0,
         "failed": 0,
-        "prs": []
+        "prs": [],
     }
 
     try:
@@ -207,26 +228,32 @@ def sync_repo(
                 stats["failed"] = 1
         else:
             # Discover PRs with for-landing or for-review labels
-            default_branch = get_default_branch(repo_path)
+            get_default_branch(repo_path)
             prs_for_landing = get_repo_prs_with_labels(repo_path, ["for-landing"])
             prs_for_review = get_repo_prs_with_labels(repo_path, ["for-review"])
 
             all_prs = set(prs_for_landing + prs_for_review)
             stats["total"] = len(all_prs)
 
-            log_json("sync_repo", {
-                "action": "discovered_prs",
-                "repo": repo_name,
-                "pr_count": len(all_prs),
-                "pr_numbers": sorted(list(all_prs))
-            })
+            log_json(
+                "sync_repo",
+                {
+                    "action": "discovered_prs",
+                    "repo": repo_name,
+                    "pr_count": len(all_prs),
+                    "pr_numbers": sorted(all_prs),
+                },
+            )
 
             if not all_prs:
-                log_json("sync_repo", {
-                    "action": "warning",
-                    "repo": repo_name,
-                    "warning": "No PRs found with for-landing or for-review labels"
-                })
+                log_json(
+                    "sync_repo",
+                    {
+                        "action": "warning",
+                        "repo": repo_name,
+                        "warning": "No PRs found with for-landing or for-review labels",
+                    },
+                )
 
             # Sync each PR
             for pr_number in sorted(all_prs):
@@ -239,25 +266,31 @@ def sync_repo(
 
         stats["success"] = stats["failed"] == 0
 
-        log_json("sync_repo", {
-            "action": "complete",
-            "repo": repo_name,
-            "stats": stats
-        })
+        log_json(
+            "sync_repo",
+            {
+                "action": "complete",
+                "repo": repo_name,
+                "stats": stats,
+            },
+        )
 
         return stats
 
     except Exception as e:
-        log_json("sync_repo", {
-            "action": "error",
-            "repo": repo_name,
-            "error": str(e),
-            "error_type": type(e).__name__
-        })
+        log_json(
+            "sync_repo",
+            {
+                "action": "error",
+                "repo": repo_name,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
         return {
             **stats,
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -283,82 +316,97 @@ Examples:
 This script enables database caching for offline agent testing and debugging.
 It gathers complete PR context (diff, comments, CI status) and stores it in
 SQLite for use with run_agent_from_db.py.
-        """
+        """,
     )
 
     parser.add_argument(
         "--config",
         type=Path,
         default=Path("config.yaml"),
-        help="Path to config.yaml file (default: config.yaml)"
+        help="Path to config.yaml file (default: config.yaml)",
     )
 
     parser.add_argument(
         "--db",
         type=Path,
         default=Path("merge-god-state.db"),
-        help="Path to SQLite database (default: merge-god-state.db)"
+        help="Path to SQLite database (default: merge-god-state.db)",
     )
 
     parser.add_argument(
         "--repo",
         type=str,
-        help="Sync specific repository by name"
+        help="Sync specific repository by name",
     )
 
     parser.add_argument(
         "--pr",
         type=int,
-        help="Sync specific PR number (requires --repo)"
+        help="Sync specific PR number (requires --repo)",
     )
 
     args = parser.parse_args()
 
     # Validate arguments
     if args.pr and not args.repo:
-        log_json("error", {
-            "error": "--pr requires --repo to be specified"
-        })
+        log_json(
+            "error",
+            {
+                "error": "--pr requires --repo to be specified",
+            },
+        )
         return 1
 
     # Load configuration
     try:
         config = load_config(args.config)
     except Exception as e:
-        log_json("error", {
-            "error": f"Failed to load config: {e}",
-            "config_path": str(args.config)
-        })
+        log_json(
+            "error",
+            {
+                "error": f"Failed to load config: {e}",
+                "config_path": str(args.config),
+            },
+        )
         return 1
 
     # Initialize database
     try:
         db = StateDatabase(args.db)
     except Exception as e:
-        log_json("error", {
-            "error": f"Failed to initialize database: {e}",
-            "db_path": str(args.db)
-        })
+        log_json(
+            "error",
+            {
+                "error": f"Failed to initialize database: {e}",
+                "db_path": str(args.db),
+            },
+        )
         return 1
 
-    log_json("sync", {
-        "action": "start",
-        "config": str(args.config),
-        "database": str(args.db),
-        "repo_filter": args.repo,
-        "pr_filter": args.pr
-    })
+    log_json(
+        "sync",
+        {
+            "action": "start",
+            "config": str(args.config),
+            "database": str(args.db),
+            "repo_filter": args.repo,
+            "pr_filter": args.pr,
+        },
+    )
 
     # Sync repositories
     all_stats = []
     for repo_config in config["repos"]:
         # Skip if not enabled
         if not repo_config.get("enabled", True):
-            log_json("sync", {
-                "action": "skip",
-                "repo": repo_config.get("name", repo_config["path"]),
-                "reason": "disabled in config"
-            })
+            log_json(
+                "sync",
+                {
+                    "action": "skip",
+                    "repo": repo_config.get("name", repo_config["path"]),
+                    "reason": "disabled in config",
+                },
+            )
             continue
 
         # Skip if filtering by repo and this isn't it
@@ -373,13 +421,16 @@ SQLite for use with run_agent_from_db.py.
     succeeded = sum(s["succeeded"] for s in all_stats)
     failed = sum(s["failed"] for s in all_stats)
 
-    log_json("sync", {
-        "action": "complete",
-        "total_prs": total_prs,
-        "succeeded": succeeded,
-        "failed": failed,
-        "success_rate": round(succeeded / total_prs * 100, 1) if total_prs > 0 else 0
-    })
+    log_json(
+        "sync",
+        {
+            "action": "complete",
+            "total_prs": total_prs,
+            "succeeded": succeeded,
+            "failed": failed,
+            "success_rate": round(succeeded / total_prs * 100, 1) if total_prs > 0 else 0,
+        },
+    )
 
     return 0 if failed == 0 else 1
 
@@ -391,8 +442,11 @@ if __name__ == "__main__":
         log_json("shutdown", {"reason": "keyboard_interrupt"})
         sys.exit(130)
     except Exception as e:
-        log_json("fatal_error", {
-            "error": str(e),
-            "error_type": type(e).__name__
-        })
+        log_json(
+            "fatal_error",
+            {
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
         sys.exit(1)

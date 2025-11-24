@@ -56,7 +56,8 @@ class StateDatabase:
             cursor = conn.cursor()
 
             # Repositories table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS repositories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
@@ -65,10 +66,12 @@ class StateDatabase:
                     last_updated TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
+            """
+            )
 
             # Pull requests table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS pull_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     repo_name TEXT NOT NULL,
@@ -86,10 +89,12 @@ class StateDatabase:
                     snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(repo_name, pr_number, snapshot_time)
                 )
-            """)
+            """
+            )
 
             # Processing history table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS processing_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     repo_name TEXT NOT NULL,
@@ -102,10 +107,12 @@ class StateDatabase:
                     duration_seconds REAL,
                     metadata TEXT
                 )
-            """)
+            """
+            )
 
             # Dashboard state table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS dashboard_state (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     repo_name TEXT NOT NULL UNIQUE,
@@ -118,10 +125,12 @@ class StateDatabase:
                     last_update TIMESTAMP,
                     state_data TEXT
                 )
-            """)
+            """
+            )
 
             # Branch state table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS branch_states (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     repo_name TEXT NOT NULL,
@@ -136,10 +145,12 @@ class StateDatabase:
                     snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(repo_name, branch_name, snapshot_time)
                 )
-            """)
+            """
+            )
 
             # PR context table - stores complete context for agent invocation
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS pr_context (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     repo_name TEXT NOT NULL,
@@ -158,31 +169,41 @@ class StateDatabase:
                     captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(repo_name, pr_number, captured_at)
                 )
-            """)
+            """
+            )
 
             # Create indexes for performance
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_pr_repo_number
                 ON pull_requests(repo_name, pr_number)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_processing_repo_pr
                 ON processing_history(repo_name, pr_number, started_at DESC)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_branch_repo
                 ON branch_states(repo_name, branch_name)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_pr_context_repo_pr
                 ON pr_context(repo_name, pr_number, captured_at DESC)
-            """)
+            """
+            )
 
             # Agent sessions table - track agent invocations
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     repo_name TEXT NOT NULL,
@@ -219,10 +240,12 @@ class StateDatabase:
 
                     FOREIGN KEY (repo_name, pr_number) REFERENCES pull_requests(repo_name, pr_number)
                 )
-            """)
+            """
+            )
 
             # Agent actions table - detailed action log
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -240,10 +263,12 @@ class StateDatabase:
 
                     FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
                 )
-            """)
+            """
+            )
 
             # Agent turns table - conversation turn tracking
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_turns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -258,10 +283,12 @@ class StateDatabase:
 
                     FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
                 )
-            """)
+            """
+            )
 
             # Agent errors table - error tracking
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_errors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -274,36 +301,48 @@ class StateDatabase:
 
                     FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
                 )
-            """)
+            """
+            )
 
             # Create indexes for agent tables
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_sessions_repo_pr
                 ON agent_sessions(repo_name, pr_number, started_at DESC)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status
                 ON agent_sessions(status, started_at DESC)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_actions_session
                 ON agent_actions(session_id, action_number)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_turns_session
                 ON agent_turns(session_id, turn_number)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_errors_session
                 ON agent_errors(session_id, occurred_at DESC)
-            """)
+            """
+            )
 
             # Agent file operations table - track file read/write/edit
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_file_operations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -320,17 +359,22 @@ class StateDatabase:
                     FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id),
                     FOREIGN KEY (action_id) REFERENCES agent_actions(id)
                 )
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_file_ops_session
                 ON agent_file_operations(session_id, occurred_at)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_agent_file_ops_path
                 ON agent_file_operations(file_path, operation_type)
-            """)
+            """
+            )
 
     # Repository Operations
 
@@ -345,14 +389,17 @@ class StateDatabase:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO repositories (name, path, default_branch, last_updated)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                     path = excluded.path,
                     default_branch = excluded.default_branch,
                     last_updated = excluded.last_updated
-            """, (name, path, default_branch, datetime.now(UTC)))
+            """,
+                (name, path, default_branch, datetime.now(UTC)),
+            )
 
     def get_repository(self, name: str) -> dict[str, Any] | None:
         """Get repository metadata by name"""
@@ -374,37 +421,43 @@ class StateDatabase:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO pull_requests (
                     repo_name, pr_number, title, state, head_branch, base_branch,
                     author, draft, ci_status, labels, created_at, updated_at, snapshot_time
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                repo_name,
-                pr_data["number"],
-                pr_data["title"],
-                pr_data.get("state", "open"),
-                pr_data["head_branch"],
-                pr_data["base_branch"],
-                pr_data.get("author"),
-                1 if pr_data.get("draft", False) else 0,
-                pr_data.get("ci_status"),
-                json.dumps(pr_data.get("labels", [])),
-                pr_data.get("created_at"),
-                pr_data.get("updated_at"),
-                datetime.now(UTC),
-            ))
+            """,
+                (
+                    repo_name,
+                    pr_data["number"],
+                    pr_data["title"],
+                    pr_data.get("state", "open"),
+                    pr_data["head_branch"],
+                    pr_data["base_branch"],
+                    pr_data.get("author"),
+                    1 if pr_data.get("draft", False) else 0,
+                    pr_data.get("ci_status"),
+                    json.dumps(pr_data.get("labels", [])),
+                    pr_data.get("created_at"),
+                    pr_data.get("updated_at"),
+                    datetime.now(UTC),
+                ),
+            )
 
     def get_latest_pr_snapshot(self, repo_name: str, pr_number: int) -> dict[str, Any] | None:
         """Get the latest snapshot of a specific PR"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM pull_requests
                 WHERE repo_name = ? AND pr_number = ?
                 ORDER BY snapshot_time DESC
                 LIMIT 1
-            """, (repo_name, pr_number))
+            """,
+                (repo_name, pr_number),
+            )
             row = cursor.fetchone()
             if row:
                 data = dict(row)
@@ -416,7 +469,8 @@ class StateDatabase:
         """Get all active PRs for a repository (latest snapshots only)"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM pull_requests p1
                 WHERE repo_name = ?
                 AND state = 'open'
@@ -427,7 +481,9 @@ class StateDatabase:
                     AND p2.pr_number = p1.pr_number
                 )
                 ORDER BY pr_number
-            """, (repo_name,))
+            """,
+                (repo_name,),
+            )
             results = []
             for row in cursor.fetchall():
                 data = dict(row)
@@ -458,17 +514,20 @@ class StateDatabase:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO processing_history (
                     repo_name, pr_number, action_type, started_at, metadata
                 ) VALUES (?, ?, ?, ?, ?)
-            """, (
-                repo_name,
-                pr_number,
-                action_type,
-                datetime.now(UTC),
-                json.dumps(metadata) if metadata else None,
-            ))
+            """,
+                (
+                    repo_name,
+                    pr_number,
+                    action_type,
+                    datetime.now(UTC),
+                    json.dumps(metadata) if metadata else None,
+                ),
+            )
             lastrowid = cursor.lastrowid
             if lastrowid is None:
                 raise DatabaseError("Failed to get lastrowid after insert")
@@ -491,7 +550,8 @@ class StateDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             completed_at = datetime.now(UTC)
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE processing_history
                 SET success = ?,
                     error_message = ?,
@@ -500,13 +560,15 @@ class StateDatabase:
                         julianday(?) - julianday(started_at)
                     ) * 86400
                 WHERE id = ?
-            """, (
-                1 if success else 0,
-                error_message,
-                completed_at,
-                completed_at,
-                record_id,
-            ))
+            """,
+                (
+                    1 if success else 0,
+                    error_message,
+                    completed_at,
+                    completed_at,
+                    record_id,
+                ),
+            )
 
     def get_processing_history(
         self,
@@ -528,19 +590,25 @@ class StateDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             if pr_number is not None:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT * FROM processing_history
                     WHERE repo_name = ? AND pr_number = ?
                     ORDER BY started_at DESC
                     LIMIT ?
-                """, (repo_name, pr_number, limit))
+                """,
+                    (repo_name, pr_number, limit),
+                )
             else:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT * FROM processing_history
                     WHERE repo_name = ?
                     ORDER BY started_at DESC
                     LIMIT ?
-                """, (repo_name, limit))
+                """,
+                    (repo_name, limit),
+                )
 
             results = []
             for row in cursor.fetchall():
@@ -572,7 +640,8 @@ class StateDatabase:
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO dashboard_state (
                     repo_name, status, current_pr_number,
                     prs_processed, successes, failures, iteration,
@@ -587,25 +656,30 @@ class StateDatabase:
                     iteration = excluded.iteration,
                     last_update = excluded.last_update,
                     state_data = excluded.state_data
-            """, (
-                repo_name,
-                status,
-                current_pr_number,
-                stats.get("prs_processed", 0),
-                stats.get("successes", 0),
-                stats.get("failures", 0),
-                stats.get("iteration", 0),
-                datetime.now(UTC),
-                json.dumps(state_data) if state_data else None,
-            ))
+            """,
+                (
+                    repo_name,
+                    status,
+                    current_pr_number,
+                    stats.get("prs_processed", 0),
+                    stats.get("successes", 0),
+                    stats.get("failures", 0),
+                    stats.get("iteration", 0),
+                    datetime.now(UTC),
+                    json.dumps(state_data) if state_data else None,
+                ),
+            )
 
     def get_dashboard_state(self, repo_name: str) -> dict[str, Any] | None:
         """Get dashboard state for a repository"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM dashboard_state WHERE repo_name = ?
-            """, (repo_name,))
+            """,
+                (repo_name,),
+            )
             row = cursor.fetchone()
             if row:
                 data = dict(row)
@@ -630,58 +704,67 @@ class StateDatabase:
             cursor = conn.cursor()
 
             # Save repository metadata
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO repositories (name, path, default_branch, last_updated)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                     path = excluded.path,
                     default_branch = excluded.default_branch,
                     last_updated = excluded.last_updated
-            """, (repo_name, repo_state.repo_path, repo_state.default_branch, snapshot_time))
+            """,
+                (repo_name, repo_state.repo_path, repo_state.default_branch, snapshot_time),
+            )
 
             # Save branch states
             for branch_state in repo_state.branch_pr_states:
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO branch_states (
                         repo_name, branch_name, is_local, is_remote,
                         ahead_by, behind_by, has_pr, pr_number, needs_sync, snapshot_time
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    repo_name,
-                    branch_state.branch_name,
-                    1 if branch_state.local_branch else 0,
-                    1 if branch_state.remote_branch else 0,
-                    branch_state.local_branch.ahead_by if branch_state.local_branch else 0,
-                    branch_state.local_branch.behind_by if branch_state.local_branch else 0,
-                    1 if branch_state.has_pr else 0,
-                    branch_state.pr.number if branch_state.pr else None,
-                    1 if (branch_state.needs_push or branch_state.needs_pull) else 0,
-                    snapshot_time,
-                ))
+                """,
+                    (
+                        repo_name,
+                        branch_state.branch_name,
+                        1 if branch_state.local_branch else 0,
+                        1 if branch_state.remote_branch else 0,
+                        branch_state.local_branch.ahead_by if branch_state.local_branch else 0,
+                        branch_state.local_branch.behind_by if branch_state.local_branch else 0,
+                        1 if branch_state.has_pr else 0,
+                        branch_state.pr.number if branch_state.pr else None,
+                        1 if (branch_state.needs_push or branch_state.needs_pull) else 0,
+                        snapshot_time,
+                    ),
+                )
 
                 # Save PR snapshot if exists
                 if branch_state.pr:
                     pr = branch_state.pr
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT INTO pull_requests (
                             repo_name, pr_number, title, state, head_branch, base_branch,
                             author, draft, ci_status, labels, created_at, updated_at, snapshot_time
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        repo_name,
-                        pr.number,
-                        pr.title,
-                        pr.state.value,
-                        pr.head_branch,
-                        pr.base_branch,
-                        pr.author,
-                        1 if pr.draft else 0,
-                        pr.get_ci_status().value,
-                        json.dumps(pr.labels),
-                        pr.created_at,
-                        pr.updated_at,
-                        snapshot_time,
-                    ))
+                    """,
+                        (
+                            repo_name,
+                            pr.number,
+                            pr.title,
+                            pr.state.value,
+                            pr.head_branch,
+                            pr.base_branch,
+                            pr.author,
+                            1 if pr.draft else 0,
+                            pr.get_ci_status().value,
+                            json.dumps(pr.labels),
+                            pr.created_at,
+                            pr.updated_at,
+                            snapshot_time,
+                        ),
+                    )
 
     def get_repository_state_summary(self, repo_name: str) -> dict[str, Any] | None:
         """Get summary of latest repository state"""
@@ -689,11 +772,14 @@ class StateDatabase:
             cursor = conn.cursor()
 
             # Get latest snapshot time
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT MAX(snapshot_time) as latest
                 FROM branch_states
                 WHERE repo_name = ?
-            """, (repo_name,))
+            """,
+                (repo_name,),
+            )
             row = cursor.fetchone()
             if not row or not row["latest"]:
                 return None
@@ -701,7 +787,8 @@ class StateDatabase:
             snapshot_time = row["latest"]
 
             # Get branch statistics
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT
                     COUNT(*) as total_branches,
                     SUM(has_pr) as branches_with_prs,
@@ -710,18 +797,23 @@ class StateDatabase:
                     SUM(CASE WHEN is_remote = 1 THEN 1 ELSE 0 END) as remote_branches
                 FROM branch_states
                 WHERE repo_name = ? AND snapshot_time = ?
-            """, (repo_name, snapshot_time))
+            """,
+                (repo_name, snapshot_time),
+            )
 
             stats = dict(cursor.fetchone())
 
             # Get failing CI count
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT COUNT(*) as failing_ci
                 FROM pull_requests
                 WHERE repo_name = ?
                 AND snapshot_time = ?
                 AND ci_status = 'failure'
-            """, (repo_name, snapshot_time))
+            """,
+                (repo_name, snapshot_time),
+            )
 
             stats["failing_ci"] = cursor.fetchone()["failing_ci"]
             stats["snapshot_time"] = snapshot_time
@@ -768,33 +860,39 @@ class StateDatabase:
         diff = pr_context.get("diff", "")
         if len(diff) > max_diff_size:
             # Truncate large diffs but keep metadata
-            diff = diff[:max_diff_size] + f"\n\n... [Diff truncated - original size: {len(diff)} bytes]"
+            diff = (
+                diff[:max_diff_size]
+                + f"\n\n... [Diff truncated - original size: {len(diff)} bytes]"
+            )
 
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO pr_context (
                         repo_name, pr_number, pr_url, diff, body,
                         comments, review_comments, commits, files,
                         conflicts, ci_checks, guidelines, commit_examples, captured_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    repo_name,
-                    pr_number,
-                    pr_context.get("url", ""),
-                    diff,
-                    pr_details.get("body", ""),
-                    json.dumps(pr_context.get("comments", []), ensure_ascii=False),
-                    json.dumps(pr_context.get("review_comments", []), ensure_ascii=False),
-                    json.dumps(pr_context.get("commits", []), ensure_ascii=False),
-                    json.dumps(pr_context.get("files", []), ensure_ascii=False),
-                    json.dumps(pr_context.get("conflicts", {}), ensure_ascii=False),
-                    json.dumps(pr_context.get("ci_status", {}), ensure_ascii=False),
-                    pr_context.get("guidelines", ""),
-                    pr_context.get("commit_examples", ""),
-                    datetime.now(UTC),
-                ))
+                """,
+                    (
+                        repo_name,
+                        pr_number,
+                        pr_context.get("url", ""),
+                        diff,
+                        pr_details.get("body", ""),
+                        json.dumps(pr_context.get("comments", []), ensure_ascii=False),
+                        json.dumps(pr_context.get("review_comments", []), ensure_ascii=False),
+                        json.dumps(pr_context.get("commits", []), ensure_ascii=False),
+                        json.dumps(pr_context.get("files", []), ensure_ascii=False),
+                        json.dumps(pr_context.get("conflicts", {}), ensure_ascii=False),
+                        json.dumps(pr_context.get("ci_status", {}), ensure_ascii=False),
+                        pr_context.get("guidelines", ""),
+                        pr_context.get("commit_examples", ""),
+                        datetime.now(UTC),
+                    ),
+                )
         except Exception as e:
             raise DatabaseError(f"Failed to save PR context: {e}") from e
 
@@ -823,12 +921,15 @@ class StateDatabase:
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT * FROM pr_context
                     WHERE repo_name = ? AND pr_number = ?
                     ORDER BY captured_at DESC
                     LIMIT 1
-                """, (repo_name, pr_number))
+                """,
+                    (repo_name, pr_number),
+                )
                 row = cursor.fetchone()
                 if row:
                     data = dict(row)
@@ -839,7 +940,9 @@ class StateDatabase:
                         data["comments"] = []
 
                     try:
-                        data["review_comments"] = json.loads(data["review_comments"]) if data["review_comments"] else []
+                        data["review_comments"] = (
+                            json.loads(data["review_comments"]) if data["review_comments"] else []
+                        )
                     except json.JSONDecodeError:
                         data["review_comments"] = []
 
@@ -854,12 +957,16 @@ class StateDatabase:
                         data["files"] = []
 
                     try:
-                        data["conflicts"] = json.loads(data["conflicts"]) if data["conflicts"] else {}
+                        data["conflicts"] = (
+                            json.loads(data["conflicts"]) if data["conflicts"] else {}
+                        )
                     except json.JSONDecodeError:
                         data["conflicts"] = {}
 
                     try:
-                        data["ci_checks"] = json.loads(data["ci_checks"]) if data["ci_checks"] else {}
+                        data["ci_checks"] = (
+                            json.loads(data["ci_checks"]) if data["ci_checks"] else {}
+                        )
                     except json.JSONDecodeError:
                         data["ci_checks"] = {}
 
@@ -868,7 +975,9 @@ class StateDatabase:
         except Exception as e:
             raise DatabaseError(f"Failed to retrieve PR context: {e}") from e
 
-    def get_pr_context_for_agent(self, repo_name: str, pr_number: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def get_pr_context_for_agent(
+        self, repo_name: str, pr_number: int
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """
         Get PR details and context in the format expected by gather_pr_context().
 
@@ -950,15 +1059,24 @@ class StateDatabase:
         """Create a new agent session record"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO agent_sessions (
                     repo_name, pr_number, session_id, mode, model, agent_version,
                     started_at, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                repo_name, pr_number, session_id, mode, model, agent_version,
-                datetime.now(UTC), "running",
-            ))
+            """,
+                (
+                    repo_name,
+                    pr_number,
+                    session_id,
+                    mode,
+                    model,
+                    agent_version,
+                    datetime.now(UTC),
+                    "running",
+                ),
+            )
 
     def update_agent_session(
         self,
@@ -1030,9 +1148,11 @@ class StateDatabase:
 
         # Calculate duration if completing
         if status in ["completed", "failed", "aborted"]:
-            updates.append("""duration_seconds = (
+            updates.append(
+                """duration_seconds = (
                 julianday(?) - julianday(started_at)
-            ) * 86400""")
+            ) * 86400"""
+            )
             params.append(datetime.now(UTC))
 
         if not updates:
@@ -1042,11 +1162,14 @@ class StateDatabase:
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 UPDATE agent_sessions
-                SET {', '.join(updates)}
+                SET {", ".join(updates)}
                 WHERE session_id = ?
-            """, params)
+            """,
+                params,
+            )
 
     def record_agent_action(
         self,
@@ -1063,19 +1186,26 @@ class StateDatabase:
         """Record an agent action"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO agent_actions (
                     session_id, action_number, action_type, target, status,
                     started_at, success, error_message, details, result
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                session_id, action_number, action_type, target, status,
-                datetime.now(UTC),
-                1 if success else 0 if success is not None else None,
-                error_message,
-                json.dumps(details) if details else None,
-                json.dumps(result) if result else None,
-            ))
+            """,
+                (
+                    session_id,
+                    action_number,
+                    action_type,
+                    target,
+                    status,
+                    datetime.now(UTC),
+                    1 if success else 0 if success is not None else None,
+                    error_message,
+                    json.dumps(details) if details else None,
+                    json.dumps(result) if result else None,
+                ),
+            )
             lastrowid = cursor.lastrowid
             if lastrowid is None:
                 raise DatabaseError("Failed to get lastrowid after insert")
@@ -1095,15 +1225,25 @@ class StateDatabase:
         """Record a conversation turn"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO agent_turns (
                     session_id, turn_number, role, content_type, content_preview,
                     tool_uses, input_tokens, output_tokens, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                session_id, turn_number, role, content_type, content_preview,
-                tool_uses, input_tokens, output_tokens, datetime.now(UTC),
-            ))
+            """,
+                (
+                    session_id,
+                    turn_number,
+                    role,
+                    content_type,
+                    content_preview,
+                    tool_uses,
+                    input_tokens,
+                    output_tokens,
+                    datetime.now(UTC),
+                ),
+            )
 
     def record_agent_error(
         self,
@@ -1117,15 +1257,23 @@ class StateDatabase:
         """Record an agent error"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO agent_errors (
                     session_id, error_type, error_message, error_details,
                     is_transient, retry_count, occurred_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                session_id, error_type, error_message, error_details,
-                1 if is_transient else 0, retry_count, datetime.now(UTC),
-            ))
+            """,
+                (
+                    session_id,
+                    error_type,
+                    error_message,
+                    error_details,
+                    1 if is_transient else 0,
+                    retry_count,
+                    datetime.now(UTC),
+                ),
+            )
 
     def record_file_operation(
         self,
@@ -1142,16 +1290,26 @@ class StateDatabase:
         """Record a file operation"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO agent_file_operations (
                     session_id, action_id, operation_type, file_path, file_size,
                     lines_added, lines_removed, success, error_message, occurred_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                session_id, action_id, operation_type, file_path, file_size,
-                lines_added, lines_removed, 1 if success else 0,
-                error_message, datetime.now(UTC),
-            ))
+            """,
+                (
+                    session_id,
+                    action_id,
+                    operation_type,
+                    file_path,
+                    file_size,
+                    lines_added,
+                    lines_removed,
+                    1 if success else 0,
+                    error_message,
+                    datetime.now(UTC),
+                ),
+            )
 
     def get_agent_sessions(
         self,
@@ -1198,35 +1356,47 @@ class StateDatabase:
             session = dict(session_row)
 
             # Get actions
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM agent_actions
                 WHERE session_id = ?
                 ORDER BY action_number
-            """, (session_id,))
+            """,
+                (session_id,),
+            )
             session["actions"] = [dict(row) for row in cursor.fetchall()]
 
             # Get turns
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM agent_turns
                 WHERE session_id = ?
                 ORDER BY turn_number
-            """, (session_id,))
+            """,
+                (session_id,),
+            )
             session["turns"] = [dict(row) for row in cursor.fetchall()]
 
             # Get errors
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM agent_errors
                 WHERE session_id = ?
                 ORDER BY occurred_at
-            """, (session_id,))
+            """,
+                (session_id,),
+            )
             session["errors"] = [dict(row) for row in cursor.fetchall()]
 
             # Get file operations
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM agent_file_operations
                 WHERE session_id = ?
                 ORDER BY occurred_at
-            """, (session_id,))
+            """,
+                (session_id,),
+            )
             session["file_operations"] = [dict(row) for row in cursor.fetchall()]
 
             return session
@@ -1247,22 +1417,31 @@ class StateDatabase:
             cursor = conn.cursor()
             cutoff = datetime.now(UTC).timestamp() - (days * 86400)
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 DELETE FROM pull_requests
                 WHERE snapshot_time < datetime(?, 'unixepoch')
-            """, (cutoff,))
+            """,
+                (cutoff,),
+            )
             pr_deleted = cursor.rowcount
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 DELETE FROM branch_states
                 WHERE snapshot_time < datetime(?, 'unixepoch')
-            """, (cutoff,))
+            """,
+                (cutoff,),
+            )
             branch_deleted = cursor.rowcount
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 DELETE FROM pr_context
                 WHERE captured_at < datetime(?, 'unixepoch')
-            """, (cutoff,))
+            """,
+                (cutoff,),
+            )
             context_deleted = cursor.rowcount
 
             return pr_deleted + branch_deleted + context_deleted
@@ -1287,13 +1466,15 @@ class StateDatabase:
             stats["processing_records"] = cursor.fetchone()["count"]
 
             # Success rate
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT
                     SUM(success) as successes,
                     COUNT(*) as total
                 FROM processing_history
                 WHERE completed_at IS NOT NULL
-            """)
+            """
+            )
             row = cursor.fetchone()
             if row["total"] > 0:
                 stats["success_rate"] = round(row["successes"] / row["total"] * 100, 2)
@@ -1301,7 +1482,9 @@ class StateDatabase:
                 stats["success_rate"] = 0.0
 
             # Database size
-            cursor.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+            cursor.execute(
+                "SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"
+            )
             stats["database_size_bytes"] = cursor.fetchone()["size"]
 
             return stats

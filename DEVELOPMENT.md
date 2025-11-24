@@ -17,6 +17,7 @@ uv pip install -e ".[dev]"
 ```
 
 This installs:
+
 - pytest - Test framework
 - pytest-asyncio - Async test support
 - ruff - Linting and formatting
@@ -57,6 +58,7 @@ ruff format --check .
 **Configuration:** See `[tool.ruff]` in `pyproject.toml`
 
 **Key rules enabled:**
+
 - E/W - pycodestyle (PEP 8 compliance)
 - F - pyflakes (logical errors)
 - I - isort (import sorting)
@@ -66,6 +68,7 @@ ruff format --check .
 - Many more (see pyproject.toml)
 
 **What it catches:**
+
 - Style violations
 - Unused imports
 - Security issues
@@ -90,6 +93,7 @@ mypy merge_god/agents/claude_agent.py
 **Configuration:** See `[tool.mypy]` in `pyproject.toml`
 
 **Settings:**
+
 - Python 3.12 target
 - Permissive mode (not requiring all type hints)
 - Checks existing type hints thoroughly
@@ -116,6 +120,7 @@ pre-commit autoupdate
 ```
 
 **Hooks configured:**
+
 1. **File checks** - trailing whitespace, EOF, large files
 2. **Format checks** - YAML, JSON, TOML validation
 3. **Security** - detect private keys, merge conflicts
@@ -133,6 +138,7 @@ pre-commit autoupdate
 ### Making Changes
 
 1. **Create a branch**
+
    ```bash
    git checkout -b feature/my-feature
    ```
@@ -143,6 +149,7 @@ pre-commit autoupdate
    - Update documentation
 
 3. **Run quality checks**
+
    ```bash
    # Format code
    ruff format .
@@ -158,6 +165,7 @@ pre-commit autoupdate
    ```
 
 4. **Commit changes**
+
    ```bash
    git add .
    git commit -m "Add feature X"
@@ -170,6 +178,7 @@ pre-commit autoupdate
    - Retry commit
 
 5. **Push and create PR**
+
    ```bash
    git push origin feature/my-feature
    ```
@@ -397,6 +406,7 @@ echo "✅ All checks passed!"
 **Issue:** Hooks fail on commit
 
 **Solutions:**
+
 ```bash
 # See what failed
 git commit -m "message"  # Read the output
@@ -417,8 +427,10 @@ git commit --no-verify -m "message"
 **Issue:** `E501 line too long`
 
 **Solution:**
+
 - We ignore this in config, but sometimes appears
 - Break long lines:
+
   ```python
   # Before
   result = some_function(very_long_arg1, very_long_arg2, very_long_arg3)
@@ -444,7 +456,9 @@ git commit --no-verify -m "message"
 **Issue:** `error: Cannot find implementation or library stub`
 
 **Solution:**
+
 - Add to `[tool.mypy.overrides]` in pyproject.toml:
+
   ```toml
   [[tool.mypy.overrides]]
   module = ["problematic_module"]
@@ -454,6 +468,7 @@ git commit --no-verify -m "message"
 **Issue:** Too many type errors
 
 **Solution:**
+
 - Mypy is optional and permissive in this project
 - Focus on typing new code
 - Add `# type: ignore` for legacy code
@@ -463,6 +478,7 @@ git commit --no-verify -m "message"
 **Issue:** Tests fail locally
 
 **Solutions:**
+
 ```bash
 # Run with verbose output
 pytest -v
@@ -496,10 +512,10 @@ The Claude Agent is now aware of these development tools and will:
 
 ## Resources
 
-- **Ruff docs**: https://docs.astral.sh/ruff/
-- **Mypy docs**: https://mypy.readthedocs.io/
-- **Pre-commit docs**: https://pre-commit.com/
-- **Pytest docs**: https://docs.pytest.org/
+- **Ruff docs**: <https://docs.astral.sh/ruff/>
+- **Mypy docs**: <https://mypy.readthedocs.io/>
+- **Pre-commit docs**: <https://pre-commit.com/>
+- **Pytest docs**: <https://docs.pytest.org/>
 
 ---
 

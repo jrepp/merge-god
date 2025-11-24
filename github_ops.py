@@ -11,20 +11,20 @@ Uses PyGithub SDK for reliable GitHub API access.
 
 import os
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
-from github import Github, Auth, GithubException
-from github.Repository import Repository
+from github import Auth, Github, GithubException
 from github.PullRequest import PullRequest as GhPullRequest
 
-from models import PullRequest, PRState, CICheck, CIStatus
+from models import CICheck, CIStatus, PRState, PullRequest
+
+if TYPE_CHECKING:
+    from github.Repository import Repository
 
 
 class GitHubOperationsError(Exception):
     """Exception raised for GitHub operation errors"""
-    pass
 
 
 class GitHubOperations:
@@ -60,17 +60,18 @@ class GitHubOperations:
             Token string or None if not found
         """
         # Try environment variables
-        token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         if token:
             return token
 
         # Try gh CLI
         try:
             result = subprocess.run(
-                ['gh', 'auth', 'token'],
+                ["gh", "auth", "token"],
+                check=False,
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -84,7 +85,7 @@ class GitHubOperations:
         if not self.token:
             raise GitHubOperationsError(
                 "No GitHub token found. Set GITHUB_TOKEN environment variable "
-                "or authenticate with gh CLI"
+                "or authenticate with gh CLI",
             )
 
         try:
@@ -111,11 +112,12 @@ class GitHubOperations:
         """
         try:
             result = subprocess.run(
-                ['git', 'remote', 'get-url', 'origin'],
+                ["git", "remote", "get-url", "origin"],
+                check=False,
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
             )
 
             if result.returncode != 0:
@@ -128,15 +130,15 @@ class GitHubOperations:
             # HTTPS: https://github.com/owner/repo.git
             # HTTPS: https://github.com/owner/repo
 
-            if 'github.com' not in url:
+            if "github.com" not in url:
                 return None
 
-            if url.startswith('git@github.com:'):
+            if url.startswith("git@github.com:"):
                 # SSH format
-                repo_name = url.replace('git@github.com:', '').replace('.git', '')
-            elif 'github.com/' in url:
+                repo_name = url.replace("git@github.com:", "").replace(".git", "")
+            elif "github.com/" in url:
                 # HTTPS format
-                repo_name = url.split('github.com/')[-1].replace('.git', '')
+                repo_name = url.split("github.com/")[-1].replace(".git", "")
             else:
                 return None
 
@@ -162,9 +164,9 @@ class GitHubOperations:
         state_lower = state_str.lower()
         if state_lower == "open":
             return PRState.OPEN
-        elif state_lower == "closed":
+        if state_lower == "closed":
             return PRState.CLOSED
-        elif state_lower == "merged":
+        if state_lower == "merged":
             return PRState.MERGED
 
         return PRState.OPEN
@@ -187,7 +189,7 @@ class GitHubOperations:
             conclusion_lower = conclusion_str.lower()
             if conclusion_lower == "success":
                 return CIStatus.SUCCESS
-            elif conclusion_lower in ["failure", "timed_out", "startup_failure", "action_required"]:
+            if conclusion_lower in ["failure", "timed_out", "startup_failure", "action_required"]:
                 return CIStatus.FAILURE
 
         if status_str:
@@ -211,6 +213,7 @@ class GitHubOperations:
 
         try:
             # Get commit for check runs
+            assert self.repo is not None
             commit = self.repo.get_commit(gh_pr.head.sha)
 
             # Get check runs
@@ -224,7 +227,7 @@ class GitHubOperations:
                     conclusion=run.conclusion,
                     details_url=run.html_url,
                     started_at=run.started_at,
-                    completed_at=run.completed_at
+                    completed_at=run.completed_at,
                 )
                 checks.append(check)
 
@@ -246,7 +249,7 @@ class GitHubOperations:
                     conclusion=status_obj.state,
                     details_url=status_obj.target_url,
                     started_at=status_obj.created_at,
-                    completed_at=status_obj.updated_at
+                    completed_at=status_obj.updated_at,
                 )
                 checks.append(check)
 
@@ -271,7 +274,7 @@ class GitHubOperations:
             "success": 0,
             "failure": 0,
             "pending": 0,
-            "none": 0
+            "none": 0,
         }
 
         for check in checks:
@@ -374,7 +377,7 @@ class GitHubOperations:
                 pass
 
             # Create PR object
-            pr = PullRequest(
+            return PullRequest(
                 number=gh_pr.number,
                 title=gh_pr.title,
                 state=state,
@@ -383,7 +386,7 @@ class GitHubOperations:
                 author=author,
                 url=gh_pr.html_url,
                 created_at=gh_pr.created_at,
-                updated_at=gh_pr.updated_at,
+                updated_at=gh_pr.updated_at or gh_pr.created_at,
                 body=gh_pr.body,
                 draft=is_draft,
                 mergeable=gh_pr.mergeable if gh_pr.mergeable is not None else True,
@@ -394,12 +397,10 @@ class GitHubOperations:
                 additions=gh_pr.additions,
                 deletions=gh_pr.deletions,
                 changed_files=gh_pr.changed_files,
-                commits=gh_pr.commits
+                commits=gh_pr.commits,
             )
 
-            return pr
-
-        except (AttributeError, GithubException) as e:
+        except (AttributeError, GithubException):
             # Log the error but don't fail the entire operation
             return None
 

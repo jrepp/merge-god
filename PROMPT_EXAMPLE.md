@@ -4,15 +4,16 @@ This is an example of the comprehensive prompt that gets generated and passed to
 
 ---
 
-# PR #123: Add user authentication feature
+## PR #123: Add user authentication feature
 
 **Author**: johndoe
 **Branch**: feature/user-auth → main
-**URL**: https://github.com/org/repo/pull/123
+**URL**: <https://github.com/org/repo/pull/123>
 
 ## PR Description
 
 This PR implements user authentication using JWT tokens. It includes:
+
 - Login endpoint with email/password
 - Token generation and validation
 - Protected route middleware
@@ -42,9 +43,9 @@ This PR has merge conflicts with main. You MUST resolve these conflicts:
 ### Failed Checks (MUST FIX)
 
 - **test / unit-tests**: FAILURE
-  - Details: https://github.com/org/repo/runs/12345
+  - Details: <https://github.com/org/repo/runs/12345>
 - **lint / eslint**: FAILURE
-  - Details: https://github.com/org/repo/runs/12346
+  - Details: <https://github.com/org/repo/runs/12346>
 
 ## Review Status
 
@@ -55,18 +56,21 @@ This PR has merge conflicts with main. You MUST resolve these conflicts:
 These are inline code review comments that require your attention:
 
 ### Review Comment 1
+
 **File**: `src/middleware/auth.ts` (line 42)
 **Author**: janedoe
 
 The token expiration should be configurable rather than hardcoded. Consider adding this to environment variables.
 
 ### Review Comment 2
+
 **File**: `src/routes/login.ts` (line 28)
 **Author**: janedoe
 
 Missing rate limiting on the login endpoint. This could be vulnerable to brute force attacks. Please add rate limiting middleware.
 
 ### Review Comment 3
+
 **File**: `src/middleware/auth.ts` (line 15)
 **Author**: bobsmith
 
@@ -75,11 +79,13 @@ Should we add logging here for failed authentication attempts? Would be useful f
 ## Discussion Comments
 
 ### Comment 1
+
 **Author**: janedoe
 
 Overall this looks good! Just a few security concerns to address before we can merge. Also please resolve the merge conflicts with main - there were some updates to the server setup.
 
 ### Comment 2
+
 **Author**: johndoe
 
 Thanks for the review! I'll address the rate limiting and config issues today.
@@ -123,7 +129,7 @@ Get this PR merged successfully by completing ALL of the following:
 
 Follow these PR and contribution guidelines:
 
-```
+```markdown
 # Contributing Guidelines
 
 ## Code Style

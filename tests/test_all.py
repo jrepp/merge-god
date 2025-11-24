@@ -20,7 +20,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from models import BranchStatus, CIStatus
 from git_ops import GitOperations, GitOperationsError
 from github_ops import GitHubOperations, GitHubOperationsError
 from state_tracker import StateTracker, StateTrackerError
@@ -32,16 +31,12 @@ def test_imports():
     console.print("\n[bold cyan]1. Testing Imports[/bold cyan]")
 
     try:
-        from models import Branch, PullRequest, BranchPRState, RepositoryState
         console.print("  ✓ models.py", style="green")
 
-        from git_ops import GitOperations
         console.print("  ✓ git_ops.py", style="green")
 
-        from github_ops import GitHubOperations
         console.print("  ✓ github_ops.py", style="green")
 
-        from state_tracker import StateTracker
         console.print("  ✓ state_tracker.py", style="green")
 
         return True
@@ -84,14 +79,14 @@ def test_git_operations(repo_path: str):
                     "ahead": "yellow",
                     "behind": "red",
                     "diverged": "red",
-                    "local_only": "dim"
+                    "local_only": "dim",
                 }.get(branch.status.value, "white")
 
                 table.add_row(
                     branch.name,
                     f"[{status_color}]{branch.status.value}[/{status_color}]",
                     str(branch.ahead_by),
-                    str(branch.behind_by)
+                    str(branch.behind_by),
                 )
 
             console.print(table)
@@ -133,21 +128,21 @@ def test_github_operations(repo_path: str):
                         "success": "✓",
                         "failure": "✗",
                         "pending": "⏳",
-                        "none": "○"
+                        "none": "○",
                     }.get(pr.get_ci_status().value, "?")
 
                     ci_style = {
                         "success": "green",
                         "failure": "red",
                         "pending": "yellow",
-                        "none": "dim"
+                        "none": "dim",
                     }.get(pr.get_ci_status().value, "white")
 
                     table.add_row(
                         f"#{pr.number}",
                         pr.title[:40],
                         pr.head_branch,
-                        f"[{ci_style}]{ci_emoji}[/{ci_style}]"
+                        f"[{ci_style}]{ci_emoji}[/{ci_style}]",
                     )
 
                 console.print(table)
@@ -181,11 +176,11 @@ def test_state_tracker(repo_path: str):
             summary_table.add_column("Metric", style="bold")
             summary_table.add_column("Value", style="cyan")
 
-            summary_table.add_row("Total branches", str(summary['total_branches']))
-            summary_table.add_row("Branches with PRs", str(summary['branches_with_prs']))
-            summary_table.add_row("Branches without PRs", str(summary['branches_without_prs']))
-            summary_table.add_row("Branches needing sync", str(summary['branches_needing_sync']))
-            summary_table.add_row("Failing CI", str(summary['failing_ci']))
+            summary_table.add_row("Total branches", str(summary["total_branches"]))
+            summary_table.add_row("Branches with PRs", str(summary["branches_with_prs"]))
+            summary_table.add_row("Branches without PRs", str(summary["branches_without_prs"]))
+            summary_table.add_row("Branches needing sync", str(summary["branches_needing_sync"]))
+            summary_table.add_row("Failing CI", str(summary["failing_ci"]))
 
             console.print(summary_table)
 
@@ -220,18 +215,16 @@ def test_state_tracker(repo_path: str):
 
 def main():
     """Run all tests"""
-    if len(sys.argv) < 2:
-        repo_path = "."
-    else:
-        repo_path = sys.argv[1]
+    repo_path = "." if len(sys.argv) < 2 else sys.argv[1]
 
     console = Console()
 
-    console.print(Panel.fit(
-        f"[bold cyan]State Tracking System - Test Suite[/bold cyan]\n"
-        f"Repository: {repo_path}",
-        border_style="cyan"
-    ))
+    console.print(
+        Panel.fit(
+            f"[bold cyan]State Tracking System - Test Suite[/bold cyan]\nRepository: {repo_path}",
+            border_style="cyan",
+        )
+    )
 
     results = []
 
@@ -258,9 +251,8 @@ def main():
     if all_passed:
         console.print("\n[bold green]✅ All tests passed![/bold green]\n")
         return 0
-    else:
-        console.print("\n[bold red]❌ Some tests failed[/bold red]\n")
-        return 1
+    console.print("\n[bold red]❌ Some tests failed[/bold red]\n")
+    return 1
 
 
 if __name__ == "__main__":

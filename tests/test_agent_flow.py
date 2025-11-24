@@ -13,9 +13,9 @@ Tests the building of prompts for the bob agent and handling of results.
 """
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
+
 from rich.console import Console
 from rich.panel import Panel
 
@@ -49,39 +49,9 @@ def test_prompt_building():
     }
 
     # Mock PR context
-    pr_context = {
-        "url": "https://github.com/test/repo/pull/123",
-        "comments": [
-            {"user": {"login": "reviewer1"}, "body": "LGTM!"}
-        ],
-        "review_comments": [
-            {
-                "user": {"login": "reviewer2"},
-                "body": "Consider adding error handling here",
-                "path": "src/auth.py",
-                "line": 42
-            }
-        ],
-        "commits": [
-            {"sha": "abc123def456", "commit": {"message": "Fix auth validation"}}
-        ],
-        "files": [
-            {"filename": "src/auth.py", "status": "modified", "additions": 30, "deletions": 10}
-        ],
-        "conflicts": {"has_conflicts": False, "conflicting_files": [], "conflict_count": 0},
-        "ci_status": {"total_checks": 3, "passed": 3, "failed": 0, "pending": 0, "skipped": 0, "failed_checks": []},
-        "diff": "... diff content ...",
-    }
-
-    guidelines = "Follow PEP 8 style guidelines"
-    commit_examples = "Fix: authentication validation\nAdd: user profile tests"
 
     try:
         # Test importing the function (we'll need to adjust imports based on structure)
-        import subprocess
-        import json
-        import time
-        from datetime import datetime, timezone
 
         # Simulate building a prompt (simplified version of build_pr_prompt)
         prompt_parts = [
@@ -92,7 +62,7 @@ def test_prompt_building():
             "",
             "## PR Description",
             "",
-            pr_details['body'],
+            pr_details["body"],
             "",
             "## Your Mission",
             "",
@@ -103,17 +73,20 @@ def test_prompt_building():
         prompt = "\n".join(prompt_parts)
 
         # Validate prompt structure
-        assert pr_details['title'] in prompt, "Title should be in prompt"
-        assert pr_details['headRefName'] in prompt, "Head branch should be in prompt"
-        assert pr_details['body'] in prompt, "PR body should be in prompt"
-        assert str(pr_details['number']) in prompt, "PR number should be in prompt"
+        assert pr_details["title"] in prompt, "Title should be in prompt"
+        assert pr_details["headRefName"] in prompt, "Head branch should be in prompt"
+        assert pr_details["body"] in prompt, "PR body should be in prompt"
+        assert str(pr_details["number"]) in prompt, "PR number should be in prompt"
 
         console.print("  ✓ Prompt structure validation", style="green")
         console.print(f"  ✓ Generated prompt: {len(prompt)} characters", style="green")
 
         # Test that prompt contains critical information
         critical_fields = [
-            "number", "title", "headRefName", "baseRefName"
+            "number",
+            "title",
+            "headRefName",
+            "baseRefName",
         ]
 
         for field in critical_fields:
@@ -153,7 +126,7 @@ index 1234567..abcdefg 100644
 """
 
     changed_files = [
-        {"filename": "src/auth.py", "status": "modified", "additions": 5, "deletions": 0}
+        {"filename": "src/auth.py", "status": "modified", "additions": 5, "deletions": 0},
     ]
 
     try:
@@ -173,16 +146,20 @@ index 1234567..abcdefg 100644
         ]
 
         for file in changed_files:
-            prompt_parts.append(f"- 📝 `{file['filename']}` (+{file['additions']}/-{file['deletions']})")
+            prompt_parts.append(
+                f"- 📝 `{file['filename']}` (+{file['additions']}/-{file['deletions']})"
+            )
 
-        prompt_parts.extend([
-            "",
-            "## Full Diff",
-            "",
-            "```diff",
-            diff,
-            "```",
-        ])
+        prompt_parts.extend(
+            [
+                "",
+                "## Full Diff",
+                "",
+                "```diff",
+                diff,
+                "```",
+            ]
+        )
 
         prompt = "\n".join(prompt_parts)
 
@@ -276,7 +253,7 @@ def test_agent_result_handling():
             "stderr": "",
             "pr_number": 123,
             "prompt_size": 5000,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Validate result structure
@@ -295,7 +272,7 @@ def test_agent_result_handling():
             "stderr": "Failed to resolve conflicts",
             "pr_number": 456,
             "prompt_size": 4500,
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         assert failure_result["returncode"] != 0, "Should indicate failure"
@@ -311,7 +288,10 @@ def test_agent_result_handling():
         successful_count = sum(1 for r in result_history if r["returncode"] == 0)
         failed_count = sum(1 for r in result_history if r["returncode"] != 0)
 
-        console.print(f"  ✓ History tracking: {successful_count} success, {failed_count} failed", style="green")
+        console.print(
+            f"  ✓ History tracking: {successful_count} success, {failed_count} failed",
+            style="green",
+        )
 
         return True
 
@@ -337,7 +317,7 @@ def test_agent_history_data_structure():
                 self.prompt = prompt
                 self.prompt_size = len(prompt)
                 self.result = result
-                self.timestamp = timestamp or datetime.now(timezone.utc)
+                self.timestamp = timestamp or datetime.now(UTC)
                 self.duration = None
 
             def to_dict(self):
@@ -355,14 +335,14 @@ def test_agent_history_data_structure():
             pr_number=123,
             mode="for-landing",
             prompt="Fix conflicts and merge PR #123",
-            result={"returncode": 0, "stdout": "Success", "stderr": ""}
+            result={"returncode": 0, "stdout": "Success", "stderr": ""},
         )
 
         invocation2 = AgentInvocation(
             pr_number=456,
             mode="for-review",
             prompt="Review and improve code quality for PR #456",
-            result={"returncode": 1, "stdout": "", "stderr": "Tests failed"}
+            result={"returncode": 1, "stdout": "", "stderr": "Tests failed"},
         )
 
         # Validate structure
@@ -372,8 +352,14 @@ def test_agent_history_data_structure():
         assert invocation1.result["returncode"] == 0, "Should store result"
 
         console.print("  ✓ AgentInvocation structure valid", style="green")
-        console.print(f"  ✓ Invocation 1: PR #{invocation1.pr_number}, mode: {invocation1.mode}", style="green dim")
-        console.print(f"  ✓ Invocation 2: PR #{invocation2.pr_number}, mode: {invocation2.mode}", style="green dim")
+        console.print(
+            f"  ✓ Invocation 1: PR #{invocation1.pr_number}, mode: {invocation1.mode}",
+            style="green dim",
+        )
+        console.print(
+            f"  ✓ Invocation 2: PR #{invocation2.pr_number}, mode: {invocation2.mode}",
+            style="green dim",
+        )
 
         # Test history management
         history = [invocation1, invocation2]
@@ -408,11 +394,13 @@ def main():
     """Run all agent flow tests"""
     console = Console()
 
-    console.print(Panel.fit(
-        "[bold cyan]Agent Prompt & Result Flow - Test Suite[/bold cyan]\n"
-        "Testing agent invocation, prompt building, and result handling",
-        border_style="cyan"
-    ))
+    console.print(
+        Panel.fit(
+            "[bold cyan]Agent Prompt & Result Flow - Test Suite[/bold cyan]\n"
+            "Testing agent invocation, prompt building, and result handling",
+            border_style="cyan",
+        )
+    )
 
     results = []
 
@@ -440,9 +428,8 @@ def main():
     if all_passed:
         console.print("\n[bold green]✅ All tests passed![/bold green]\n")
         return 0
-    else:
-        console.print("\n[bold red]❌ Some tests failed[/bold red]\n")
-        return 1
+    console.print("\n[bold red]❌ Some tests failed[/bold red]\n")
+    return 1
 
 
 if __name__ == "__main__":

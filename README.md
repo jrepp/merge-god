@@ -71,9 +71,11 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 - Git repository with GitHub remote
 
 **Optional:**
+
 - `doormat` - AWS credential manager (automatically detected and used if available)
 
 **Python dependencies** (automatically installed by uv):
+
 - `rich>=13.0.0` - For TUI dashboard (dashboard.py only)
 - `pyyaml>=6.0` - For config file parsing (dashboard.py only)
 
@@ -84,6 +86,7 @@ Note: `pr-loop.py` has no external dependencies (only stdlib)
 If `doormat` is installed, the dashboard will automatically refresh credentials before launching each repository monitor. This ensures AWS credentials are always up-to-date for long-running sessions.
 
 **How it works:**
+
 - Dashboard checks for `doormat` command at startup
 - Tries multiple doormat commands automatically:
   - `doormat` (some versions)
@@ -95,6 +98,7 @@ If `doormat` is installed, the dashboard will automatically refresh credentials 
 
 **Custom doormat command:**
 If your doormat installation uses a different command, specify it in config.yaml:
+
 ```yaml
 doormat:
   command: ["doormat", "your-command"]  # Custom command
@@ -102,6 +106,7 @@ doormat:
 ```
 
 Example for different doormat versions:
+
 ```yaml
 # Just 'doormat'
 doormat:
@@ -130,29 +135,32 @@ All scripts use **uv** for dependency management and execution via PEP 723 inlin
 ## Installation
 
 1. Install dependencies:
-```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install GitHub CLI
-brew install gh  # macOS
-# or: apt install gh  # Linux
-# or: winget install --id GitHub.cli  # Windows
+   ```bash
+   # Install uv
+   curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Authenticate with GitHub
-gh auth login
-```
+   # Install GitHub CLI
+   brew install gh  # macOS
+   # or: apt install gh  # Linux
+   # or: winget install --id GitHub.cli  # Windows
+
+   # Authenticate with GitHub
+   gh auth login
+   ```
 
 2. Ensure `bob` is in your PATH:
-```bash
-which bob  # Should output the path to bob
-```
+
+   ```bash
+   which bob  # Should output the path to bob
+   ```
 
 3. Clone this repository:
-```bash
-cd /path/to/your/repo
-git clone <this-repo-url> .
-```
+
+   ```bash
+   cd /path/to/your/repo
+   git clone <this-repo-url> .
+   ```
 
 ## How It Works
 
@@ -228,6 +236,7 @@ vi config.yaml
 ```
 
 **Interactive Bootstrap**: When config.yaml doesn't exist, the dashboard automatically offers to create it interactively:
+
 - Prompts for repository paths with live validation
 - Suggests repository names based on directory
 - Validates git repositories as you add them
@@ -236,6 +245,7 @@ vi config.yaml
 - Creates properly formatted YAML with comments
 
 **Dry-run mode**: Use `--dry-run` to validate your configuration before launching:
+
 - Checks that all repository paths exist and are valid git repos
 - Verifies pr-loop.py is present and executable
 - Displays summary of what would be launched
@@ -243,6 +253,7 @@ vi config.yaml
 - Exits without starting processes
 
 The dashboard provides:
+
 - **Tag selection criteria** displayed at startup (shows which labels trigger PR processing)
 - Real-time status for all configured repos
 - Live updates as PRs are processed
@@ -251,7 +262,8 @@ The dashboard provides:
 - Recent logs per repository
 
 **Interactive Setup Example:**
-```
+
+```console
 $ ./dashboard.py
 
 Config File Not Found
@@ -287,6 +299,7 @@ Validate configuration now (dry-run)? [Y/n]: y
 ```
 
 **Recommended for tmux/screen:**
+
 ```bash
 # In tmux
 tmux new -s merge-god
@@ -297,6 +310,7 @@ tmux new -s merge-god
 ```
 
 **Non-TUI Mode (for testing/CI/background):**
+
 ```bash
 # Force non-TUI mode with pipe
 ./dashboard.py | cat
@@ -309,6 +323,7 @@ tmux new -s merge-god
 ```
 
 The dashboard automatically detects TTY availability:
+
 - **With TTY**: Rich TUI interface with live updates
 - **Without TTY**: Simple text output with periodic status (every 60s)
 - **Log file**: All operations logged regardless of mode (default: `merge-god-dashboard.log`)
@@ -343,6 +358,7 @@ For processing a single repository without dashboard:
 #### How It Works
 
 The script will:
+
 1. Validate the repository (git repo, GitHub CLI authenticated)
 2. Change to the repository directory
 3. Fetch all open PRs and categorize by labels:
@@ -366,6 +382,7 @@ The script will:
 #### Label-Based Processing Modes
 
 **`for-landing` Label** (Basic Mode):
+
 - Resolve merge conflicts with base branch
 - Address code review comments
 - Fix failing CI/CD checks
@@ -391,6 +408,7 @@ After initial processing succeeds, runs a **second agent pass**:
    - Fix code quality issues and apply best practices
 
 ✅ **Use `for-review` for**:
+
 - High-stakes PRs requiring thorough code review
 - PRs from junior developers or external contributors
 - Security-sensitive changes
@@ -418,6 +436,7 @@ Before running the full loop, you can test what prompt would be generated for a 
 ```
 
 This is useful for:
+
 - Understanding what context the agent receives
 - Debugging prompt generation
 - Testing with specific PRs before full automation
@@ -459,6 +478,7 @@ WantedBy=multi-user.target
 ```
 
 Then:
+
 ```bash
 sudo systemctl enable pr-loop
 sudo systemctl start pr-loop
@@ -496,6 +516,7 @@ Create `~/Library/LaunchAgents/com.user.pr-loop.plist`:
 ```
 
 Then:
+
 ```bash
 launchctl load ~/Library/LaunchAgents/com.user.pr-loop.plist
 launchctl start com.user.pr-loop
@@ -523,11 +544,13 @@ repos:
 ```
 
 **Configuration fields:**
+
 - `path` (required): Absolute path to git repository
 - `name` (optional): Display name (defaults to directory name)
 - `enabled` (optional): Whether to process this repo (defaults to true)
 
 **Example:**
+
 ```bash
 # Copy example config
 cp config.example.yaml config.yaml
@@ -542,6 +565,7 @@ vi config.yaml
 ### PR Guidelines
 
 The script automatically looks for PR guidelines in these locations (in order):
+
 - `CONTRIBUTING.md`
 - `.github/CONTRIBUTING.md`
 - `.github/PULL_REQUEST_TEMPLATE.md`
@@ -553,16 +577,19 @@ If no guidelines are found, it uses the last 20 commit messages from `origin/mai
 ### Filtering and Controlling PRs
 
 PRs are automatically excluded if they:
+
 - Are marked as draft
 - Have labels containing: `wip`, `work-in-process`, or `work in process` (case-insensitive)
 - Don't have a processing mode label (`for-review` or `for-landing`)
 
 To control PR processing:
+
 - Add `for-landing` label: Basic processing (conflicts, reviews, CI)
 - Add `for-review` label: Comprehensive review + improvements
 - No label: PR is skipped
 
 To skip a PR entirely:
+
 - Mark it as draft, OR
 - Add a label with "WIP" in the name, OR
 - Don't add `for-review` or `for-landing` label
@@ -598,19 +625,23 @@ The script sends real-time notifications to ntfy.sh for key PR processing events
 ### Receiving Notifications
 
 Subscribe to notifications using the ntfy.sh app or web interface:
+
 - **Topic**: `merge-god-sez`
-- **URL**: https://ntfy.sh/merge-god-sez
+- **URL**: <https://ntfy.sh/merge-god-sez>
 
 **Mobile App**:
+
 1. Install ntfy from App Store (iOS) or Play Store (Android)
 2. Subscribe to topic: `merge-god-sez`
 3. Receive push notifications on your phone
 
 **Web**:
-- Visit https://ntfy.sh/merge-god-sez in your browser
+
+- Visit <https://ntfy.sh/merge-god-sez> in your browser
 
 **Desktop**:
-- Install ntfy desktop app from https://ntfy.sh
+
+- Install ntfy desktop app from <https://ntfy.sh>
 - Subscribe to topic: `merge-god-sez`
 
 **Note**: The topic name `merge-god-sez` is public. For production use, consider using a private topic with authentication.
@@ -683,6 +714,7 @@ launchctl stop com.user.pr-loop
 ### `bob` command not found
 
 Ensure `bob` is in your PATH:
+
 ```bash
 export PATH="$PATH:/path/to/bob/directory"
 ```
@@ -690,6 +722,7 @@ export PATH="$PATH:/path/to/bob/directory"
 ### GitHub authentication issues
 
 Re-authenticate with GitHub:
+
 ```bash
 gh auth login
 gh auth status
@@ -698,6 +731,7 @@ gh auth status
 ### Permission errors
 
 Ensure the script is executable:
+
 ```bash
 chmod +x pr-loop.py
 ```
@@ -705,6 +739,7 @@ chmod +x pr-loop.py
 ### No PRs being processed
 
 Check that:
+
 - PRs are not marked as draft
 - PRs don't have WIP-related labels
 - PRs have `for-review` or `for-landing` label
@@ -714,6 +749,7 @@ Check that:
 ### Dashboard not showing updates
 
 If the dashboard is running but not updating:
+
 - Check that repositories in config.yaml exist and are valid git repos
 - Verify `pr-loop.py` is executable: `chmod +x pr-loop.py`
 - Check the log file for errors: `tail -f merge-god-dashboard.log`
@@ -743,6 +779,7 @@ grep '"repo": "My Repo"' merge-god-dashboard.log | jq .
 ### Config file errors
 
 If config file won't load:
+
 - Verify YAML syntax is correct (use a YAML validator)
 - Check that all `path` fields have absolute paths
 - Ensure file is named `config.yaml` or specify custom path
@@ -751,6 +788,7 @@ If config file won't load:
 ## Customization
 
 Edit `pr-loop.py` to customize:
+
 - **Polling interval**: Change `time.sleep(300)` (currently 5 minutes)
 - **Main branch name**: Change `"main"` to `"master"` if needed
 - **Timeout duration**: Change `timeout=3600` in `run_command()` (currently 1 hour)
@@ -760,20 +798,25 @@ Edit `pr-loop.py` to customize:
 ## For Maintainers
 
 ### Adding Features
+
 When adding new features:
+
 1. Create a PRD entry in [PRD.md](PRD.md) with requirements and success criteria
 2. Document any architectural decisions in [ADR.md](ADR.md)
 3. Update CHANGELOG.md with user-visible changes
 4. Update this README if it affects usage
 
 ### Making Architectural Decisions
+
 For significant technical choices:
+
 1. Add new ADR entry in [ADR.md](ADR.md)
 2. Include context, decision, rationale, and consequences
 3. Reference related PRD items if applicable
 4. Mark superseded ADRs when decisions change
 
 ### Documentation Structure
+
 - **PRD.md** - What we're building (features, requirements)
 - **ADR.md** - How/why we built it (technical decisions)
 - **README.md** - How to use it (user guide)

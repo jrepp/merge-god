@@ -5,18 +5,18 @@ Integration test for agent tracking in dashboard.
 Tests that agent invocations are properly tracked when processing events.
 """
 
-import json
 import sys
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
+
 
 # Define AgentInvocation locally to avoid import issues
 @dataclass
 class AgentInvocation:
     """Represents a single agent (bob) invocation with full context"""
+
     pr_number: int | None
     mode: str
     prompt: str
@@ -46,9 +46,9 @@ class AgentInvocation:
 
 def test_agent_tracking():
     """Test that agent tracking data structures work correctly"""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Testing Agent Tracking Data Structures")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     # Create agent history deque (simulating RepoMonitor.agent_history)
     agent_history = deque(maxlen=50)
@@ -65,10 +65,10 @@ def test_agent_tracking():
         mode="for-landing",
         prompt="Process PR #123 with conflicts",
         prompt_size=5000,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         result={"returncode": 0, "stdout": "Changes committed successfully", "stderr": ""},
         duration=45.5,
-        success=True
+        success=True,
     )
     agent_history.append(invocation1)
 
@@ -83,10 +83,10 @@ def test_agent_tracking():
         mode="for-review",
         prompt="Review PR #456 for code quality",
         prompt_size=6000,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         result={"returncode": 1, "stdout": "", "stderr": "Tests failed"},
         duration=30.2,
-        success=False
+        success=False,
     )
     agent_history.append(invocation2)
 
@@ -114,7 +114,7 @@ def test_agent_tracking():
         mode="for-landing",
         prompt=long_prompt,
         prompt_size=1000,
-        timestamp=datetime.now(timezone.utc)
+        timestamp=datetime.now(UTC),
     )
     dict3 = invocation3.to_dict()
     assert len(dict3["prompt"]) == 500, "Should truncate prompt to 500 chars"
@@ -127,8 +127,8 @@ def test_agent_tracking():
         mode="for-review",
         prompt="Test",
         prompt_size=100,
-        timestamp=datetime.now(timezone.utc),
-        result={"returncode": 0, "stdout": long_output, "stderr": long_output}
+        timestamp=datetime.now(UTC),
+        result={"returncode": 0, "stdout": long_output, "stderr": long_output},
     )
     dict4 = invocation4.to_dict()
     assert len(dict4["result"]["stdout"]) == 200, "Should truncate stdout to 200 chars"
@@ -143,22 +143,22 @@ def test_agent_tracking():
                 mode="for-landing",
                 prompt=f"Test {i}",
                 prompt_size=1000,
-                timestamp=datetime.now(timezone.utc),
-                success=True
-            )
+                timestamp=datetime.now(UTC),
+                success=True,
+            ),
         )
 
     assert len(agent_history) == 50, "Should maintain max 50 invocations"
     print("✓ History limit enforced")
 
     # Test 8: Test timestamp formatting
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     invocation5 = AgentInvocation(
         pr_number=999,
         mode="for-landing",
         prompt="Test",
         prompt_size=100,
-        timestamp=now
+        timestamp=now,
     )
     dict5 = invocation5.to_dict()
     assert isinstance(dict5["timestamp"], str), "Should convert timestamp to string"
@@ -171,18 +171,19 @@ def test_agent_tracking():
         mode="for-impl",
         prompt="Implement issue",
         prompt_size=2000,
-        timestamp=datetime.now(timezone.utc),
-        success=True
+        timestamp=datetime.now(UTC),
+        success=True,
     )
     dict6 = invocation6.to_dict()
     assert dict6["pr_number"] is None, "Should handle None PR number"
     print("✓ None PR number handled")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("✅ All agent tracking tests passed!")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     return 0
+
 
 if __name__ == "__main__":
     try:
@@ -193,5 +194,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

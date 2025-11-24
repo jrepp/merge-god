@@ -92,7 +92,11 @@ def validate_pr_context_completeness(
 
         # Validate pr_details structure
         required_pr_details = [
-            "number", "title", "headRefName", "baseRefName", "author",
+            "number",
+            "title",
+            "headRefName",
+            "baseRefName",
+            "author",
         ]
         for field in required_pr_details:
             if field not in pr_details:
@@ -100,8 +104,16 @@ def validate_pr_context_completeness(
 
         # Validate pr_context structure
         required_pr_context = [
-            "url", "diff", "comments", "review_comments", "commits",
-            "files", "conflicts", "ci_status", "guidelines", "commit_examples",
+            "url",
+            "diff",
+            "comments",
+            "review_comments",
+            "commits",
+            "files",
+            "conflicts",
+            "ci_status",
+            "guidelines",
+            "commit_examples",
         ]
         for field in required_pr_context:
             if field not in pr_context:
@@ -134,10 +146,21 @@ def validate_pr_context_completeness(
 
             # Validate PRContext has required attributes
             required_attrs = [
-                "pr_number", "title", "head_branch", "base_branch",
-                "author", "url", "diff", "has_conflicts", "has_failing_ci",
-                "review_comments", "general_comments", "changed_files",
-                "commits", "guidelines", "commit_examples",
+                "pr_number",
+                "title",
+                "head_branch",
+                "base_branch",
+                "author",
+                "url",
+                "diff",
+                "has_conflicts",
+                "has_failing_ci",
+                "review_comments",
+                "general_comments",
+                "changed_files",
+                "commits",
+                "guidelines",
+                "commit_examples",
             ]
 
             for attr in required_attrs:
@@ -374,5 +397,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n✗ Fatal error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

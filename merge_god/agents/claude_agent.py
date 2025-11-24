@@ -18,6 +18,7 @@ from anthropic import AsyncAnthropic
 
 try:
     from anthropic import AsyncAnthropicBedrock
+
     BEDROCK_AVAILABLE = True
 except ImportError:
     AsyncAnthropicBedrock = None  # type: ignore[assignment,misc]
@@ -88,6 +89,7 @@ def get_model_name() -> str:
 @dataclass
 class AgentAction:
     """Represents a single action taken by the agent"""
+
     type: str  # "git_commit", "file_edit", "run_tests", etc.
     target: str  # What the action applies to
     details: dict[str, Any]
@@ -100,6 +102,7 @@ class AgentAction:
 @dataclass
 class AgentTask:
     """Represents a discrete task in PR processing"""
+
     id: str
     description: str
     prompt_template: str
@@ -115,6 +118,7 @@ class AgentTask:
 @dataclass
 class AgentEvent:
     """Event emitted during agent execution"""
+
     type: str  # "thinking", "action", "progress", "error", "complete"
     content: str | None = None
     action: AgentAction | None = None
@@ -125,6 +129,7 @@ class AgentEvent:
 @dataclass
 class PRContext:
     """Context for PR processing"""
+
     pr_number: int
     title: str
     body: str | None
@@ -193,6 +198,7 @@ class PRContext:
 @dataclass
 class ProcessingResult:
     """Result of PR processing"""
+
     success: bool
     tasks: list[AgentTask]
     actions: list[AgentAction]
@@ -211,6 +217,7 @@ class ProcessingResult:
 @dataclass
 class ToolResult:
     """Result of a tool execution"""
+
     success: bool
     output: str | None = None
     error: str | None = None
@@ -219,14 +226,18 @@ class ToolResult:
     def to_content(self) -> list[dict[str, Any]]:
         """Convert to Claude API tool result format"""
         if self.success:
-            return [{
+            return [
+                {
+                    "type": "text",
+                    "text": self.output or "Operation completed successfully",
+                }
+            ]
+        return [
+            {
                 "type": "text",
-                "text": self.output or "Operation completed successfully",
-            }]
-        return [{
-            "type": "text",
-            "text": f"Error: {self.error}",
-        }]
+                "text": f"Error: {self.error}",
+            }
+        ]
 
 
 class AgentCallbacks(Protocol):
@@ -262,7 +273,7 @@ class PRAgent:
         client: AsyncAnthropic | AsyncAnthropicBedrock,
         model: str = "claude-sonnet-4-5-20250929",
         repo_path: Path | None = None,
-        database = None,
+        database=None,
         session_id: str | None = None,
     ):
         self.client = client
@@ -315,7 +326,11 @@ class PRAgent:
                     elif event.type == "action" and event.action:
                         callbacks.on_action(event.action)
                         task.actions.append(event.action)
-                    elif event.type == "error" and event.error and not callbacks.on_error(event.error):
+                    elif (
+                        event.type == "error"
+                        and event.error
+                        and not callbacks.on_error(event.error)
+                    ):
                         # Callback says stop - mark task as failed
                         task.status = "failed"
                         task.error = str(event.error)
@@ -356,56 +371,68 @@ class PRAgent:
         tasks = []
 
         # Task 1: Always analyze the PR first
-        tasks.append(AgentTask(
-            id="analyze",
-            description=f"Analyze PR #{pr_context.pr_number} and identify issues",
-            prompt_template="analyze_pr",
-            required_context=["pr_details", "diff", "ci_status"],
-        ))
+        tasks.append(
+            AgentTask(
+                id="analyze",
+                description=f"Analyze PR #{pr_context.pr_number} and identify issues",
+                prompt_template="analyze_pr",
+                required_context=["pr_details", "diff", "ci_status"],
+            )
+        )
 
         # Task 2: Resolve merge conflicts (if any)
         if pr_context.has_conflicts:
-            tasks.append(AgentTask(
-                id="resolve_conflicts",
-                description=f"Resolve {len(pr_context.conflicting_files)} merge conflicts",
-                prompt_template="resolve_conflicts",
-                required_context=["conflicting_files", "base_branch", "diff"],
-            ))
+            tasks.append(
+                AgentTask(
+                    id="resolve_conflicts",
+                    description=f"Resolve {len(pr_context.conflicting_files)} merge conflicts",
+                    prompt_template="resolve_conflicts",
+                    required_context=["conflicting_files", "base_branch", "diff"],
+                )
+            )
 
         # Task 3: Address code review comments
         if pr_context.review_comments:
-            tasks.append(AgentTask(
-                id="address_reviews",
-                description=f"Address {len(pr_context.review_comments)} review comments",
-                prompt_template="address_reviews",
-                required_context=["review_comments", "changed_files"],
-            ))
+            tasks.append(
+                AgentTask(
+                    id="address_reviews",
+                    description=f"Address {len(pr_context.review_comments)} review comments",
+                    prompt_template="address_reviews",
+                    required_context=["review_comments", "changed_files"],
+                )
+            )
 
         # Task 4: Fix failing CI checks
         if pr_context.has_failing_ci:
-            tasks.append(AgentTask(
-                id="fix_ci",
-                description=f"Fix {len(pr_context.failing_checks)} failing CI checks",
-                prompt_template="fix_ci",
-                required_context=["failing_checks", "changed_files"],
-            ))
+            tasks.append(
+                AgentTask(
+                    id="fix_ci",
+                    description=f"Fix {len(pr_context.failing_checks)} failing CI checks",
+                    prompt_template="fix_ci",
+                    required_context=["failing_checks", "changed_files"],
+                )
+            )
 
         # Task 5: Comprehensive code review (for-review mode only)
         if mode == "for-review":
-            tasks.append(AgentTask(
-                id="code_review",
-                description="Conduct comprehensive code review and improvements",
-                prompt_template="code_review",
-                required_context=["full_diff", "guidelines", "changed_files"],
-            ))
+            tasks.append(
+                AgentTask(
+                    id="code_review",
+                    description="Conduct comprehensive code review and improvements",
+                    prompt_template="code_review",
+                    required_context=["full_diff", "guidelines", "changed_files"],
+                )
+            )
 
         # Task 6: Final validation
-        tasks.append(AgentTask(
-            id="validate",
-            description="Run tests and validate all changes",
-            prompt_template="validate",
-            required_context=["changed_files"],
-        ))
+        tasks.append(
+            AgentTask(
+                id="validate",
+                description="Run tests and validate all changes",
+                prompt_template="validate",
+                required_context=["changed_files"],
+            )
+        )
 
         return tasks
 
@@ -427,10 +454,12 @@ class PRAgent:
         tools = self._get_tools_for_task(task)
 
         # Add user message to conversation
-        self.conversation_history.append({
-            "role": "user",
-            "content": prompt,
-        })
+        self.conversation_history.append(
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        )
 
         # Agentic loop: continue until agent doesn't use tools
         # Higher limit for complex tasks like code review
@@ -463,10 +492,12 @@ class PRAgent:
                                         content=event.delta.text,
                                     )
 
-                            elif (event.type == "content_block_start" and
-                                  hasattr(event, "content_block") and
-                                  hasattr(event.content_block, "type") and
-                                  event.content_block.type == "tool_use"):
+                            elif (
+                                event.type == "content_block_start"
+                                and hasattr(event, "content_block")
+                                and hasattr(event.content_block, "type")
+                                and event.content_block.type == "tool_use"
+                            ):
                                 # This is a tool use
                                 tool_uses.append(event.content_block)
 
@@ -474,10 +505,12 @@ class PRAgent:
                     final_message = await stream.get_final_message()
 
                     # Add assistant response to conversation
-                    self.conversation_history.append({
-                        "role": "assistant",
-                        "content": final_message.content,
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "assistant",
+                            "content": final_message.content,
+                        }
+                    )
 
                     # If no tool uses, we're done
                     if not tool_uses:
@@ -531,17 +564,21 @@ class PRAgent:
                                 )
 
                         # Build tool result for API
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use.id,
-                            "content": tool_result.to_content(),
-                        })
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "content": tool_result.to_content(),
+                            }
+                        )
 
                     # Add tool results to conversation for next iteration
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": tool_results,
-                    })
+                    self.conversation_history.append(
+                        {
+                            "role": "user",
+                            "content": tool_results,
+                        }
+                    )
 
             if iteration >= max_iterations:
                 yield AgentEvent(
@@ -571,7 +608,9 @@ class PRAgent:
 
         # Add task-specific context
         if task.id == "analyze":
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Analyze this PR and identify:
 1. Any merge conflicts
@@ -591,10 +630,13 @@ Analyze this PR and identify:
 
 Provide a structured analysis of what needs to be done.
 """
+            )
 
         if task.id == "resolve_conflicts":
             conflicting_files_str = "\n".join(f"- {f}" for f in pr_context.conflicting_files)
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Resolve merge conflicts in the following files:
 {conflicting_files_str}
@@ -613,13 +655,16 @@ Resolve merge conflicts in the following files:
 
 Begin by reading the conflicting files to understand the conflicts.
 """
+            )
 
         if task.id == "address_reviews":
             review_summary = "\n\n".join(
                 f"**{c.get('user', {}).get('login')}** on {c.get('path')}:{c.get('line')}\n{c.get('body')}"
                 for c in pr_context.review_comments[:MAX_REVIEW_COMMENTS_PREVIEW]
             )
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Address the following code review comments:
 
@@ -641,13 +686,15 @@ Address the following code review comments:
 
 Work through the comments systematically.
 """
+            )
 
         if task.id == "fix_ci":
             failing_checks_str = "\n".join(
-                f"- **{c.get('name')}**: {c.get('conclusion')}"
-                for c in pr_context.failing_checks
+                f"- **{c.get('name')}**: {c.get('conclusion')}" for c in pr_context.failing_checks
             )
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Fix the following failing CI checks:
 
@@ -667,9 +714,12 @@ Fix the following failing CI checks:
 
 Start by analyzing the failing checks.
 """
+            )
 
         if task.id == "code_review":
-            return base_context + f"""
+            return (
+                base_context
+                + f"""
 ## Your Task
 Conduct a comprehensive code review of the changes in this PR.
 
@@ -695,9 +745,12 @@ Conduct a comprehensive code review of the changes in this PR.
 
 Review the code systematically and make targeted improvements.
 """
+            )
 
         if task.id == "validate":
-            return base_context + """
+            return (
+                base_context
+                + """
 ## Your Task
 Final validation before marking PR ready:
 
@@ -712,6 +765,7 @@ Final validation before marking PR ready:
 
 Perform final validation and report status.
 """
+            )
 
         return base_context
 
@@ -760,72 +814,74 @@ Perform final validation and report status.
         action_tools = []
 
         if task.id in ["resolve_conflicts", "address_reviews", "fix_ci", "code_review"]:
-            action_tools.extend([
-                {
-                    "name": "edit_file",
-                    "description": "Edit a file in the repository",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Path to the file to edit",
-                            },
-                            "changes": {
-                                "type": "array",
-                                "description": "List of changes to make",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "old": {
-                                            "type": "string",
-                                            "description": "Text to replace",
+            action_tools.extend(
+                [
+                    {
+                        "name": "edit_file",
+                        "description": "Edit a file in the repository",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Path to the file to edit",
+                                },
+                                "changes": {
+                                    "type": "array",
+                                    "description": "List of changes to make",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "old": {
+                                                "type": "string",
+                                                "description": "Text to replace",
+                                            },
+                                            "new": {
+                                                "type": "string",
+                                                "description": "Replacement text",
+                                            },
                                         },
-                                        "new": {
-                                            "type": "string",
-                                            "description": "Replacement text",
-                                        },
+                                        "required": ["old", "new"],
                                     },
-                                    "required": ["old", "new"],
+                                },
+                            },
+                            "required": ["path", "changes"],
+                        },
+                    },
+                    {
+                        "name": "run_tests",
+                        "description": "Run test suite or specific tests",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "test_path": {
+                                    "type": "string",
+                                    "description": "Path to specific test file or directory (optional)",
                                 },
                             },
                         },
-                        "required": ["path", "changes"],
                     },
-                },
-                {
-                    "name": "run_tests",
-                    "description": "Run test suite or specific tests",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "test_path": {
-                                "type": "string",
-                                "description": "Path to specific test file or directory (optional)",
+                    {
+                        "name": "git_commit",
+                        "description": "Create a git commit with changes",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string",
+                                    "description": "Commit message",
+                                },
+                                "files": {
+                                    "type": "array",
+                                    "description": "Specific files to commit (optional, defaults to all changes)",
+                                    "items": {"type": "string"},
+                                },
                             },
+                            "required": ["message"],
                         },
                     },
-                },
-                {
-                    "name": "git_commit",
-                    "description": "Create a git commit with changes",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "message": {
-                                "type": "string",
-                                "description": "Commit message",
-                            },
-                            "files": {
-                                "type": "array",
-                                "description": "Specific files to commit (optional, defaults to all changes)",
-                                "items": {"type": "string"},
-                            },
-                        },
-                        "required": ["message"],
-                    },
-                },
-            ])
+                ]
+            )
 
         return common_tools + action_tools if action_tools else common_tools
 
@@ -876,7 +932,9 @@ Perform final validation and report status.
                             action_id=action_id,
                             operation_type="edit",
                             file_path=action.details.get("path", ""),
-                            lines_added=result.data.get("changes") if result.data and result.success else 0,
+                            lines_added=result.data.get("changes")
+                            if result.data and result.success
+                            else 0,
                             success=result.success,
                             error_message=result.error,
                         )
@@ -938,7 +996,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Access denied: '{path}' is outside repository bounds. "
-                          f"Only files within the repository can be accessed.",
+                    f"Only files within the repository can be accessed.",
                 )
 
             # Safety check: file must exist
@@ -946,7 +1004,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"File not found: '{path}'. "
-                          f"Check the path is correct and the file exists in the repository.",
+                    f"Check the path is correct and the file exists in the repository.",
                 )
 
             # Safety check: must be a file, not a directory
@@ -954,7 +1012,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Cannot read '{path}': path is a directory, not a file. "
-                          f"Use list_files tool to view directory contents.",
+                    f"Use list_files tool to view directory contents.",
                 )
 
             # Safety check: file size limit (10MB)
@@ -964,7 +1022,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"File too large: '{path}' is {file_size / 1024 / 1024:.1f}MB. "
-                          f"Maximum file size is {max_size / 1024 / 1024}MB.",
+                    f"Maximum file size is {max_size / 1024 / 1024}MB.",
                 )
 
             # Try to read as text
@@ -979,13 +1037,12 @@ Perform final validation and report status.
             return ToolResult(
                 success=False,
                 error=f"Cannot read '{path}': file appears to be binary. "
-                      f"This tool only supports text files.",
+                f"This tool only supports text files.",
             )
         except PermissionError:
             return ToolResult(
                 success=False,
-                error=f"Permission denied: cannot read '{path}'. "
-                      f"Check file permissions.",
+                error=f"Permission denied: cannot read '{path}'. Check file permissions.",
             )
         except Exception as e:
             return ToolResult(
@@ -1012,7 +1069,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Access denied: '{path}' is outside repository bounds. "
-                          f"Only directories within the repository can be accessed.",
+                    f"Only directories within the repository can be accessed.",
                 )
 
             # Safety check: directory must exist
@@ -1020,7 +1077,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Directory not found: '{path}'. "
-                          f"Check the path is correct and the directory exists in the repository.",
+                    f"Check the path is correct and the directory exists in the repository.",
                 )
 
             # Safety check: must be a directory, not a file
@@ -1028,7 +1085,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Cannot list '{path}': path is a file, not a directory. "
-                          f"Use read_file tool to read file contents.",
+                    f"Use read_file tool to read file contents.",
                 )
 
             # List files
@@ -1047,8 +1104,7 @@ Perform final validation and report status.
         except PermissionError:
             return ToolResult(
                 success=False,
-                error=f"Permission denied: cannot list '{path}'. "
-                      f"Check directory permissions.",
+                error=f"Permission denied: cannot list '{path}'. Check directory permissions.",
             )
         except Exception as e:
             return ToolResult(
@@ -1082,7 +1138,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Access denied: '{path}' is outside repository bounds. "
-                          f"Only files within the repository can be edited.",
+                    f"Only files within the repository can be edited.",
                 )
 
             # Safety check: prevent editing .git directory
@@ -1093,7 +1149,7 @@ Perform final validation and report status.
                     return ToolResult(
                         success=False,
                         error="Access denied: cannot edit files in .git directory. "
-                              "This would corrupt the git repository.",
+                        "This would corrupt the git repository.",
                     )
             except ValueError:
                 pass  # Not relative to repo, caught by earlier check
@@ -1103,7 +1159,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"File not found: '{path}'. "
-                          f"File must exist before it can be edited. Use git to create new files.",
+                    f"File must exist before it can be edited. Use git to create new files.",
                 )
 
             # Safety check: must be a file, not a directory
@@ -1126,13 +1182,13 @@ Perform final validation and report status.
                 if not old:
                     return ToolResult(
                         success=False,
-                        error=f"Change #{i+1}: 'old' field is required but missing or empty.",
+                        error=f"Change #{i + 1}: 'old' field is required but missing or empty.",
                     )
 
                 if new is None:
                     return ToolResult(
                         success=False,
-                        error=f"Change #{i+1}: 'new' field is required but missing.",
+                        error=f"Change #{i + 1}: 'new' field is required but missing.",
                     )
 
                 if old in content:
@@ -1141,18 +1197,18 @@ Perform final validation and report status.
                     if occurrences > 1:
                         return ToolResult(
                             success=False,
-                            error=f"Change #{i+1}: Text appears {occurrences} times in file. "
-                                  f"Provide more context in 'old' to make replacement unique, "
-                                  f"or use multiple specific changes.",
+                            error=f"Change #{i + 1}: Text appears {occurrences} times in file. "
+                            f"Provide more context in 'old' to make replacement unique, "
+                            f"or use multiple specific changes.",
                         )
                     content = content.replace(old, new)
                     changes_applied += 1
                 else:
                     return ToolResult(
                         success=False,
-                        error=f"Change #{i+1}: Could not find text to replace: '{old[:100]}...'. "
-                              f"Text may have already been changed, or the context doesn't match. "
-                              f"Try reading the file first to see current contents.",
+                        error=f"Change #{i + 1}: Could not find text to replace: '{old[:100]}...'. "
+                        f"Text may have already been changed, or the context doesn't match. "
+                        f"Try reading the file first to see current contents.",
                     )
 
             # Safety check: don't write if no changes
@@ -1175,13 +1231,12 @@ Perform final validation and report status.
             return ToolResult(
                 success=False,
                 error=f"Cannot edit '{path}': file appears to be binary. "
-                      f"This tool only supports text files.",
+                f"This tool only supports text files.",
             )
         except PermissionError:
             return ToolResult(
                 success=False,
-                error=f"Permission denied: cannot edit '{path}'. "
-                      f"Check file permissions.",
+                error=f"Permission denied: cannot edit '{path}'. Check file permissions.",
             )
         except Exception as e:
             return ToolResult(
@@ -1216,14 +1271,14 @@ Perform final validation and report status.
                 if not full_test_path.exists():
                     return ToolResult(
                         success=False,
-                        error=f"Test path not found: '{test_path}'. "
-                              f"Check the path is correct.",
+                        error=f"Test path not found: '{test_path}'. Check the path is correct.",
                     )
 
             # Check if pytest is available
             # Try to find pytest
             check_pytest = await asyncio.create_subprocess_exec(
-                "which", "pytest",
+                "which",
+                "pytest",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1232,8 +1287,7 @@ Perform final validation and report status.
             if check_pytest.returncode != 0:
                 return ToolResult(
                     success=False,
-                    error="Test runner 'pytest' not found. "
-                          "Install it with: pip install pytest",
+                    error="Test runner 'pytest' not found. Install it with: pip install pytest",
                 )
 
             # Run tests with timeout
@@ -1258,8 +1312,8 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error="Tests timed out after 5 minutes. "
-                          "This may indicate hanging tests or an infinite loop. "
-                          "Consider running specific test files instead of the entire suite.",
+                    "This may indicate hanging tests or an infinite loop. "
+                    "Consider running specific test files instead of the entire suite.",
                 )
 
             stdout_str = stdout.decode() if stdout else ""
@@ -1277,15 +1331,14 @@ Perform final validation and report status.
                 success=False,
                 output=stdout_str,
                 error=f"Tests failed with exit code {process.returncode}. "
-                      f"Review the output to identify failing tests.",
+                f"Review the output to identify failing tests.",
                 data={"exit_code": process.returncode, "stderr": error_msg[:500]},
             )
 
         except FileNotFoundError as e:
             return ToolResult(
                 success=False,
-                error=f"Command not found: {e!s}. "
-                      f"Ensure pytest is installed and in PATH.",
+                error=f"Command not found: {e!s}. Ensure pytest is installed and in PATH.",
             )
         except Exception as e:
             return ToolResult(
@@ -1312,7 +1365,9 @@ Perform final validation and report status.
         try:
             # Safety check: verify we're in a git repository
             check_git = await asyncio.create_subprocess_exec(
-                "git", "rev-parse", "--git-dir",
+                "git",
+                "rev-parse",
+                "--git-dir",
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1322,13 +1377,14 @@ Perform final validation and report status.
             if check_git.returncode != 0:
                 return ToolResult(
                     success=False,
-                    error=f"Not a git repository: {self.repo_path}. "
-                          f"Cannot perform git operations.",
+                    error=f"Not a git repository: {self.repo_path}. Cannot perform git operations.",
                 )
 
             # Safety check: verify there are changes to commit
             status_process = await asyncio.create_subprocess_exec(
-                "git", "status", "--porcelain",
+                "git",
+                "status",
+                "--porcelain",
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1339,7 +1395,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error="No changes to commit. Working tree is clean. "
-                          "Make changes to files before creating a commit.",
+                    "Make changes to files before creating a commit.",
                 )
 
             # Validate and add files
@@ -1373,12 +1429,14 @@ Perform final validation and report status.
                         return ToolResult(
                             success=False,
                             error=f"File not found: '{file}'. "
-                                  f"Cannot add non-existent file to commit.",
+                            f"Cannot add non-existent file to commit.",
                         )
 
                     # Add the file
                     process = await asyncio.create_subprocess_exec(
-                        "git", "add", file,
+                        "git",
+                        "add",
+                        file,
                         cwd=self.repo_path,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
@@ -1393,7 +1451,9 @@ Perform final validation and report status.
             else:
                 # Add all changes
                 process = await asyncio.create_subprocess_exec(
-                    "git", "add", "-A",
+                    "git",
+                    "add",
+                    "-A",
                     cwd=self.repo_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -1408,7 +1468,10 @@ Perform final validation and report status.
 
             # Create commit
             process = await asyncio.create_subprocess_exec(
-                "git", "commit", "-m", message,
+                "git",
+                "commit",
+                "-m",
+                message,
                 cwd=self.repo_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1434,7 +1497,7 @@ Perform final validation and report status.
                 return ToolResult(
                     success=False,
                     error=f"Git hook failed: {error_output}. "
-                          f"Fix the issues identified by the pre-commit hook.",
+                    f"Fix the issues identified by the pre-commit hook.",
                 )
             return ToolResult(
                 success=False,

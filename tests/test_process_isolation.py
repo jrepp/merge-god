@@ -21,20 +21,15 @@ Each test validates both the process in isolation and the boundary
 between processes (data format compatibility).
 """
 
-import json
-import os
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
 
 import pytest
 
-from db_operations import StateDatabase
-from models import RepositoryState, BranchPRState, PullRequest, PRState, CIStatus, Branch, BranchStatus
-from state_tracker import StateTracker
 from agents import PRContext
+from db_operations import StateDatabase
 
 
 class TestProcess1Isolation:
@@ -48,7 +43,7 @@ class TestProcess1Isolation:
     4. Store full PR context for agent invocation
     """
 
-    @pytest.fixture
+    @pytest.fixture()
     def temp_db(self):
         """Create temporary database for testing"""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -62,25 +57,27 @@ class TestProcess1Isolation:
 
     def test_process1_creates_database_schema(self, temp_db):
         """Test that Process 1 creates the correct database schema"""
-        db = StateDatabase(temp_db)
+        StateDatabase(temp_db)
 
         # Verify all tables exist
         with sqlite3.connect(temp_db) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT name FROM sqlite_master
                 WHERE type='table'
                 ORDER BY name
-            """)
+            """
+            )
             tables = [row[0] for row in cursor.fetchall()]
 
         expected_tables = [
-            'repositories',
-            'pull_requests',
-            'processing_history',
-            'dashboard_state',
-            'branch_states',
-            'pr_context'  # Critical for Process 2/3 isolation
+            "repositories",
+            "pull_requests",
+            "processing_history",
+            "dashboard_state",
+            "branch_states",
+            "pr_context",  # Critical for Process 2/3 isolation
         ]
 
         for table in expected_tables:
@@ -102,8 +99,8 @@ class TestProcess1Isolation:
             "draft": False,
             "ci_status": "success",
             "labels": ["for-landing"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
 
         # Save PR snapshot (Process 1 output)
@@ -132,43 +129,43 @@ class TestProcess1Isolation:
             "baseRefName": "main",
             "author": {"login": "test-user"},
             "labels": ["for-landing"],
-            "reviewDecision": "APPROVED"
+            "reviewDecision": "APPROVED",
         }
 
         pr_context = {
             "url": "https://github.com/test/repo/pull/123",
             "diff": "--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,3 @@\n-old line\n+new line",
             "comments": [
-                {"user": {"login": "reviewer"}, "body": "Looks good"}
+                {"user": {"login": "reviewer"}, "body": "Looks good"},
             ],
             "review_comments": [
                 {
                     "user": {"login": "reviewer"},
                     "body": "Consider optimizing this",
                     "path": "file.py",
-                    "line": 10
-                }
+                    "line": 10,
+                },
             ],
             "commits": [
-                {"sha": "abc123", "commit": {"message": "Initial commit"}}
+                {"sha": "abc123", "commit": {"message": "Initial commit"}},
             ],
             "files": [
-                {"filename": "file.py", "additions": 10, "deletions": 5, "status": "modified"}
+                {"filename": "file.py", "additions": 10, "deletions": 5, "status": "modified"},
             ],
             "conflicts": {
                 "has_conflicts": False,
                 "conflicting_files": [],
-                "conflict_count": 0
+                "conflict_count": 0,
             },
             "ci_status": {
                 "total_checks": 3,
                 "passed": 3,
                 "failed": 0,
                 "pending": 0,
-                "failed_checks": []
+                "failed_checks": [],
             },
             "guidelines": "Follow PEP 8",
-            "commit_examples": "feat: add feature\nfix: fix bug"
+            "commit_examples": "feat: add feature\nfix: fix bug",
         }
 
         # Save full PR context (Process 1 output)
@@ -197,7 +194,7 @@ class TestProcess2Isolation:
     4. Validate data completeness
     """
 
-    @pytest.fixture
+    @pytest.fixture()
     def populated_db(self):
         """Create database with test data"""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -215,7 +212,7 @@ class TestProcess2Isolation:
             "baseRefName": "main",
             "author": {"login": "test-user"},
             "labels": ["for-landing"],
-            "reviewDecision": None
+            "reviewDecision": None,
         }
 
         pr_context = {
@@ -228,7 +225,7 @@ class TestProcess2Isolation:
             "conflicts": {"has_conflicts": False, "conflicting_files": []},
             "ci_status": {"total_checks": 0, "passed": 0, "failed": 0, "pending": 0},
             "guidelines": "Test guidelines",
-            "commit_examples": "Test examples"
+            "commit_examples": "Test examples",
         }
 
         db.save_pr_context(repo_name, 123, pr_details, pr_context)
@@ -244,8 +241,8 @@ class TestProcess2Isolation:
             "draft": False,
             "ci_status": "none",
             "labels": ["for-landing"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
         db.save_pr_snapshot(repo_name, pr_data)
 
@@ -257,7 +254,7 @@ class TestProcess2Isolation:
 
     def test_process2_loads_pr_context_from_db(self, populated_db):
         """Test that Process 2 can load PR context from database"""
-        db_path, db, repo_name = populated_db
+        _db_path, db, repo_name = populated_db
 
         # Process 2: Load context from database
         result = db.get_pr_context_for_agent(repo_name, 123)
@@ -280,7 +277,7 @@ class TestProcess2Isolation:
 
     def test_process2_creates_pr_context_object(self, populated_db):
         """Test that Process 2 creates valid PRContext objects for Process 3"""
-        db_path, db, repo_name = populated_db
+        _db_path, db, repo_name = populated_db
 
         # Process 2: Load and transform data
         result = db.get_pr_context_for_agent(repo_name, 123)
@@ -304,7 +301,7 @@ class TestProcess2Isolation:
 
     def test_process2_validates_missing_data(self, populated_db):
         """Test that Process 2 handles missing data gracefully"""
-        db_path, db, repo_name = populated_db
+        _db_path, db, repo_name = populated_db
 
         # Try to load non-existent PR
         result = db.get_pr_context_for_agent(repo_name, 999)
@@ -348,7 +345,7 @@ class TestProcess3Isolation:
             commit_examples="Test examples",
             labels=["for-landing"],
             ci_checks={},
-            review_decision=None
+            review_decision=None,
         )
 
         # Verify PRContext is valid for Process 3
@@ -356,16 +353,17 @@ class TestProcess3Isolation:
         assert pr_context.title == "Test PR"
 
         # This is what Process 3 receives - validate structure
-        assert hasattr(pr_context, 'pr_number')
-        assert hasattr(pr_context, 'diff')
-        assert hasattr(pr_context, 'has_conflicts')
-        assert hasattr(pr_context, 'has_failing_ci')
-        assert hasattr(pr_context, 'review_comments')
+        assert hasattr(pr_context, "pr_number")
+        assert hasattr(pr_context, "diff")
+        assert hasattr(pr_context, "has_conflicts")
+        assert hasattr(pr_context, "has_failing_ci")
+        assert hasattr(pr_context, "review_comments")
 
     def test_process3_task_decomposition(self):
         """Test that Process 3 correctly decomposes PR into tasks"""
-        from agents.claude_agent import PRAgent
         from unittest.mock import MagicMock
+
+        from agents.claude_agent import PRAgent
 
         # Create mock client
         mock_client = MagicMock()
@@ -393,7 +391,7 @@ class TestProcess3Isolation:
             commit_examples="Test examples",
             labels=["for-review"],
             ci_checks={"failed": 1},
-            review_decision=None
+            review_decision=None,
         )
 
         # Test task decomposition (Process 3 internal logic)
@@ -414,7 +412,7 @@ class TestProcessBoundaryValidation:
     Test data flow and compatibility between process boundaries
     """
 
-    @pytest.fixture
+    @pytest.fixture()
     def full_pipeline_db(self):
         """Create database and simulate full pipeline"""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -439,7 +437,7 @@ class TestProcessBoundaryValidation:
             "baseRefName": "main",
             "author": {"login": "test-user"},
             "labels": ["for-landing"],
-            "reviewDecision": "APPROVED"
+            "reviewDecision": "APPROVED",
         }
 
         pr_context_p1 = {
@@ -452,7 +450,7 @@ class TestProcessBoundaryValidation:
             "conflicts": {"has_conflicts": True, "conflicting_files": ["test.py"]},
             "ci_status": {"total_checks": 2, "passed": 1, "failed": 1},
             "guidelines": "Follow style guide",
-            "commit_examples": "fix: bug"
+            "commit_examples": "fix: bug",
         }
 
         db.save_pr_context(repo_name, 123, pr_details_p1, pr_context_p1)
@@ -466,8 +464,8 @@ class TestProcessBoundaryValidation:
             "base_branch": "main",
             "author": "test-user",
             "labels": ["for-landing"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
         db.save_pr_snapshot(repo_name, pr_data)
 
@@ -483,7 +481,10 @@ class TestProcessBoundaryValidation:
         assert pr_context_p2["diff"] == pr_context_p1["diff"]
         assert len(pr_context_p2["comments"]) == len(pr_context_p1["comments"])
         assert len(pr_context_p2["review_comments"]) == len(pr_context_p1["review_comments"])
-        assert pr_context_p2["conflicts"]["has_conflicts"] == pr_context_p1["conflicts"]["has_conflicts"]
+        assert (
+            pr_context_p2["conflicts"]["has_conflicts"]
+            == pr_context_p1["conflicts"]["has_conflicts"]
+        )
         assert pr_context_p2["guidelines"] == pr_context_p1["guidelines"]
 
     def test_boundary_process2_to_process3(self, full_pipeline_db):
@@ -500,7 +501,7 @@ class TestProcessBoundaryValidation:
             "baseRefName": "main",
             "author": {"login": "user"},
             "labels": ["for-review"],
-            "reviewDecision": None
+            "reviewDecision": None,
         }
 
         pr_context = {
@@ -513,7 +514,7 @@ class TestProcessBoundaryValidation:
             "conflicts": {"has_conflicts": False, "conflicting_files": []},
             "ci_status": {"total_checks": 1, "passed": 1, "failed": 0, "pending": 0},
             "guidelines": "Test",
-            "commit_examples": "Test"
+            "commit_examples": "Test",
         }
 
         db.save_pr_context(repo_name, 456, pr_details, pr_context)
@@ -526,8 +527,8 @@ class TestProcessBoundaryValidation:
             "base_branch": "main",
             "author": "user",
             "labels": ["for-review"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
         db.save_pr_snapshot(repo_name, pr_data)
 
@@ -548,10 +549,10 @@ class TestProcessBoundaryValidation:
         assert isinstance(pr_context_obj.commit_examples, str)
 
         # Process 3 should be able to work with this object
-        assert hasattr(pr_context_obj, 'pr_number')
-        assert hasattr(pr_context_obj, 'head_branch')
-        assert hasattr(pr_context_obj, 'base_branch')
-        assert hasattr(pr_context_obj, 'author')
+        assert hasattr(pr_context_obj, "pr_number")
+        assert hasattr(pr_context_obj, "head_branch")
+        assert hasattr(pr_context_obj, "base_branch")
+        assert hasattr(pr_context_obj, "author")
 
 
 if __name__ == "__main__":

@@ -68,7 +68,8 @@ class GitHubOperations:
         try:
             result = subprocess.run(
                 ["gh", "auth", "token"],
-                check=False, capture_output=True,
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=5,
             )
@@ -112,7 +113,8 @@ class GitHubOperations:
         try:
             result = subprocess.run(
                 ["git", "remote", "get-url", "origin"],
-                check=False, cwd=self.repo_path,
+                check=False,
+                cwd=self.repo_path,
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -331,7 +333,9 @@ class GitHubOperations:
                     count += 1
 
         except GithubException as e:
-            raise GitHubOperationsError(f"Failed to fetch PRs: {e.data.get('message', str(e))}") from e
+            raise GitHubOperationsError(
+                f"Failed to fetch PRs: {e.data.get('message', str(e))}"
+            ) from e
 
         return prs
 
@@ -399,7 +403,6 @@ class GitHubOperations:
                 changed_files=gh_pr.changed_files,
                 commits=gh_pr.commits,
             )
-
 
         except (AttributeError, GithubException):
             # Log the error but don't fail the entire operation

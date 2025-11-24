@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Create test data for PR #134"""
 
+from datetime import UTC, datetime
+
 from db_operations import StateDatabase
-from datetime import datetime, timezone
 
 # Initialize database
 db = StateDatabase("merge-god-state.db")
@@ -21,7 +22,7 @@ This allows debugging failures without full GitHub/git access.""",
     "baseRefName": "main",
     "author": {"login": "test-user"},
     "labels": ["for-landing", "enhancement"],
-    "reviewDecision": "APPROVED"
+    "reviewDecision": "APPROVED",
 }
 
 pr_context = {
@@ -31,7 +32,7 @@ pr_context = {
         "+++ b/db_operations.py\n"
         "@@ -139,6 +139,20 @@ class StateDatabase:\n"
         "                 )\n"
-        "             \"\"\")\n"
+        '             """)\n'
         " \n"
         "+            # PR context table\n"
         "+            cursor.execute('''\n"
@@ -48,65 +49,65 @@ pr_context = {
     "comments": [
         {
             "user": {"login": "reviewer1"},
-            "body": "Great work on the isolation! This will make debugging much easier."
-        }
+            "body": "Great work on the isolation! This will make debugging much easier.",
+        },
     ],
     "review_comments": [
         {
             "user": {"login": "reviewer2"},
             "body": "Consider adding size limits for the diff field to prevent database bloat.",
             "path": "db_operations.py",
-            "line": 150
-        }
+            "line": 150,
+        },
     ],
     "commits": [
         {
             "sha": "abc123def456",
             "commit": {
-                "message": "Add pr_context table for agent isolation"
-            }
+                "message": "Add pr_context table for agent isolation",
+            },
         },
         {
             "sha": "def456ghi789",
             "commit": {
-                "message": "Create standalone agent runner script"
-            }
-        }
+                "message": "Create standalone agent runner script",
+            },
+        },
     ],
     "files": [
         {
             "filename": "db_operations.py",
             "additions": 150,
             "deletions": 10,
-            "status": "modified"
+            "status": "modified",
         },
         {
             "filename": "run_agent_from_db.py",
             "additions": 250,
             "deletions": 0,
-            "status": "added"
+            "status": "added",
         },
         {
             "filename": "test_process_isolation.py",
             "additions": 400,
             "deletions": 0,
-            "status": "added"
-        }
+            "status": "added",
+        },
     ],
     "conflicts": {
         "has_conflicts": False,
         "conflicting_files": [],
-        "conflict_count": 0
+        "conflict_count": 0,
     },
     "ci_status": {
         "total_checks": 3,
         "passed": 3,
         "failed": 0,
         "pending": 0,
-        "failed_checks": []
+        "failed_checks": [],
     },
     "guidelines": "Follow PEP 8 style guide. Add docstrings to all public methods.",
-    "commit_examples": "feat: add new feature\nfix: resolve bug\ntest: add test coverage"
+    "commit_examples": "feat: add new feature\nfix: resolve bug\ntest: add test coverage",
 }
 
 # Save to database
@@ -124,8 +125,8 @@ pr_snapshot = {
     "draft": False,
     "ci_status": "success",
     "labels": ["for-landing", "enhancement"],
-    "created_at": datetime.now(timezone.utc),
-    "updated_at": datetime.now(timezone.utc)
+    "created_at": datetime.now(UTC),
+    "updated_at": datetime.now(UTC),
 }
 db.save_pr_snapshot("merge-god", pr_snapshot)
 

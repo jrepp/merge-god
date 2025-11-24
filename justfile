@@ -15,18 +15,16 @@ ci: pre-commit-file-checks isort-check ruff-lint ruff-format-check mypy bandit m
 # Run pre-commit file checks only (trailing whitespace, EOF, YAML, etc.)
 pre-commit-file-checks:
     @echo "🔍 Running pre-commit file checks..."
-    @pre-commit run --hook-stage manual \
-        trailing-whitespace \
-        end-of-file-fixer \
-        check-yaml \
-        check-added-large-files \
-        check-json \
-        check-toml \
-        check-merge-conflict \
-        check-case-conflict \
-        detect-private-key \
-        mixed-line-ending \
-        --all-files
+    @pre-commit run --hook-stage manual trailing-whitespace --all-files
+    @pre-commit run --hook-stage manual end-of-file-fixer --all-files
+    @pre-commit run --hook-stage manual check-yaml --all-files
+    @pre-commit run --hook-stage manual check-added-large-files --all-files
+    @pre-commit run --hook-stage manual check-json --all-files
+    @pre-commit run --hook-stage manual check-toml --all-files
+    @pre-commit run --hook-stage manual check-merge-conflict --all-files
+    @pre-commit run --hook-stage manual check-case-conflict --all-files
+    @pre-commit run --hook-stage manual detect-private-key --all-files
+    @pre-commit run --hook-stage manual mixed-line-ending --all-files
 
 # Check import sorting with isort
 isort-check:
@@ -61,24 +59,29 @@ ruff-format:
 # Run mypy type checking
 mypy:
     @echo "🔍 Running mypy type checking..."
-    @uv run mypy --strict-optional --warn-return-any --exclude '^(test_.*\.py|.*_test\.py)$' .
+    @uv run mypy merge_god/
 
 # Run Bandit security checks
 bandit:
     @echo "🔍 Running Bandit security checks..."
-    @uv run bandit -c pyproject.toml -r . --exclude './test_*.py'
+    @uv run bandit -c pyproject.toml -r . --exclude './.venv,./test_*.py,./tests'
 
 # Run Markdown linting
 markdownlint:
     @echo "🔍 Running Markdown linting..."
-    @markdownlint --config .markdownlintrc .
+    @npx markdownlint --config .markdownlintrc --ignore node_modules --ignore .venv '**/*.md'
+
+# Fix Markdown formatting
+markdownlint-fix:
+    @echo "🔧 Fixing Markdown formatting..."
+    @npx markdownlint --config .markdownlintrc --ignore node_modules --ignore .venv --fix '**/*.md'
 
 # Run all linters and formatters
 lint: ruff-lint mypy bandit markdownlint
     @echo "✅ All linting checks passed!"
 
 # Auto-fix all fixable issues
-fix: isort-fix ruff-fix ruff-format
+fix: isort-fix ruff-fix ruff-format markdownlint-fix
     @echo "✅ Auto-fixes applied!"
 
 # === Testing ===
