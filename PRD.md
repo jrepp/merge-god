@@ -16,7 +16,7 @@ This document tracks product requirements and features for the merge-god PR auto
 - [x] Exclude draft PRs from processing
 - [x] Exclude WIP-labeled PRs
 - [x] Sync repository before processing
-- [x] Use `bob` (Claude Code wrapper) for PR fixes
+- [x] Use `bob` (AI assistant wrapper) for PR fixes
 - [x] Structured JSON logging for all operations
 - [x] Modern Python 3.12+ with uv shebang support
 

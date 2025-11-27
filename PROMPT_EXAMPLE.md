@@ -1,6 +1,6 @@
 # Example Generated Prompt
 
-This is an example of the comprehensive prompt that gets generated and passed to `bob` (Claude Code) for PR processing.
+This is an example of the comprehensive prompt that gets generated and passed to `bob` for PR processing.
 
 ---
 

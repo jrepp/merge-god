@@ -2498,7 +2498,7 @@ def validate_repository(repo_path: Path) -> bool:
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description="Automated PR processing loop using bob (Claude Code wrapper)",
+        description="Automated PR processing loop using bob (AI assistant wrapper)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

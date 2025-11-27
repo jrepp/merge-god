@@ -4,11 +4,24 @@ Automated PR processing system that uses `bob` (an AI assistant wrapper) to cont
 
 ## Documentation
 
+### Core Documentation
+
 - **[PRD.md](PRD.md)** - Product requirements tracker (features, priorities, status)
 - **[ADR.md](ADR.md)** - Architecture decision records (design choices, rationale)
+- **[DEVELOPMENT.md](DEVELOPMENT.md)** - Development setup and workflows
+- **[INSTALLATION.md](INSTALLATION.md)** - Installation and configuration guide
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and changes
+
+### Testing & Evaluation
+
+- **[TESTING.md](TESTING.md)** - Complete testing workflow guide (database caching, agent testing, evaluation)
+- **[AGENT_TESTING.md](AGENT_TESTING.md)** - Agent-specific testing and debugging
+- **[TESTING_QUICK_REFERENCE.md](TESTING_QUICK_REFERENCE.md)** - Quick commands and common queries
+
+### Reference
+
 - **[UV_SUPPORT.md](UV_SUPPORT.md)** - Comprehensive guide to uv usage
 - **[PROMPT_EXAMPLE.md](PROMPT_EXAMPLE.md)** - Example of generated PR prompt
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history and changes
 - **[docs/](docs/)** - Historical documentation (code reviews, fixes)
 
 ## Features
@@ -166,7 +179,7 @@ All scripts use **uv** for dependency management and execution via PEP 723 inlin
 
 ### Context Gathering Phase
 
-Before invoking `bob` (Claude Code), the script performs extensive pre-work to gather comprehensive PR context:
+Before invoking `bob`, the script performs extensive pre-work to gather comprehensive PR context:
 
 1. **PR Metadata**: Title, description, author, dates, branch names, statistics (files changed, additions, deletions)
 2. **Comments & Reviews**: All discussion comments and inline code review comments with file paths and line numbers

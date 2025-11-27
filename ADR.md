@@ -189,7 +189,7 @@ Use GitHub labels (`for-review`, `for-landing`) to control how PRs are processed
 
 ---
 
-## ADR-005: Use bob (Claude Code Wrapper) for PR Processing
+## ADR-005: Use bob (AI Assistant Wrapper) for PR Processing
 
 **Date**: 2025-11-20
 **Status**: ✅ Accepted
@@ -201,13 +201,13 @@ Need an AI agent to actually perform PR fixes (resolve conflicts, address review
 
 ### Decision
 
-Use `bob` (Claude Code wrapper) as the agent interface.
+Use `bob` (AI assistant wrapper) as the agent interface.
 
 ### Rationale
 
 - **JSON mode**: Supports --json for structured interaction
 - **Comprehensive**: Can handle git, tests, code edits, commits
-- **Context aware**: Claude can understand full PR context
+- **Context aware**: LLM can understand full PR context
 - **Autonomous**: Can work through multiple steps independently
 
 ### Consequences
@@ -222,7 +222,7 @@ Use `bob` (Claude Code wrapper) as the agent interface.
 **Negative:**
 
 - Requires bob to be installed and configured
-- API costs for Claude usage
+- API costs for LLM usage
 - Non-deterministic outcomes
 - May need prompt tuning
 
