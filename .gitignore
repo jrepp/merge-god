@@ -4,22 +4,26 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.egg-info/
+*.egg
+eggs/
+.eggs/
 
 # Virtual environments
 venv/
 env/
 ENV/
+.venv/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # Logs
 *.log
-pr-loop.log
-pr-loop.error.log
 
 # OS
 .DS_Store
@@ -28,7 +32,41 @@ Thumbs.db
 # Temporary files
 *.tmp
 /tmp/
+
+# Local config
 config.yaml
-.venv
+
+# Node.js
 node_modules/
 package-lock.json
+
+# Test and coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.mypy-ignore-temp.txt
+
+# Linting
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Database files
+*.db
+
+# Documentation build
+docs/_build/
+site/
