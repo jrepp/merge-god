@@ -604,6 +604,26 @@ class PRAgent:
 - **Branch**: {pr_context.head_branch} → {pr_context.base_branch}
 - **Author**: {pr_context.author}
 - **URL**: {pr_context.url}
+
+## Testing & Evaluation Context
+This agent execution is part of the merge-god testing workflow:
+- All actions are logged to SQLite database for evaluation
+- Session metrics: tasks, tokens, duration, cost are tracked
+- File operations: reads, writes, edits are recorded
+- Results will be evaluated for success rate, quality, and performance
+
+**For Testing Reference**: See TESTING.md and AGENT_TESTING.md for workflow details.
+The multi-part testing workflow is:
+1. Update database (cache PR context from GitHub)
+2. Run agent in test harness (this execution)
+3. Capture results (automatic database logging)
+4. Evaluate results (evaluate_agent_results.py)
+
+Your execution will be evaluated on:
+- Task completion rate (target: >90%)
+- Code quality (proper fixes, no regressions)
+- Performance (tokens, duration, cost)
+- Error handling (recovery from failures)
 """
 
         # Add task-specific context

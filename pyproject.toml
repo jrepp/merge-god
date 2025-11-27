@@ -39,6 +39,8 @@ dependencies = [
     "rich>=13.0.0",                 # Terminal UI and formatting
     "pyyaml>=6.0",                  # Configuration file parsing
     "psutil>=5.9.0",                # Process and system monitoring
+    "aiosqlite>=0.19.0",            # Async SQLite for github_sync library
+    "httpx>=0.25.0",                # Async HTTP client for github_sync library
 ]
 
 [project.optional-dependencies]
@@ -49,6 +51,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
+    "testcontainers>=4.0.0",      # Docker containers for integration tests
 
     # Linting and formatting
     "ruff>=0.1.15",
@@ -107,11 +110,12 @@ Repository = "https://github.com/yourusername/merge-god"
 Issues = "https://github.com/yourusername/merge-god/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["merge_god"]
+packages = ["merge_god", "github_sync"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/merge_god",
+    "/github_sync",
     "/README.md",
     "/LICENSE",
     "/config.example.yaml",
@@ -138,26 +142,22 @@ dev-dependencies = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
-
     # Linting and formatting
     "ruff>=0.1.15",
     "isort>=5.13.0",
     "black>=24.0.0",
-
     # Type checking
     "mypy>=1.8.0",
     "types-PyYAML>=6.0.0",
-
     # Security scanning
     "bandit[toml]>=1.7.6",
     "pip-audit>=2.6.0",
-
     # Pre-commit and hooks
     "pre-commit>=3.6.0",
-
     # Build and publishing
     "build>=1.0.0",
     "twine>=4.0.0",
+    "testcontainers>=4.13.3",
 ]
 
 # === Ruff Configuration ===
