@@ -1,0 +1,4 @@
+# docs-cms is validated by docuchango (see .github/workflows/docs.yml).
+# Its template convention uses multiple top-level headings (H1) per document,
+# which conflicts with markdownlint's MD025 rule. docuchango owns this tree.
+docs-cms/
