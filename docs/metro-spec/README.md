@@ -1,8 +1,7 @@
 # Metro Spec References
 
 This directory contains shared reference copies of Metro workflow, WorkflowIR,
-and prompt specifications used to ground Merge God / Ironhide workflow
-extraction work.
+and prompt specifications used to ground workflow extraction work.
 
 Canonical sources live in the Metro repository under `spec/` and
 `schema-registry/`. Treat these files as imported reference material unless
@@ -20,6 +19,4 @@ This directory is vendored reference material, not the Merge God documentation s
 - `workflow-QUICK-REF.md` - Workflow authoring quick reference.
 - `workflow-ir-registry.yaml` - WorkflowIR schema family registry entry.
 - `workflow-ir.schema.json` - WorkflowIR machine-readable schema.
-- `PROMPT-SPEC.md` - Metro prompt authoring specification.
-- `prompt-runtime-registry.yaml` - Prompt runtime schema family registry.
 - `prompt-runtime-registry.yaml` - Prompt runtime schema family registry entry.
