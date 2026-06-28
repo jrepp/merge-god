@@ -7,51 +7,51 @@ const repoUrl = "https://github.com/jrepp/merge-god";
 const features = [
   {
     icon: "loop",
-    title: "Continuous PR loop",
-    body: "Loops through open PRs and processes them in order — syncing with origin, resolving conflicts, responding to reviews, and fixing failing CI.",
+    title: "It watches the PR queue",
+    body: "merge-god scans each configured repo, finds PRs with the right labels, and processes them one at a time instead of relying on a human to keep checking GitHub.",
   },
   {
     icon: "context",
-    title: "Deep context gathering",
-    body: "Feeds the agent full PR metadata, comments, review threads, commit history, diffs, merge-conflict detection, and CI/CD status before it acts.",
+    title: "It builds the agent brief",
+    body: "Before the agent acts, merge-god gathers the PR body, changed files, commits, review comments, CI state, conflicts, labels, and local repo state into one prompt.",
   },
   {
     icon: "label",
-    title: "Label-driven control",
-    body: "`for-landing` merges with minimal touches. `for-review` runs a two-pass review for quality, security, and best practices. No label = skipped.",
+    title: "Labels are the control plane",
+    body: "No label means no action. `for-landing` means resolve blockers and land it. `for-review` means inspect and improve it before landing.",
   },
   {
     icon: "grid",
-    title: "Multi-repo dashboard",
-    body: "A live TUI dashboard monitors every repo at once, with color-coded status, per-repo logs, and automatic non-TUI fallback for CI.",
+    title: "It works across repos",
+    body: "The dashboard runs the same loop for many repositories, showing status, current PR, logs, and whether each repo is waiting, processing, blocked, or done.",
   },
   {
     icon: "issue",
-    title: "Issue → PR automation",
-    body: "Optionally watch issues labeled `for-impl`. merge-god branches, implements, opens a PR, and links it back — all before touching existing PRs.",
+    title: "It can start from issues",
+    body: "Issues labeled `for-impl` can be turned into branches and PRs before the PR loop starts landing existing work.",
   },
   {
     icon: "bell",
-    title: "Structured & observable",
-    body: "JSON event logging, real-time ntfy.sh notifications, and a rich generated prompt you can inspect for every single PR.",
+    title: "It leaves an audit trail",
+    body: "Every run records structured events, database state, agent sessions, file operations, and generated context so you can inspect what happened later.",
   },
 ];
 
 const steps = [
   {
     n: "01",
-    title: "Gather",
-    body: "Collects the complete state of each PR — conflicts, reviews, CI failures, diffs, and discussion — into one structured context.",
+    title: "Select a labeled PR",
+    body: "Only PRs explicitly labeled for merge-god are eligible. This keeps automation opt-in and lets maintainers decide what should move.",
   },
   {
     n: "02",
-    title: "Prompt",
-    body: "Generates a prioritized mission and a comprehensive markdown prompt with every detail the agent needs to succeed.",
+    title: "Collect context and run pi",
+    body: "merge-god prepares the local checkout, gathers GitHub and git state, then hands a detailed task to pi through the bundled extension.",
   },
   {
     n: "03",
-    title: "Act & merge",
-    body: "pi (via the merge-god extension) resolves conflicts, addresses reviews, fixes CI, then commits and lands the PR. Loop advances to the next one.",
+    title: "Verify, merge, continue",
+    body: "The agent fixes conflicts, review comments, or CI failures, then merge-god verifies the result, merges when possible, and advances to the next PR.",
   },
 ];
 
@@ -81,12 +81,12 @@ npm run dashboard`;
   <section class="hero">
     <div class="container hero-grid">
       <div class="hero-copy">
-        <span class="pill"><span class="dot"></span> AI-powered PR automation</span>
-        <h1>Land pull requests <span class="gradient-text">while you sleep</span>.</h1>
+        <span class="pill"><span class="dot"></span> Label-driven PR automation</span>
+        <h1>An autonomous loop for <span class="gradient-text">landing pull requests</span>.</h1>
         <p class="lead">
-          merge-god loops over your open PRs and uses an AI agent to resolve conflicts,
-          address reviews, fix failing CI, and merge — across every repo, from a single
-          live dashboard.
+          merge-god is for repos where PRs pile up because the last mile is tedious:
+          rebase conflicts, review follow-ups, failing checks, and merge-button babysitting.
+          Label a PR, and merge-god gives an agent the full context needed to get it landed.
         </p>
         <div class="hero-cta">
           <a class="btn btn-primary" href={`${base}docs/quickstart/`}>
@@ -105,7 +105,7 @@ npm run dashboard`;
       <div class="hero-visual">
         <img
           class="hero-img"
-          src={`${base}merge-god.svg`}
+          src={`${base}merge-god.png`}
           alt="merge-god — the multi-repo PR processing dashboard"
           width="1254"
           height="1254"
@@ -115,13 +115,13 @@ npm run dashboard`;
     </div>
   </section>
 
-  <!-- FEATURES -->
+  <!-- WHY -->
   <section id="features" class="section">
     <div class="container">
       <div class="section-head">
-        <span class="eyebrow">Features</span>
-        <h2>Everything the agent needs, handled.</h2>
-        <p class="lead">merge-god does the tedious pre-work so the agent can do real work — review, resolve, and land.</p>
+        <span class="eyebrow">Why it exists</span>
+        <h2>Most PR work is not writing new code. It is coordination.</h2>
+        <p class="lead">merge-god automates the repeatable part: picking the next eligible PR, preparing the checkout, collecting context, asking the agent to handle blockers, and recording the outcome.</p>
       </div>
       <div class="feature-grid">
         {features.map((f) => (
@@ -147,8 +147,8 @@ npm run dashboard`;
     <div class="container">
       <div class="section-head">
         <span class="eyebrow">How it works</span>
-        <h2>Gather. Prompt. Land.</h2>
-        <p class="lead">A predictable pipeline turns raw PR context into autonomous, auditable merges.</p>
+        <h2>The loop is intentionally simple.</h2>
+        <p class="lead">You choose what is eligible with labels. merge-god does one PR at a time, keeps state locally, and does not touch unlabeled work.</p>
       </div>
       <ol class="steps">
         {steps.map((s) => (
@@ -167,8 +167,8 @@ npm run dashboard`;
     <div class="container">
       <div class="section-head">
         <span class="eyebrow">Quickstart</span>
-        <h2>Running in under a minute.</h2>
-        <p class="lead">Bring <code>Node.js</code>, <code>gh</code>, and <code>pi</code> on your PATH — merge-god talks to pi through a coordination API and the bundled <code>merge-god</code> extension.</p>
+        <h2>Try it against a repo you control.</h2>
+        <p class="lead">Install dependencies, list repos in <code>config.yaml</code>, then label PRs with <code>for-landing</code> or <code>for-review</code>. Unlabeled PRs are ignored.</p>
       </div>
       <div class="qs-shell">
         <div class="terminal-bar">
@@ -191,8 +191,8 @@ npm run dashboard`;
     <div class="container">
       <div class="cta card">
         <div>
-          <h2>Stop babysitting pull requests.</h2>
-          <p class="lead">Point merge-god at your repos, label what should land, and let the loop run.</p>
+          <h2>Use it when the merge queue is human-bound.</h2>
+          <p class="lead">If the work is approved but stuck behind conflicts, review nits, or flaky red checks, merge-god gives the agent enough context to finish the job.</p>
         </div>
         <div class="cta-actions">
           <a class="btn btn-primary" href={`${base}docs/quickstart/`}>Get started</a>
@@ -298,30 +298,60 @@ npm run dashboard`;
     background: linear-gradient(180deg, #0d0e18 0%, #0a0b13 100%);
   }
   .hero-visual {
-    box-shadow: var(--shadow-lg);
+    isolation: isolate;
+    transform: translateY(-10px) rotate(-1.5deg);
+    filter: drop-shadow(0 34px 38px rgba(0, 0, 0, 0.55));
     border-radius: var(--radius-lg);
     position: relative;
-    overflow: hidden;
+    overflow: visible;
+    animation: floatHero 7s ease-in-out infinite;
+  }
+  .hero-visual::after {
+    content: "";
+    position: absolute;
+    inset: -18%;
+    border-radius: calc(var(--radius-lg) * 1.4);
+    background:
+      radial-gradient(circle at 24% 16%, rgba(255, 255, 255, 0.55), transparent 13%),
+      radial-gradient(circle at 72% 22%, rgba(111, 255, 233, 0.28), transparent 24%),
+      radial-gradient(circle at 44% 82%, rgba(22, 10, 6, 0.82), transparent 46%),
+      radial-gradient(circle at 50% 50%, transparent 44%, rgba(0, 0, 0, 0.78) 78%);
+    mix-blend-mode: screen;
+    opacity: 0.72;
+    pointer-events: none;
+    z-index: 2;
   }
   .hero-visual::before {
     content: "";
     position: absolute;
-    inset: 0;
-    border-radius: var(--radius-lg);
-    padding: 1px;
-    background: var(--gradient-brand);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    opacity: 0.5;
+    inset: -8%;
+    border-radius: calc(var(--radius-lg) * 1.25);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.5), transparent 20%),
+      radial-gradient(circle at 70% 20%, rgba(211, 169, 96, 0.42), transparent 28%),
+      radial-gradient(circle at 35% 84%, rgba(108, 124, 255, 0.36), transparent 36%),
+      linear-gradient(180deg, rgba(1, 4, 12, 0) 35%, rgba(1, 4, 12, 0.86) 100%);
+    filter: blur(18px);
+    opacity: 0.9;
     pointer-events: none;
-    z-index: 1;
+    z-index: -1;
   }
   .hero-img {
     display: block;
     width: 100%;
     height: auto;
     border-radius: var(--radius-lg);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+      0 0 0 1px rgba(111, 255, 233, 0.18),
+      0 28px 80px rgba(0, 0, 0, 0.6);
+    position: relative;
+    z-index: 1;
+  }
+
+  @keyframes floatHero {
+    0%, 100% { transform: translateY(-10px) rotate(-1.5deg); }
+    50% { transform: translateY(10px) rotate(1deg); }
   }
 
   /* Section heads */
