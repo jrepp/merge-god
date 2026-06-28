@@ -28,7 +28,7 @@ for the intermediate representation.
 
 A workflow file is standard Markdown with the following required structure:
 
-```
+````markdown
 # Workflow: <name>
 
 **Outcome**: <one-sentence description of what the workflow achieves>
@@ -55,11 +55,11 @@ action: <namespace.action_name>
 
 [repeat for each step]
 
-```
+````
 
 ### Parsing Rules
 
-1. **Workflow name**: Extracted from the first `# ` heading. If the heading starts with `Workflow: `, that prefix is stripped.
+1. **Workflow name**: Extracted from the first `#` heading. If the heading starts with `Workflow:`, that prefix is stripped.
 2. **Description**: Taken from the first `**Outcome**:` line, or the first non-empty paragraph after the heading.
 3. **Code blocks**: Only ` ```scripted ` fenced blocks are processed. Each block is parsed as YAML.
 4. **Block type detection** (based on top-level YAML keys):
@@ -77,7 +77,7 @@ The first `scripted` block in the document defines workflow metadata and paramet
 ### Fields
 
 | Field | Required | Type | Description |
-|-------|----------|------|-------------|
+| ------- | ---------- | ------ | ------------- |
 | `profile` | **Yes** | string | Execution profile (see Profiles) |
 | `params` | **Yes** | array | Parameter definitions (may be empty `[]`) |
 | `tags` | No | string[] | Freeform tags for filtering/search |
@@ -89,7 +89,7 @@ The first `scripted` block in the document defines workflow metadata and paramet
 Profiles determine runtime behavior — what the engine manages automatically and what actions are permitted.
 
 | Profile | Slug | Semantics |
-|---------|------|-----------|
+| --------- | ------ | ----------- |
 | API | `api-workflow` | API operations; engine auto-manages authentication (D30). Credential params and explicit `api.authenticate`/`api.logout` steps are **forbidden**. |
 | IOCP | `iocp-workflow` | IOCP compiler operations. |
 | Remediation | `remediation` | Hardware remediation. Engine auto-manages auth. |
@@ -99,7 +99,7 @@ Profiles determine runtime behavior — what the engine manages automatically an
 **Profile constraints** (enforced by validator):
 
 | ID | Profile | Rule |
-|----|---------|------|
+| ---- | --------- | ------ |
 | A | API | Forbidden params: `api_host`, `api_port`, `api_user`, `api_password` |
 | B | API | Forbidden step action: `api.authenticate` |
 | C | API | Forbidden step action: `api.logout` |
@@ -110,7 +110,7 @@ Profiles determine runtime behavior — what the engine manages automatically an
 ### Safety Tiers
 
 | Tier | Description | Actions Permitted |
-|------|-------------|-------------------|
+| --- | --- | --- |
 | `T0` | Read-only / observational | List, get, query, discover, report |
 | `T2` | Mutating / state-changing | Activate, deactivate, start, stop, create, update, delete, load |
 
@@ -119,7 +119,7 @@ Tier escalation (e.g., `T0→T2`) indicates the workflow starts read-only but ma
 ### Categories
 
 | Category | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `migration` | CPC/LPAR technology refresh and profile migration |
 | `provisioning` | Partition/LPAR creation and boot sequences |
 | `remediation` | Automated recovery from hardware errors or service failures |
@@ -138,7 +138,7 @@ Tier escalation (e.g., `T0→T2`) indicates the workflow starts read-only but ma
 Each entry in the `params` array:
 
 | Field | Required | Type | Description |
-|-------|----------|------|-------------|
+| ------- | ---------- | ------ | ------------- |
 | `name` | **Yes** | string | `snake_case` identifier |
 | `description` | **Yes** | string | Human-readable description (quoted) |
 | `required` | No | boolean | Whether the parameter must be provided. Default: `false` |
@@ -168,7 +168,7 @@ Each step is a `scripted` block with an `id` and `action`. Steps execute sequent
 ### Fields
 
 | Field | Required | Type | Description |
-|-------|----------|------|-------------|
+| ------- | ---------- | ------ | ------------- |
 | `id` | **Yes** | string | Unique `snake_case` identifier within the workflow |
 | `action` | **Yes** | string | Dotted `namespace.action_name` (e.g., `api.list_resources`) |
 | `label` | Effectively yes | string | Human-readable label. Supports `{{var}}` interpolation. |
@@ -202,7 +202,7 @@ validate:
   - expr: "len(cpcs) > 0"
     message: "No resources found"
 on_error: retry(3)
-```
+```text
 
 ### Typed Handoff With `consume`
 
@@ -214,7 +214,7 @@ action: tfe.app_version.assess
 consume: version_payload
 with:
   version: "{{version_payload}}"
-```
+```text
 
 Validation rules:
 
@@ -235,7 +235,7 @@ capture:
   type: tool.tfe.get_app_version.result
 with:
   hostname: "{{tfe_hostname}}"
-```
+```text
 
 Validation rules:
 
@@ -254,7 +254,7 @@ inputs:
   version:
     from: version_payload
     type: tool.tfe.get_app_version.result
-```
+```text
 
 Validation rules:
 
@@ -357,7 +357,7 @@ Templates are resolved against the variable store before step execution.
 ### JSONPath in `outputs`
 
 | Pattern | Meaning |
-|---------|---------|
+| --------- | --------- |
 | `"$.field_name"` | Top-level field |
 | `"$.object.field"` | Nested field |
 | `"$.array[0]"` | First element |
@@ -381,8 +381,8 @@ validate:
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
-| `expr` | string | Boolean expression. Supports `len()`, comparisons (`==`, `!=`, `>`, `<`, `>=`, `<=`), logical operators (`&&`, `||`,`!`), field access. |
+| --- | --- | --- |
+| `expr` | string | Boolean expression. Supports `len()`, comparisons (`==`, `!=`, `>`, `<`, `>=`, `<=`), logical operators (`&&`, `\|\|`, `!`), field access. |
 | `message` | string | Human-readable error shown on validation failure. |
 
 ---
@@ -392,7 +392,7 @@ validate:
 ### `on_error` Policies
 
 | Policy | Behavior |
-|--------|----------|
+| -------- | ---------- |
 | `fail` | Abort workflow immediately. **Default.** |
 | `skip` | Log warning, set all step outputs to `nil`, continue to next step. |
 | `retry(N)` | Retry step up to N times (1-10) with exponential backoff. First delay: 1s; max delay: 30s; coefficient: 2.0. |
@@ -405,7 +405,7 @@ validate:
 The engine auto-classifies errors into 6 categories:
 
 | Category | Retryable | Example Patterns |
-|----------|-----------|------------------|
+| ---------- | ----------- | ------------------ |
 | `transient` | Yes | timeout, connection refused, rate limit, service unavailable |
 | `permanent` | No | not found, permission denied, invalid transition, already exists |
 | `user-input` | No | missing required, invalid variable, template error, assertion failed |
@@ -435,7 +435,7 @@ parallel:
       cpc_uri: "{{target_cpc_uri}}"
     outputs:
       target_profiles: "$.profiles"
-```
+```go
 
 **Rules**:
 
@@ -459,12 +459,12 @@ with:
   params:
     source_cpc_name: "{{source_cpc_name}}"
     target_cpc_name: "{{target_cpc_name}}"
-```
+```text
 
 ### Composition Rules
 
 | Rule | Description |
-|------|-------------|
+| ------ | ------------- |
 | **Maximum nesting depth** | 3 levels |
 | **No circular references** | DFS cycle detection at validation time |
 | **Profile compatibility** | Child profile must match parent profile |
@@ -481,7 +481,7 @@ The `builtin.operator_decision` action pauses the workflow for human input.
 ### Decision Types
 
 | Type | Description |
-|------|-------------|
+| ------ | ------------- |
 | `ask-compute` | Computing resource decision (processor count, weight, etc.) |
 | `ask-storage` | Storage configuration decision |
 | `ask-network` | Network configuration decision |
@@ -524,12 +524,12 @@ with:
     source_cpc: "{{source_cpc_name}}"
     target_cpc: "{{target_cpc_name}}"
     risk_level: "medium"
-```
+```text
 
 ### Option Fields
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `id` | string | Unique option identifier |
 | `label` | string | Display text |
 | `description` | string | Longer explanation |
@@ -544,7 +544,7 @@ with:
 Each custom field in an option has these base fields:
 
 | Field | Required | Type | Description |
-|-------|----------|------|-------------|
+| ------- | ---------- | ------ | ------------- |
 | `id` | **Yes** | string | Unique field identifier |
 | `label` | **Yes** | string | Display label |
 | `type` | **Yes** | string | One of: `integer`, `string`, `boolean`, `enum` |
@@ -554,7 +554,7 @@ Each custom field in an option has these base fields:
 Type-specific extra fields:
 
 | Type | Extra Fields | Description |
-|------|-------------|-------------|
+| ------ | ------------- | ------------- |
 | `integer` | `min`, `max` | Numeric input with range constraints |
 | `string` | — | Free-text input |
 | `boolean` | — | Toggle |
@@ -567,7 +567,7 @@ Type-specific extra fields:
 Steps emit structured output cells for rendering in the UI:
 
 | Cell Type | Description |
-|-----------|-------------|
+| ----------- | ------------- |
 | `text` | Prose text (markdown) |
 | `table` | Tabular data with headers |
 | `diff` | Before/after comparison |
@@ -588,7 +588,7 @@ Actions are organized into namespaces. Each action defines its parameters, retur
 ### Namespaces
 
 | Namespace | Count | Description |
-|-----------|-------|-------------|
+| ----------- | ------- | ------------- |
 | `builtin` | 19 | Utility actions: set, filter, format, log, LLM calls, analysis, decisions |
 | `api` | 51 | API operations: resource listing, configuration, metrics, console, auth |
 | `iocp` | 20 | IOCP compiler: compile, topology, CSS analysis, fabric management |
@@ -600,7 +600,7 @@ Actions are organized into namespaces. Each action defines its parameters, retur
 
 Each action in the catalog has:
 
-```
+```text
 ActionDef {
   Name           string          // e.g., "list_cpcs"
   Category       ActionCategory  // builtin | api | iocp | llm | sim | terraform | workflow | zosmf
@@ -615,7 +615,7 @@ ActionDef {
   FetchesKind    string          // entity kind this action fetches
   Timeout        TimeoutBounds   // min/max/default timeout
 }
-```
+```text
 
 ### Complete Action List
 
@@ -639,7 +639,7 @@ The engine validates step sequences against entity state machines. This prevents
 
 ### CPC States
 
-```
+```text
 no-power → not-operating → operating
                 ↑               ↓
                 ← ← ← ← ← ← ← ←
@@ -650,7 +650,7 @@ Transitions: `activate_cpc` (not-operating → operating), `deactivate_cpc` (ope
 
 ### LPAR States (Classic Mode)
 
-```
+```text
 not-activated → not-operating → operating
        ↑                            ↓
        ← ← ← ← ← ← ← ← ← ← ← ← ←
@@ -661,7 +661,7 @@ Transitions: `activate_lpar` (not-activated → not-operating), `load_lpar`/`scs
 
 ### Partition States (DPM Mode)
 
-```
+```text
 stopped → active → paused
    ↑        ↓        ↓
    ← ← ← ← ←   ← ← ←
@@ -676,7 +676,7 @@ Transitions: `start_partition` (stopped → active), `stop_partition` (active �
 The validator runs 20 checks at parse time:
 
 | # | Check | Description |
-|---|-------|-------------|
+| --- | ------- | ------------- |
 | 1 | Action resolution | Action exists in catalog or dispatcher |
 | 2 | Template variables | All `{{var}}` references resolve to params, outputs, or registers |
 | 3 | Duplicate step IDs | No two steps share the same `id` |
@@ -718,7 +718,7 @@ The `ScriptedWorkflow` function is the durable entry point. It:
 ### Session Management
 
 | Limit | Value |
-|-------|-------|
+| ------- | ------- |
 | Concurrent workflows | 10 |
 | Max retained sessions | 50 |
 | Stream TTL | 1 hour |
@@ -735,7 +735,7 @@ The engine watches `agent/docs/workflows/` via `fsnotify`. Changes are debounced
 Spec field coverage across the 30 existing workflow files:
 
 | Field | Present In | Coverage |
-|-------|-----------|----------|
+| ------- | ----------- | ---------- |
 | `profile` | 30/30 | 100% |
 | `params` | 30/30 | 100% |
 | `id` (per step) | 30/30 | 100% |
@@ -766,7 +766,7 @@ Spec field coverage across the 30 existing workflow files:
 Step counts are approximate except where verified by validation. A `~` prefix indicates the count was estimated from the workflow catalog, not from direct parsing. Category and safety tier values are from the workflow catalog design; only `zosmf-discovery.md` declares these in its metadata block today. The following table shows example workflows from a domain-specific deployment.
 
 | # | Workflow | File | Profile | Category | Safety | Steps |
-|---|----------|------|---------|----------|--------|-------|
+| --- | ---------- | ------ | --------- | ---------- | -------- | ------- |
 | 1 | z15→z17 Migration | `z15-to-z17-migration.md` | api-workflow | migration | T2 | 12 |
 | 2 | CPC Profile Migration | `cpc-profile-migration.md` | api-workflow | migration | T2 | ~15 |
 | 3 | LPAR Profile Export/Import | `lpar-profile-export-import.md` | api-workflow | migration | T2 | ~12 |

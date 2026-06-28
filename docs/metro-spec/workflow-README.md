@@ -7,14 +7,14 @@ example workflow files.
 Workflow docs are intentionally split into two layers:
 
 | Layer | Purpose | Use when |
-|---|---|---|
+| --- | --- | --- |
 | Authoring format | Markdown plus embedded `scripted` YAML for simple, non-looping, human/model-friendly workflows. | Writing, reviewing, validating, indexing, or searching Metro workflow source files. |
 | WorkflowIR | Durable graph contract for projection into Meridian/Gantry, DAG, BPM, durable workflow, and agentic backends. | Building compilers, adapters, cross-backend validation, or projection diagnostics. |
 
 ## Canonical Documents
 
 | Document | Role |
-|---|---|
+| --- | --- |
 | [`WORKFLOW-SPEC.md`](WORKFLOW-SPEC.md) | Normative authoring format for Markdown + `scripted` workflow files. |
 | [`PROMPT-SPEC.md`](PROMPT-SPEC.md) | Normative prompt authoring reference for prompt-driven workflow steps. |
 | [`workflow-QUICK-REF.md`](workflow-QUICK-REF.md) | Condensed authoring field reference and validation rule index. |
@@ -28,7 +28,7 @@ Workflow docs are intentionally split into two layers:
 ## Worked Examples
 
 | Example | Demonstrates |
-|---|---|
+| --- | --- |
 | `examples/01-basic-standalone.md` | Minimal standalone workflow with params, outputs, validation. Not vendored in this reference copy. |
 | `examples/02-parallel-steps.md` | Parallel execution group with merged outputs. Not vendored in this reference copy. |
 | `examples/03-typed-handoff.md` | Structured capture, typed inputs, and consume. Not vendored in this reference copy. |

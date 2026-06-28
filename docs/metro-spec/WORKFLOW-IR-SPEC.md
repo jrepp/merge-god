@@ -4,6 +4,7 @@
 **Status**: Draft
 **Purpose**: Define a durable, engine-neutral workflow intermediate representation shared across Metro authoring, Gantry coordination, BPM/workflow engines, DAG schedulers, and agentic orchestration backends.
 **Grounding**:
+
 - `metro/spec/WORKFLOW-SPEC.md`
 - `metro/spec/workflow/README.md`
 - `metro/spec/schemas/workflow.json`
@@ -687,7 +688,7 @@ A projection MUST reject the workflow when required semantics cannot be preserve
 Metro markdown compiles into WorkflowIR. Authoring prose, examples, and narrative remain source material; only canonical operational intent compiles into IR fields.
 
 | Metro source | WorkflowIR target | Notes |
-|---|---|---|
+| --- | --- | --- |
 | heading / slug | `workflow.id`, `workflow.title` | Stable contract ID may be derived from path and slug policy. |
 | metadata `profile`, `category`, `tags`, `tier` | `workflow.profile`, `workflow.category`, `workflow.tags`, `workflow.safety.tier` | Direct or nearly direct mapping. |
 | `params[]` | `inputs[]` | Types default to primitive/string when unknown. |
@@ -703,7 +704,7 @@ Metro markdown compiles into WorkflowIR. Authoring prose, examples, and narrativ
 ### Gantry Coordination Projection
 
 | WorkflowIR | Gantry projection | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `workflow.id` | workflow metadata / provenance | Not runtime `WorkflowState.WorkflowID`. |
 | `workflow.title`, `description`, `tags` | workflow title, description, tags | Direct runtime projection. |
 | `graph.nodes[] kind: action` | one or more task records | Projection may split or hand off work. |
@@ -720,7 +721,7 @@ Gantry `WorkflowState.DAG`, `WorkflowStep`, and step APIs are projection surface
 WorkflowIR is intended to map to BPMN-like and durable workflow engines as follows:
 
 | WorkflowIR | BPM/workflow concept |
-|---|---|
+| --- | --- |
 | `action` | service task, user task, activity, workflow task |
 | `gate` | user task, approval task, policy decision activity |
 | `gateway` | exclusive, inclusive, parallel, or event-based gateway |

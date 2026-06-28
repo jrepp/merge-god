@@ -10,7 +10,7 @@ This quick reference covers the Metro/Meridian authoring format. Use
 
 ## Document Structure
 
-```
+```markdown
 # Workflow: <name>
 **Outcome**: <description>
 [prose sections]
@@ -24,7 +24,7 @@ This quick reference covers the Metro/Meridian authoring format. Use
 ## Metadata Block Fields
 
 | Field | Required | Description |
-|-------|----------|-------------|
+| ------- | ---------- | ------------- |
 | `profile` | Yes | `standalone`, `hmc-workflow`, `iocp-workflow`, `remediation`, `zosmf-workflow` |
 | `params` | Yes | Array of param defs (may be `[]`) |
 | `tags` | No | Freeform string array |
@@ -34,7 +34,7 @@ This quick reference covers the Metro/Meridian authoring format. Use
 ## Param Definition Fields
 
 | Field | Required | Description |
-|-------|----------|-------------|
+| ------- | ---------- | ------------- |
 | `name` | Yes | `snake_case` identifier |
 | `description` | Yes | Human-readable (quoted) |
 | `required` | No | Default: `false` |
@@ -44,7 +44,7 @@ This quick reference covers the Metro/Meridian authoring format. Use
 ## Step Block Fields
 
 | Field | Required | Description |
-|-------|----------|-------------|
+| ------- | ---------- | ------------- |
 | `id` | Yes | Unique `snake_case` step identifier |
 | `action` | Yes | `namespace.action_name` |
 | `label` | Recommended | Human-readable, supports `{{var}}` |
@@ -66,7 +66,7 @@ This quick reference covers the Metro/Meridian authoring format. Use
 ## Validation Checks (WF1–WF20)
 
 | # | Rule | Description |
-|---|------|-------------|
+| --- | ------ | ------------- |
 | WF1 | H1 heading | First line must be `# Workflow: <name>` |
 | WF2 | Metadata block | First `scripted` block has `profile` + `params` |
 | WF3 | Step blocks | At least one step `scripted` block exists |
@@ -80,7 +80,7 @@ This quick reference covers the Metro/Meridian authoring format. Use
 ## Error Policies
 
 | Policy | Behavior |
-|--------|----------|
+| -------- | ---------- |
 | `fail` | Abort immediately (default) |
 | `skip` | Log warning, nil outputs, continue |
 | `retry(N)` | Retry N times (1–10), exponential backoff |
@@ -95,7 +95,7 @@ Syntax: `{{variable_name}}`
 ## JSONPath Quick Reference
 
 | Pattern | Meaning |
-|---------|---------|
+| --------- | --------- |
 | `$.field` | Top-level field |
 | `$.obj.field` | Nested |
 | `$.arr[0]` | First element |

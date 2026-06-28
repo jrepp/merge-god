@@ -1232,7 +1232,7 @@ Practical rule: if it answers “what happened in this run?”, it belongs outsi
 Use this quick decision table when choosing edge kinds.
 
 | Question | Edge kind |
-|---|---|
+| --- | --- |
 | Must B wait for A? | `control` |
 | Does A provide data to B? | `data` |
 | Does A authorize B? | `guard` |
