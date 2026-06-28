@@ -166,3 +166,4 @@ Test thoroughly before creating the PR.
 | Document blockers clearly | Failure artifact requirement |
 | Avoid mutating unrelated files | Worktree diff guard |
 | Keep tool paths inside repo | Tool sandbox/path guard |
+| Do not exceed requested remediation disposition | Tool policy must reject edits, commits, pushes, approvals, or merges outside `disposition_setting` |

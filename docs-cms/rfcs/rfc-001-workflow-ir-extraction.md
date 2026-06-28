@@ -11,7 +11,7 @@ doc_uuid: cbc9081d-d90b-4879-9d27-15eec6b8f115
 
 # Summary
 
-This document captures the Merge God rich PR-processing design as portable WorkflowIR. It is expressed as orchestration intent rather than Python implementation details, so the same flow can be reimplemented in another harness.
+This document captures the Merge God rich PR-processing design as portable WorkflowIR. It is expressed as orchestration intent rather than TypeScript implementation details, so the same flow can be reimplemented in another harness.
 
 Source project: `merge-god-main`
 
@@ -19,10 +19,13 @@ Target runtime: WorkflowIR-compatible orchestrators
 
 Source material:
 
-- `merge_god/pr_loop.py`
-- `merge_god/agents/claude_agent.py`
-- `merge_god/sync.py`
-- `merge_god/run_agent.py`
+- `pr-loop.ts`
+- `agents/claude_agent.ts`
+- `sync_pr_context.ts`
+- `run_agent_from_db.ts`
+- `merge_god/sync.ts`
+- `merge_god/run_agent.ts`
+- `packages/github-sync/src/`
 
 Related documents:
 
@@ -39,6 +42,7 @@ The extracted workflow has three reusable layers:
 |---|---|---|
 | Repository monitor loop | long-running cyclic workflow | Validate repo, initialize state, sync default branch, process eligible issues, process eligible PRs, wait five minutes, repeat |
 | PR processing subworkflow | per-PR workflow | Validate PR metadata, optionally ask for human approval, gather rich context, optionally persist context, initialize agent, run decomposed agent tasks |
+| PR merge gate subworkflow | per-PR merge workflow | Validate retained scope in an isolated worktree, enforce remediation disposition, compare against base branch, publish evidence, and approve or merge only after gates pass |
 | Agent task loop | agentic subworkflow | Build task-specific prompt, expose task-specific tools, stream LLM response, execute tool calls, feed tool results back, stop when no tools are requested or iteration limit is reached |
 
 The full design is not a `basic-dag` workflow because it contains intentional
@@ -586,6 +590,13 @@ inputs:
   - name: repo_name
     value_type:
       kind: string
+  - name: disposition_setting
+    description: Maximum remediation autonomy allowed for this PR.
+    default: bounded
+    value_type:
+      kind: string
+      constraints:
+        enum: [observe, validate, mechanical, bounded, maintainer-approved]
 
 gates:
   definitions:
@@ -715,9 +726,38 @@ graph:
         iteration_order: declared
         stop_on_callback_abort: true
 
+    - id: maybe_run_merge_gate
+      kind: gateway
+      label: Should this PR run the merge gate?
+      gateway:
+        kind: exclusive
+      default_edge: edge.maybe_run_merge_gate.summarize_result
+
+    - id: run_pr_merge_gate
+      kind: subworkflow
+      label: Run isolated PR merge gate before landing
+      workflow_ref:
+        id: wf.merge-god.pr-merge-gate
+        version: v1
+      invocation: sync
+      error_propagation: isolate
+      input_mapping:
+        - input: pr
+          from: input.pr
+        - input: pr_context
+          from: capture.pr_context
+        - input: default_branch
+          from: input.default_branch
+        - input: repo_name
+          from: input.repo_name
+        - input: disposition_setting
+          from: input.disposition_setting
+        - input: guidelines
+          from: input.guidelines
+
     - id: summarize_result
       kind: action
-      label: Summarize task completion and action counts
+      label: Summarize task completion, gate result, and action counts
       action:
         ref: merge-god.agent.summarize-result
         mode: deterministic
@@ -784,8 +824,27 @@ graph:
       from: decompose_pr_tasks
       to: execute_agent_tasks
       kind: control
-    - id: edge.execute_agent_tasks.summarize_result
+    - id: edge.execute_agent_tasks.maybe_run_merge_gate
       from: execute_agent_tasks
+      to: maybe_run_merge_gate
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.maybe_run_merge_gate.run_pr_merge_gate
+      from: maybe_run_merge_gate
+      to: run_pr_merge_gate
+      kind: guard
+      when:
+        language: workflow-ir.expr/v1
+        expr: inputs.mode == 'for-landing' and inputs.disposition_setting != 'observe'
+    - id: edge.maybe_run_merge_gate.summarize_result
+      from: maybe_run_merge_gate
+      to: summarize_result
+      kind: control
+      when:
+        language: workflow-ir.expr/v1
+        expr: inputs.mode != 'for-landing' or inputs.disposition_setting == 'observe'
+    - id: edge.run_pr_merge_gate.summarize_result
+      from: run_pr_merge_gate
       to: summarize_result
       kind: control
       on_status: [succeeded, failed]
@@ -833,6 +892,441 @@ dataflow:
         items:
           kind: object
           schema_ref: schema://merge-god/agent.task/v1
+    - id: capture.pr_merge_gate_result
+      from_node: run_pr_merge_gate
+      name: gate_result
+      value_type:
+        kind: object
+        schema_ref: schema://merge-god/pr-merge.gate-result/v1
+```
+
+### PR Merge Gate SubworkflowIR
+
+```yaml
+ir_version: workflow-ir/v1
+workflow:
+  id: wf.merge-god.pr-merge-gate
+  version: v1
+  title: Merge God PR merge gate
+  description: Validate a PR in an isolated worktree, enforce remediation disposition, compare failures against base, publish evidence, and approve or merge only after policy gates pass.
+  tags: [merge-god, pull-request, merge-gate, validation, worktree]
+  safety:
+    tier: T2
+    notes:
+      - Mutates only an isolated PR worktree unless the final merge or push policy permits upstream changes.
+      - The requested disposition setting caps remediation autonomy.
+
+capabilities:
+  required_profiles: [gateways, human-gates, subworkflows, error-handling, typed-dataflow]
+
+inputs:
+  - name: pr
+    required: true
+    value_type:
+      kind: object
+      schema_ref: schema://merge-god/github.pr-summary/v1
+  - name: pr_context
+    required: true
+    value_type:
+      kind: object
+      schema_ref: schema://merge-god/agent.pr-context/v1
+  - name: default_branch
+    required: true
+    value_type:
+      kind: string
+  - name: repo_name
+    value_type:
+      kind: string
+  - name: disposition_setting
+    required: true
+    value_type:
+      kind: string
+      constraints:
+        enum: [observe, validate, mechanical, bounded, maintainer-approved]
+  - name: guidelines
+    value_type:
+      kind: string
+
+gates:
+  definitions:
+    - id: gate.merge-god.pr-merge-conflict
+      decision_type: pr-merge-conflict
+      label: Resolve conflict or excessive drift decision
+      options:
+        - id: skip
+          label: Skip PR
+        - id: wait_for_author
+          label: Wait for author rebase
+        - id: proceed_for_evidence
+          label: Proceed for evidence collection
+        - id: maintainer_remediation
+          label: Allow maintainer-approved remediation
+      default_option: skip
+
+resources:
+  systems:
+    - id: git-cli
+      kind: cli
+      description: Git CLI used to create, sync, and clean isolated worktrees.
+    - id: github-cli
+      kind: cli
+      description: SCM CLI used to read PR state, publish comments, and merge or approve according to policy.
+    - id: validation-runner
+      kind: cli
+      description: Repository-documented build, test, and lint commands.
+  locks:
+    - id: pr-worktree-lock
+      scope: input.pr.number
+      mode: exclusive
+      required_by: [create_isolated_worktree, remediate_within_disposition, merge_or_approve, cleanup_worktree]
+    - id: base-branch-validation-lock
+      scope: input.default_branch
+      mode: shared
+      required_by: [compare_against_base]
+
+graph:
+  nodes:
+    - id: initialize_queue_state
+      kind: action
+      label: Initialize PR queue state and evidence artifact paths
+      action:
+        ref: merge-god.pr-merge.initialize-queue-state
+        mode: deterministic
+        tool_ref: tool://merge-god/pr-merge.initialize-queue-state@v1
+
+    - id: retained_scope_preflight
+      kind: action
+      label: Determine retained scope and classify no-op, superseded, or redesign work
+      action:
+        ref: merge-god.pr.retained-scope-preflight
+        mode: deterministic
+        tool_ref: tool://merge-god/pr.retained-scope-preflight@v1
+
+    - id: terminal_preflight_gateway
+      kind: gateway
+      label: Did preflight find a terminal disposition?
+      gateway:
+        kind: exclusive
+      default_edge: edge.terminal_preflight_gateway.create_isolated_worktree
+
+    - id: create_isolated_worktree
+      kind: action
+      label: Create isolated PR worktree under run-scoped root
+      action:
+        ref: merge-god.git.create-isolated-worktree
+        mode: deterministic
+        tool_ref: tool://merge-god/git.create-isolated-worktree@v1
+
+    - id: sync_with_base
+      kind: action
+      label: Fetch latest head and base, then reconcile drift
+      action:
+        ref: merge-god.git.sync-pr-worktree
+        mode: deterministic
+        tool_ref: tool://merge-god/git.sync-pr-worktree@v1
+      on_error:
+        strategy: route
+        target_node: conflict_or_drift_gate
+
+    - id: conflict_or_drift_gate
+      kind: gate
+      label: Request operator decision for conflicts or excessive drift
+      gate_ref: gate.merge-god.pr-merge-conflict
+
+    - id: run_build
+      kind: action
+      label: Run repository-documented build lane
+      action:
+        ref: merge-god.validation.run-lane
+        mode: external
+        tool_ref: tool://merge-god/validation.run-lane@v1
+      metadata:
+        lane: build
+
+    - id: run_tests
+      kind: action
+      label: Run repository-documented test lane
+      action:
+        ref: merge-god.validation.run-lane
+        mode: external
+        tool_ref: tool://merge-god/validation.run-lane@v1
+      metadata:
+        lane: test
+
+    - id: run_lint
+      kind: action
+      label: Run repository-documented lint or static-analysis lane
+      action:
+        ref: merge-god.validation.run-lane
+        mode: external
+        tool_ref: tool://merge-god/validation.run-lane@v1
+      metadata:
+        lane: lint
+
+    - id: compare_against_base
+      kind: action
+      label: Compare validation failures against current base branch
+      action:
+        ref: merge-god.validation.compare-with-base
+        mode: deterministic
+        tool_ref: tool://merge-god/validation.compare-with-base@v1
+
+    - id: review_diff
+      kind: action
+      label: Review diff for correctness, security, compatibility, tests, and cleanup
+      action:
+        ref: merge-god.pr.review-diff
+        mode: deterministic
+        tool_ref: tool://merge-god/pr.review-diff@v1
+
+    - id: remediation_policy_gateway
+      kind: gateway
+      label: Does the disposition setting allow remediation?
+      gateway:
+        kind: exclusive
+      default_edge: edge.remediation_policy_gateway.final_gate
+
+    - id: remediate_within_disposition
+      kind: action
+      label: Apply remediation allowed by disposition setting
+      action:
+        ref: merge-god.pr.remediate-within-disposition
+        mode: agentic
+        tool_ref: tool://merge-god/pr.remediate-within-disposition@v1
+      metadata:
+        remediation_policy:
+          observe: no mutation
+          validate: no mutation
+          mechanical: non-behavioral generated artifacts, formatting, lockfiles, metadata
+          bounded: conflicts, review comments, and CI fixes that preserve retained scope
+          maintainer-approved: scoped redesign only after human approval
+
+    - id: rerun_affected_checks
+      kind: action
+      label: Re-run checks affected by remediation
+      action:
+        ref: merge-god.validation.rerun-affected
+        mode: external
+        tool_ref: tool://merge-god/validation.rerun-affected@v1
+
+    - id: evaluate_pr_quality
+      kind: action
+      label: Evaluate PR title, body, labels, branch metadata, and merge policy
+      action:
+        ref: merge-god.pr.evaluate-quality
+        mode: deterministic
+        tool_ref: tool://merge-god/pr.evaluate-quality@v1
+
+    - id: final_gate
+      kind: action
+      label: Produce final pass, blocked, failed, no-op, superseded, or needs-redesign decision
+      action:
+        ref: merge-god.pr.final-gate
+        mode: deterministic
+        tool_ref: tool://merge-god/pr.final-gate@v1
+
+    - id: merge_decision_gateway
+      kind: gateway
+      label: Is the PR safe to merge or approve?
+      gateway:
+        kind: exclusive
+      default_edge: edge.merge_decision_gateway.publish_pr_comment
+
+    - id: merge_or_approve
+      kind: action
+      label: Merge or approve according to repository policy
+      action:
+        ref: merge-god.pr.merge-or-approve
+        mode: external
+        tool_ref: tool://merge-god/pr.merge-or-approve@v1
+
+    - id: publish_pr_comment
+      kind: action
+      label: Publish PR workflow outcome comment with action log and evidence
+      action:
+        ref: merge-god.pr.publish-workflow-comment
+        mode: external
+        tool_ref: tool://merge-god/pr.publish-workflow-comment@v1
+      on_error:
+        strategy: continue
+
+    - id: cleanup_worktree
+      kind: action
+      label: Clean up isolated worktree unless retained for diagnosis
+      action:
+        ref: merge-god.git.cleanup-worktree
+        mode: deterministic
+        tool_ref: tool://merge-god/git.cleanup-worktree@v1
+      on_error:
+        strategy: continue
+
+  edges:
+    - id: edge.initialize_queue_state.retained_scope_preflight
+      from: initialize_queue_state
+      to: retained_scope_preflight
+      kind: control
+    - id: edge.retained_scope_preflight.terminal_preflight_gateway
+      from: retained_scope_preflight
+      to: terminal_preflight_gateway
+      kind: control
+    - id: edge.terminal_preflight_gateway.final_gate
+      from: terminal_preflight_gateway
+      to: final_gate
+      kind: control
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.preflight_disposition in ['no-op', 'superseded', 'needs-redesign', 'blocked']
+    - id: edge.terminal_preflight_gateway.create_isolated_worktree
+      from: terminal_preflight_gateway
+      to: create_isolated_worktree
+      kind: control
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.preflight_disposition == 'candidate'
+    - id: edge.create_isolated_worktree.sync_with_base
+      from: create_isolated_worktree
+      to: sync_with_base
+      kind: control
+    - id: edge.sync_with_base.run_build
+      from: sync_with_base
+      to: run_build
+      kind: control
+    - id: edge.conflict_or_drift_gate.run_build
+      from: conflict_or_drift_gate
+      to: run_build
+      kind: guard
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.conflict_decision in ['proceed_for_evidence', 'maintainer_remediation']
+    - id: edge.run_build.run_tests
+      from: run_build
+      to: run_tests
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.run_tests.run_lint
+      from: run_tests
+      to: run_lint
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.run_lint.compare_against_base
+      from: run_lint
+      to: compare_against_base
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.compare_against_base.review_diff
+      from: compare_against_base
+      to: review_diff
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.review_diff.remediation_policy_gateway
+      from: review_diff
+      to: remediation_policy_gateway
+      kind: control
+    - id: edge.remediation_policy_gateway.remediate_within_disposition
+      from: remediation_policy_gateway
+      to: remediate_within_disposition
+      kind: guard
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.remediation_needed == true and inputs.disposition_setting in ['mechanical', 'bounded', 'maintainer-approved']
+    - id: edge.remediate_within_disposition.rerun_affected_checks
+      from: remediate_within_disposition
+      to: rerun_affected_checks
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.rerun_affected_checks.evaluate_pr_quality
+      from: rerun_affected_checks
+      to: evaluate_pr_quality
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.remediation_policy_gateway.evaluate_pr_quality
+      from: remediation_policy_gateway
+      to: evaluate_pr_quality
+      kind: control
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.remediation_needed == false or inputs.disposition_setting in ['observe', 'validate']
+    - id: edge.evaluate_pr_quality.final_gate
+      from: evaluate_pr_quality
+      to: final_gate
+      kind: control
+    - id: edge.final_gate.merge_decision_gateway
+      from: final_gate
+      to: merge_decision_gateway
+      kind: control
+    - id: edge.merge_decision_gateway.merge_or_approve
+      from: merge_decision_gateway
+      to: merge_or_approve
+      kind: guard
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.gate_disposition in ['safe-to-merge', 'safe-to-push']
+    - id: edge.merge_or_approve.publish_pr_comment
+      from: merge_or_approve
+      to: publish_pr_comment
+      kind: control
+      on_status: [succeeded, failed]
+    - id: edge.merge_decision_gateway.publish_pr_comment
+      from: merge_decision_gateway
+      to: publish_pr_comment
+      kind: control
+      when:
+        language: workflow-ir.expr/v1
+        expr: captures.gate_disposition not in ['safe-to-merge', 'safe-to-push']
+    - id: edge.publish_pr_comment.cleanup_worktree
+      from: publish_pr_comment
+      to: cleanup_worktree
+      kind: control
+      on_status: [succeeded, failed]
+
+dataflow:
+  captures:
+    - id: capture.queue_state
+      from_node: initialize_queue_state
+      name: queue_state
+      value_type:
+        kind: object
+        schema_ref: schema://merge-god/pr-merge.queue-state/v1
+    - id: capture.preflight_disposition
+      from_node: retained_scope_preflight
+      name: disposition
+      value_type:
+        kind: string
+    - id: capture.validation_results
+      from_node: compare_against_base
+      name: validation_results
+      value_type:
+        kind: object
+        schema_ref: schema://merge-god/pr-merge.validation-results/v1
+    - id: capture.gate_disposition
+      from_node: final_gate
+      name: disposition
+      value_type:
+        kind: string
+    - id: capture.gate_result
+      from_node: final_gate
+      name: gate_result
+      value_type:
+        kind: object
+        schema_ref: schema://merge-god/pr-merge.gate-result/v1
+
+artifacts:
+  outputs:
+    - id: pr-queue-state
+      kind: json
+      producer_node: initialize_queue_state
+      publish: true
+      audience: [operator, auditor]
+    - id: pr-merge-report
+      kind: report
+      producer_node: final_gate
+      publish: true
+      audience: [operator, reviewer, auditor]
+    - id: validation-logs
+      kind: log-bundle
+      producer_node: compare_against_base
+      publish: true
+      audience: [operator, reviewer]
 ```
 
 ### Agent Task Loop WorkflowIR

@@ -34,6 +34,7 @@ This document declares the helper tools and external systems required to execute
 | `sqlite-state` | Optional state, PR context snapshots, agent sessions, actions, metrics | Local filesystem write access |
 | `llm-provider` | Agent task execution and optional issue implementation | Anthropic or Bedrock-compatible model credentials |
 | `notifier` | Optional operator notifications | Notification service credentials if required |
+| `validation-runner` | Repository-documented build, test, lint, and static-analysis commands | Local command execution in isolated worktrees |
 
 ## Repository And Runtime Tools
 
@@ -44,6 +45,9 @@ This document declares the helper tools and external systems required to execute
 | `tool://merge-god/git.detect-default-branch@v1` | `repo_path` | `{default_branch}` | Prefer `origin/HEAD`, fallback to `main`, `master`, `develop`, then `main`. |
 | `tool://merge-god/repo.load-guidance@v1` | `repo_path`, `default_branch` | `{guidelines, commit_examples}` | Read contribution/PR guideline files; if none, fetch recent commit subjects. |
 | `tool://merge-god/git.sync-repository@v1` | `repo_path`, `default_branch` | `{synced}` | Fetch all remotes, checkout default branch, pull latest. |
+| `tool://merge-god/git.create-isolated-worktree@v1` | `repo_path`, `repo_name`, `pr_number`, `head_ref`, `run_id` | `{worktree_root, worktree_path, local_branch, starting_head}` | Create one clean PR worktree under a run-scoped directory beside the repo under review. |
+| `tool://merge-god/git.sync-pr-worktree@v1` | `worktree_path`, `head_ref`, `base_ref` | `{synced, current_head, behind_by, ahead_by, conflicts[]}` | Fetch latest head/base and reconcile drift in the isolated worktree. |
+| `tool://merge-god/git.cleanup-worktree@v1` | `worktree_path`, `retain_reason?` | `{removed, retained, reason?}` | Remove the isolated worktree unless an operator or policy explicitly retains it for diagnosis. |
 
 ## GitHub Discovery Tools
 
@@ -75,6 +79,38 @@ The gathered PR context can be implemented as one composite tool or as these sub
 | `tool://merge-god/state.save-pr-context@v1` | `repo_name`, `pr_number`, `pr_details`, `pr_context_raw` | `{saved}` | Persist context snapshot; failure should be warning-level in the live flow. |
 | `tool://merge-god/context.build-pr-context@v1` | `pr_details`, `pr_context_raw`, `guidelines`, `commit_examples` | `PRContext` | Normalize gathered dictionaries into agent context: PR metadata, conflict flags, failing CI, comments, files, diff, commits, labels. |
 | `tool://merge-god/agent.decompose-pr-tasks@v1` | `PRContext`, `mode` | `AgentTask[]` | Build ordered tasks: `analyze`, optional `resolve_conflicts`, optional `address_reviews`, optional `fix_ci`, optional `code_review`, final `validate`. |
+
+## PR Merge Gate Tools
+
+These tools support the landing gate and should run outside the LLM tool loop unless a specific remediation subworkflow delegates a bounded task to an agent. The gate owns the evidence record and enforces the requested `disposition_setting`.
+
+| Tool ref | Required Inputs | Output Contract | Semantics |
+|---|---|---|---|
+| `tool://merge-god/pr-merge.initialize-queue-state@v1` | `pr`, `repo_name`, `disposition_setting`, `run_id?` | `{queue_state, artifact_paths}` | Create or resume durable PR queue state, including worktree paths, retained scope placeholders, validation slots, and evidence artifact paths. |
+| `tool://merge-god/pr.retained-scope-preflight@v1` | `pr`, `default_branch`, `pr_context` | `{disposition, retained_scope, changed_files, skipped_commits, reason}` | Determine whether the PR remains a candidate, is already on base, is superseded, needs redesign, or is blocked before expensive validation. |
+| `tool://merge-god/validation.run-lane@v1` | `worktree_path`, `lane`, `commands?`, `scope?` | `{lane, command_results[], status, summary, artifact_refs[]}` | Run repository-documented build, test, lint, or static-analysis commands in the isolated worktree. |
+| `tool://merge-god/validation.compare-with-base@v1` | `repo_path`, `worktree_path`, `default_branch`, `validation_results` | `{introduced_failures[], inherited_failures[], base_results?, pr_results, classification}` | Compare full-gate failures against the current base branch before classifying them as PR regressions. |
+| `tool://merge-god/pr.review-diff@v1` | `worktree_path`, `base_ref`, `retained_scope`, `guidelines` | `{findings[], remediation_needed, severity, summary}` | Review retained diff for correctness, security, compatibility, tests, cleanup, and scope drift. |
+| `tool://merge-god/pr.remediate-within-disposition@v1` | `worktree_path`, `pr_context`, `retained_scope`, `findings`, `disposition_setting` | `{changed_files[], commits[], skipped_items[], policy_violations[], summary}` | Apply only remediation permitted by the requested disposition setting; reject changes that exceed the policy cap. |
+| `tool://merge-god/validation.rerun-affected@v1` | `worktree_path`, `changed_files`, `previous_results` | `{command_results[], status, summary}` | Re-run only the checks affected by remediation unless repository policy requires full gates. |
+| `tool://merge-god/pr.evaluate-quality@v1` | `pr`, `pr_context`, `validation_results`, `findings` | `{quality_result, blockers[], warnings[]}` | Evaluate title, body, labels, branch metadata, review state, and repository merge policy. |
+| `tool://merge-god/pr.final-gate@v1` | `queue_state`, `validation_results`, `findings`, `quality_result`, `disposition_setting` | `{disposition, gate, merge_allowed, push_allowed, evidence_summary}` | Produce one final gate decision after remediation and reruns, enforcing the requested disposition setting. |
+| `tool://merge-god/pr.merge-or-approve@v1` | `pr`, `gate_result`, `worktree_path`, `repo_policy` | `{action, merged, approved, pushed, url?}` | Merge, approve, or push according to repository policy only when the final gate permits it. |
+| `tool://merge-god/pr.publish-workflow-comment@v1` | `pr`, `gate_result`, `queue_state`, `artifact_refs` | `{posted, comment_url?}` | Publish a PR comment with phase outcomes, commands run, remediation performed or skipped, blockers, and evidence links. |
+
+## Remediation Disposition Policy
+
+The merge gate must enforce remediation limits before any mutating tool or agent task runs.
+
+| `disposition_setting` | Tool behavior |
+|---|---|
+| `observe` | Do not create mutating worktree state or run remediation. Context gathering and planning only. |
+| `validate` | Allow isolated worktree checkout and validation commands. Reject file edits, commits, pushes, approvals, and merges. |
+| `mechanical` | Allow documented non-behavioral commands such as formatting, generation, lockfile refreshes, and metadata repairs. Reject source behavior changes. |
+| `bounded` | Allow conflict resolution, review-comment fixes, and CI fixes only when retained scope and PR intent remain unchanged. |
+| `maintainer-approved` | Allow broader modernization or redesign only when a human gate provides the accepted scope and validation requirements. |
+
+Terminal computed dispositions such as `no-op`, `superseded`, `needs-redesign`, and `blocked` must stop remediation even when the requested setting is permissive.
 
 ## Agent Runtime Tools
 
@@ -118,8 +154,12 @@ An orchestrator executing this workflow should provide these policies:
 | Policy | Requirement |
 |---|---|
 | Worktree lock | Only one mutating workflow should operate on a repo path at a time unless isolated worktrees are used. |
+| Isolated PR worktrees | PR validation and remediation should happen in a run-scoped worktree, not the operator's checkout. |
 | Secret redaction | GitHub and LLM credentials must be redacted from logs, prompts, and tool outputs. |
 | Prompt trace | Each LLM turn should record prompt ref, model, tool definitions, streamed text, tool calls, and tool results as runtime evidence. |
 | Mutation audit | File edits, test runs, and git commits should be recorded with success/failure and target path/message. |
+| Disposition enforcement | Mutating tools must reject actions outside the requested `disposition_setting`. |
+| Baseline comparison | Full-gate failures should be compared against the current base branch before classifying PR regressions. |
+| Evidence artifacts | Queue state, validation summaries, final gate results, and PR comment bodies should be durable artifacts. |
 | Loop bound | Agent tool loops must enforce a maximum iteration count, default 25. |
 | Timer durability | Five-minute monitor waits and one-minute sync retry waits should be durable sleeps in production orchestration, not process-blocking sleeps. |

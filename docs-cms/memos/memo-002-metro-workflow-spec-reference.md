@@ -14,7 +14,7 @@ Merge God keeps a vendored copy of selected Metro workflow and WorkflowIR specif
 
 # Context
 
-The canonical Metro sources live in the Metro repository under `spec/` and `schema-registry/workflow-ir/`. The local copy is intentionally limited to the files needed for Merge God / Ironhide workflow extraction discussions.
+The canonical Metro sources live in the Metro repository under `spec/` and `schema-registry/workflow-ir/`. The local copy is intentionally limited to the files needed for Merge God workflow extraction discussions.
 
 # Details
 
