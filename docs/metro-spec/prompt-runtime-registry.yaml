@@ -1,0 +1,170 @@
+version: 1
+schema_family: prompt-runtime
+owner: metro
+status: frozen-v1
+compatibility: additive-only-until-v2
+description: Canonical v1 schema freeze for Metro-backed prompt catalog, prompt tracing, KB section provenance, step outcomes, and STM candidates shared by Metro and agent.
+consumers:
+  - metro
+  - agent
+  - notebook
+  - web
+records:
+  - id: prompt.definition
+    version: v1
+    status: frozen
+    description: Canonical prompt catalog object resolved by workflow steps and framework-owned stages.
+    required_fields:
+      - prompt_id
+      - semantic_version
+      - stage_id
+      - owner_type
+      - description
+      - base_instructions
+      - output_contract_ref
+      - status
+    optional_fields:
+      - context_contract_ref
+      - policy_ref
+      - provider_overrides
+      - model_overrides
+      - tags
+      - compatibility_notes
+    invariants:
+      - semantic_version must follow semver and identify intended compatibility
+      - base_instructions define the invariant semantic core; provider/model overrides must not weaken output-contract or safety requirements
+      - prompt_id must be stable across patch/minor revisions
+  - id: prompt.invocation
+    version: v1
+    status: frozen
+    description: Execution-time record of one resolved prompt invocation, including exact resolved identity.
+    required_fields:
+      - run_id
+      - workflow_ref
+      - workflow_version
+      - step_id
+      - stage_id
+      - prompt_ref
+      - prompt_semver
+      - prompt_hash
+      - provider
+      - model
+      - variant_kind
+      - timestamp
+    optional_fields:
+      - request_id
+      - session_id
+      - trace_id
+      - span_id
+      - traceparent
+      - tracestate
+      - output_contract_ref
+      - context_contract_ref
+      - prompt_source
+      - parent_invocation_id
+      - budget
+    invariants:
+      - prompt_hash must identify the exact resolved prompt after provider/model/workflow-context composition
+      - prompt_ref and prompt_semver must resolve to a single catalog prompt definition
+  - id: prompt.retrieval-provenance
+    version: v1
+    status: frozen
+    description: Section-level knowledge retrieval evidence linked to a prompt invocation.
+    required_fields:
+      - run_id
+      - step_id
+      - prompt_ref
+      - query
+      - kb_id
+      - doc_id
+      - section_id
+      - rank
+      - selected_for_context
+    optional_fields:
+      - chunk_id
+      - retrieval_score
+      - used_in_output
+      - source_uri
+      - search_type
+    invariants:
+      - provenance must be section-level or chunk-level, not doc-level only
+      - each record must link to a valid prompt invocation for the same run_id and step_id
+  - id: prompt.step-outcome
+    version: v1
+    status: frozen
+    description: Structured result of one prompt-driven step, suitable for eval/reporting and memory derivation.
+    required_fields:
+      - run_id
+      - workflow_ref
+      - step_id
+      - stage_id
+      - prompt_ref
+      - outcome_type
+      - outcome_summary
+      - success
+    optional_fields:
+      - parse_repair_applied
+      - latency_ms
+      - tokens_in
+      - tokens_out
+      - judge_score
+      - eval_verdict
+      - continuation_decision
+      - output_ref
+    invariants:
+      - each outcome must be attributable to exactly one prompt invocation
+      - success=false outcomes must preserve enough summary context to support STM candidate review and eval diagnostics
+  - id: prompt.stm-candidate
+    version: v1
+    status: frozen
+    description: Provenance-backed short-term memory candidate derived from prompt execution and step outcomes.
+    required_fields:
+      - candidate_id
+      - scope
+      - content
+      - confidence
+      - prompt_ref
+      - workflow_ref
+      - step_id
+      - supporting_evidence_refs
+      - promotion_state
+    optional_fields:
+      - provider
+      - model
+      - stage_id
+      - evaluator
+      - rejection_reason
+    invariants:
+      - no STM candidate may be promoted without provenance links to prompt invocation, retrieval evidence, or explicit operator review
+      - scope should default to the narrowest valid scope before broader promotion
+validation_policy:
+  hard_errors:
+    - unresolved prompt_ref in published workflow catalogs
+    - prompt stage mismatch between workflow step and prompt definition
+    - production workflow step containing raw inline prompt text after migration cutover
+    - prompt invocation missing prompt_hash or prompt_semver
+    - retrieval provenance missing section_id
+  warnings:
+    - legacy inline prompt wrapped as synthetic prompt identity during migration
+    - prompt definition without provider/model override for active provider
+    - stm candidate recorded without judge/eval support but with operator review pending
+authority_split:
+  metro:
+    - prompt definitions and versions
+    - workflow to prompt cross-check validation
+    - shared prompt tracing memory
+    - section-level retrieval provenance
+    - STM candidate provenance and promotion state
+  local_sqlite:
+    - local eval runs
+    - local scorecards and report generation
+    - local fast regression loops
+mcp_session_tracking:
+  requirement: Metro MCP and HTTP surfaces should preserve service session identity and OTEL-compatible trace propagation for prompt/runtime operations.
+  recommended_fields:
+    - session_id
+    - request_id
+    - trace_id
+    - span_id
+    - traceparent
+    - tracestate

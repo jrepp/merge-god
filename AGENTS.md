@@ -24,8 +24,10 @@ AGENTS.md            this file
 CHANGELOG.md         version history
 PRD.md               product requirements / planning
 
-docs/                CANONICAL prose documentation (single source of truth)
+docs/                CANONICAL prose documentation for users and contributors.
                      The website (site/) renders these files directly.
+docs-cms/            Design knowledge base: PRDs, ADRs, RFCs, and memos used for
+                     planning and architecture work. Not the public docs source.
 
 package.json         Node project + deps + scripts (typecheck/test/ci/dashboard/...)
 tsconfig.json        TypeScript config (strict, noUncheckedIndexedAccess, Bundler)
@@ -36,7 +38,7 @@ merge-god.ts         unified CLI dispatcher (dashboard | scan | agent | validate
 coordination.ts      merge-god coordination API + runPiAgent (bridges merge-god to the pi agent
                      over local HTTP; replaces the former `bob --json` contract)
 github_ops.ts        GitHub API via @octokit/rest (token still resolved via gh CLI)
-git_ops.ts           local git operations (subprocess → spawnSync)
+git_ops.ts           local git operations (subprocess -> spawnSync)
 state_tracker.ts     branch/PR state correlation
 models.ts            shared data models (interfaces + factory fns + enums)
 types.ts             TypedDict-style interfaces / enums (PR context, agent, DB, dashboard)
@@ -73,7 +75,7 @@ packages/github-sync/  WORKSPACE PACKAGE — @merge-god/github-sync. Async,
                      (node:sqlite) + SyncEngine. merge-god's dedicated
                      GitHub-integration layer. Own package.json + tsconfig.
 
-site/                Astro marketing + docs site → https://jrepp.github.io/merge-god/
+site/                Astro marketing + docs site -> https://jrepp.github.io/merge-god/
                      Renders docs/*.md via a content collection (glob on ../docs).
 archive/             historical code-review notes (superseded; keep but don't edit).
 
@@ -94,6 +96,7 @@ pyproject.toml / requirements.txt   (removed) — Python packaging is gone; the
 - **Working on the site:** [site/README.md](site/README.md).
 - **Agent eval workflow:** [docs/agent-testing.md](docs/agent-testing.md).
 - **Decisions & rationale:** [docs/architecture.md](docs/architecture.md).
+- **Design knowledge:** [docs-cms/](docs-cms/) for PRDs, ADRs, RFCs, and memos.
 
 ## Running
 
@@ -110,12 +113,16 @@ Sibling `.ts` scripts are spawned with `node --import tsx <script.ts>` (see
 
 ## Principles of operation
 
-1. **`docs/` is the single source of truth for prose.** The website renders it
-   directly — never duplicate doc content into `site/`. Edit the markdown in
+1. **`docs/` is the single source of truth for public prose.** The website renders it
+   directly — never duplicate public doc content into `site/`. Edit the markdown in
    `docs/` once; both GitHub and the site update. Keep frontmatter
    (`title`, `description`, `group`, `order`) valid on every file.
 
-2. **Verify with the TypeScript tooling.** Typecheck: `npx tsc --noEmit`.
+2. **`docs-cms/` is for design and governance.** Use it for PRDs, ADRs, RFCs, and
+   technical memos that capture planning or architecture intent. Validate it with
+   `docuchango validate --verbose` after edits.
+
+3. **Verify with the TypeScript tooling.** Typecheck: `npx tsc --noEmit`.
    Tests: `node --import tsx --test tests/*.test.ts`. Both via `npm run ci` or
    `just ci`. The Python linters (ruff/mypy/isort/bandit) have been removed —
    there is no application Python left to lint. Conventions: strict TS,
@@ -123,30 +130,40 @@ Sibling `.ts` scripts are spawned with `node --import tsx <script.ts>` (see
    names stay snake_case (DB columns / API JSON compatibility) while functions
    and class methods are camelCase.
 
-3. **`@merge-god/github-sync` is a workspace package.** It lives in
+4. **`@merge-god/github-sync` is a workspace package.** It lives in
    `packages/github-sync/` with its own `package.json` + `tsconfig.json`. It is
    typechecked and tested alongside the app (root `tsc`/`npm run ci` include it).
    merge-god imports models / `GitClient` / `Forge` / `SyncStore` / `SyncEngine`
    from it — edit the library in `packages/github-sync/src/`.
 
-4. **Two coexisting entrypoints.** Root scripts (`dashboard.ts`, `pr-loop.ts`,
+5. **Two coexisting entrypoints.** Root scripts (`dashboard.ts`, `pr-loop.ts`,
    `merge-god.ts`) are the documented user interface; `merge_god/` is the
    packaged CLI refactor. Shared modules in `merge_god/` are re-export shims —
    edit the root `.ts` copy. Match the surrounding file's style.
 
-5. **Labels drive behavior.** `for-landing` / `for-review` (PRs) and `for-impl`
+6. **Labels drive behavior.** `for-landing` / `for-review` (PRs) and `for-impl`
    (issues). No label = the PR is skipped. When changing processing logic,
    respect this contract.
 
-6. **Before declaring done, verify.**
+7. **Before declaring done, verify.**
    - App: `npm run ci` (tsc + node:test). Optionally `just ci` (adds markdownlint).
    - Site: `cd site && npm run build`.
    - Docs: if you touched `docs/`, confirm the site build still passes.
+   - Design docs: if you touched `docs-cms/`, run `docuchango validate --verbose`.
 
-7. **Don't commit or push unless explicitly asked.** Don't update git config or
-   use `-i`/force-push. Match existing code style; don't add comments unless asked.
+8. **Use repository workflow for commits and PRs.** Follow
+   [CONTRIBUTING.md](CONTRIBUTING.md), use Conventional Commits, and prefer one
+   focused commit per coherent change unless the user asks for a different
+   history shape.
 
-8. **Keep CI green.** Workflows use path filters (e.g. `site/**`, `docs-cms/**`).
-   The pre-commit CI job runs only file-check hooks (heavy tooling has dedicated
-   jobs). If you add a new top-level concern, wire it into the right workflow
-   rather than duplicating.
+9. **Scope control matters.** Before staging, inspect `git status` and avoid
+   committing unrelated user files. If unrelated files are present, leave them
+   unstaged and mention them in the handoff.
+
+10. **Don't commit or push unless explicitly asked.** Don't update git config or
+    use `-i`/force-push. Match existing code style; don't add comments unless asked.
+
+11. **Keep CI green.** Workflows use path filters (e.g. `site/**`, `docs-cms/**`).
+    The pre-commit CI job runs only file-check hooks (heavy tooling has dedicated
+    jobs). If you add a new top-level concern, wire it into the right workflow
+    rather than duplicating.

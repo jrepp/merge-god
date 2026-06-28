@@ -18,7 +18,7 @@ Need an AI agent to actually perform PR fixes (resolve conflicts, address review
 # Decision
 
 Drive the [pi](https://github.com/earendil-works/pi-coding-agent) coding agent
-through a coordination API (`merge_god/coordination.py`) plus a custom pi
+through a coordination API (`coordination.ts`) plus a custom pi
 extension (`pi/extensions/merge-god`). merge-god publishes a work item (the
 gathered prompt/context); the extension's `merge_god_*` tools pull it and report
 results back over HTTP. This supersedes the earlier `bob --json <prompt>`
