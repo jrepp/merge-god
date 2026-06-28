@@ -55,25 +55,19 @@ const steps = [
   },
 ];
 
-const quickstart = `# 1. Install prerequisites
-brew install gh
-gh auth login
-
-# Install pi separately and confirm it is on PATH
+const quickstart = `# 1. Confirm prerequisites
+node --version
+gh --version
 pi --version
 
-# 2. Clone
-git clone https://github.com/jrepp/merge-god.git
-cd merge-god
-npm install
+# 2. Create config.yaml
+npx merge-god@latest init --repo /path/to/repo
 
-# 3. Configure your repos
-cp config.example.yaml config.yaml
-$EDITOR config.yaml
+# 3. Verify auth, pi, and repo paths
+npx merge-god@latest doctor
 
-# 4. Validate, then run (best inside tmux/screen)
-npx tsx dashboard.ts --dry-run
-npm run dashboard`;
+# 4. Run the dashboard
+npx merge-god@latest dashboard`;
 ---
 
 <BaseLayout>

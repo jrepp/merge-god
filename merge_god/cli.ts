@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
@@ -23,6 +23,7 @@ import chalk from "chalk";
 import YAML from "yaml";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CWD = process.cwd();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -78,8 +79,51 @@ function runChild(script: string, args: string[]): number {
 }
 
 function resolvePath(p: string | undefined, fallback: string): string {
-  if (!p) return resolve(REPO_ROOT, fallback);
-  return isAbsolute(p) ? p : resolve(REPO_ROOT, p);
+  if (!p) return resolve(CWD, fallback);
+  return isAbsolute(p) ? p : resolve(CWD, p);
+}
+
+function hasCommand(cmd: string, args = ["--version"]): boolean {
+  try {
+    const result = spawnSync(cmd, args, { encoding: "utf8", timeout: 5000, stdio: "ignore" });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function hasGitHubAuth(): boolean {
+  if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) return true;
+  try {
+    const token = spawnSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5000 });
+    return token.status === 0 && token.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function discoverGitRepos(root: string): { path: string; name: string; enabled: boolean }[] {
+  const repos: { path: string; name: string; enabled: boolean }[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [root, resolve(root, "..")]) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const status = spawnSync("git", ["-C", candidate, "rev-parse", "--show-toplevel"], {
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      if (status.status === 0) {
+        const repoPath = status.stdout.trim();
+        if (repoPath && !seen.has(repoPath)) {
+          seen.add(repoPath);
+          repos.push({ path: repoPath, name: repoPath.split(/[\\/]/).pop() ?? "repo", enabled: true });
+        }
+      }
+    } catch {
+      // ignore discovery failures
+    }
+  }
+  return repos;
 }
 
 interface GlobalArgs {
@@ -217,6 +261,109 @@ function cmdSendApproval(): number {
   return runChild("send_approval.ts", []);
 }
 
+function cmdInit(g: GlobalArgs): number {
+  const parsed = parseArgs({
+    args: g.rest,
+    options: {
+      config: { type: "string" },
+      repo: { type: "string", multiple: true },
+      force: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+
+  const configPath = resolvePath(parsed.values.config ?? g.config, "config.yaml");
+  if (existsSync(configPath) && !parsed.values.force) {
+    logText(`Config already exists: ${configPath}`, "warning");
+    logText("Use --force to overwrite it.", "info");
+    return 1;
+  }
+
+  const explicitRepos = parsed.values.repo ?? parsed.positionals;
+  const repos = explicitRepos.length > 0
+    ? explicitRepos.map((p) => {
+        const repoPath = resolve(CWD, p);
+        return { path: repoPath, name: repoPath.split(/[\\/]/).pop() ?? "repo", enabled: true };
+      })
+    : discoverGitRepos(CWD);
+
+  const config = {
+    repos: repos.length > 0 ? repos : [{ path: "/absolute/path/to/repo", name: "my-repo", enabled: true }],
+  };
+
+  const header = [
+    "# merge-god configuration",
+    "# Label PRs with for-landing or for-review. Unlabeled PRs are skipped.",
+    "",
+  ].join("\n");
+  writeFileSync(configPath, header + YAML.stringify(config));
+  logText(`Created ${configPath}`, "success");
+  if (repos.length === 0) {
+    logText("Edit repos[0].path before running the dashboard.", "warning");
+  }
+  logText("Next: merge-god doctor", "info");
+  return 0;
+}
+
+function cmdDoctor(g: GlobalArgs): number {
+  const configPath = resolvePath(g.config, "config.yaml");
+  let failures = 0;
+
+  const check = (ok: boolean, label: string, fix?: string): void => {
+    if (ok) {
+      logText(label, "success");
+    } else {
+      failures += 1;
+      logText(label, "error");
+      if (fix) logText(`  ${fix}`, "info");
+    }
+  };
+
+  const nodeMajor = Number(process.versions.node.split(".")[0] ?? "0");
+  check(nodeMajor >= 22, `Node.js ${process.versions.node}`, "Install Node.js 22 or newer.");
+  check(hasCommand("git"), "git is available", "Install git and ensure it is on PATH.");
+  check(hasCommand("gh"), "gh is available", "Install GitHub CLI: https://cli.github.com/");
+  check(
+    hasGitHubAuth(),
+    "GitHub API auth is available",
+    "Set GITHUB_TOKEN/GH_TOKEN or run gh auth login if no existing token is available.",
+  );
+  check(hasCommand("pi"), "pi is available", "Install pi and ensure it is on PATH.");
+
+  if (!existsSync(configPath)) {
+    failures += 1;
+    logText(`Config missing: ${configPath}`, "error");
+    logText("  Run: merge-god init", "info");
+  } else {
+    logText(`Config found: ${configPath}`, "success");
+    try {
+      const parsed = YAML.parse(readFileSync(configPath, "utf8")) as
+        | { repos?: { path?: string; enabled?: boolean }[] }
+        | null;
+      const repos = parsed?.repos ?? [];
+      check(repos.length > 0, `Configured repos: ${repos.length}`, "Add at least one repo to config.yaml.");
+      for (const repo of repos.filter((r) => r.enabled ?? true)) {
+        const repoPath = repo.path ? resolve(CWD, repo.path) : "";
+        check(
+          repoPath.length > 0 && existsSync(resolve(repoPath, ".git")),
+          `Repo path is a git repo: ${repo.path ?? "(missing path)"}`,
+          "Set repos[].path to a local checkout with a .git directory.",
+        );
+      }
+    } catch (e) {
+      failures += 1;
+      logText(`Could not parse ${configPath}: ${errMsg(e)}`, "error");
+    }
+  }
+
+  if (failures === 0) {
+    logText("Ready. Run: merge-god dashboard", "success");
+    return 0;
+  }
+  logText(`${failures} check(s) failed.`, "error");
+  return 1;
+}
+
 function cmdTest(g: GlobalArgs): number {
   logText("Running test suite...", "info");
   const parsed = parseArgs({
@@ -352,7 +499,16 @@ OVERVIEW:
     Process 2: PR context gathering and database caching
     Process 3: Agent invocation and PR processing
 
-COMMANDS:
+  COMMANDS:
+
+  init
+    Create config.yaml in the current directory.
+    Options:
+      --repo PATH            Add a repository path (repeatable)
+      --force                Overwrite an existing config file
+
+  doctor
+    Check local prerequisites: Node, git, gh auth, pi, and config paths.
 
   dashboard
     Run the full TUI dashboard with all processes.
@@ -452,6 +608,8 @@ export function main(): number {
 
   const handlers: Record<string, () => number> = {
     dashboard: () => cmdDashboard(g),
+    init: () => cmdInit(g),
+    doctor: () => cmdDoctor(g),
     scan: () => cmdScan(g),
     agent: () => cmdAgent(g),
     validate: () => cmdValidate(g),

@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Async, multi-forge (GitHub / Gitea / Codeberg / GitLab) sync library: normalize PR + branch + CI data to SQLite for offline processing. merge-god's dedicated GitHub-integration layer.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

@@ -1922,7 +1922,7 @@ export async function processIssue(
 
 // --- Repository validation --------------------------------------------------
 
-/** Validate that the path is a valid git repository with gh auth configured. */
+/** Validate that the path is a valid git repository with GitHub auth available. */
 export function validateRepository(repoPath: string): boolean {
   if (!existsSync(repoPath)) {
     logJson("validation_error", { error: "Repository path does not exist", path: repoPath });
@@ -1955,10 +1955,11 @@ export function validateRepository(repoPath: string): boolean {
     return false;
   }
 
-  const [ghRc, _ghStdout, ghStderr] = runCommand(["gh", "auth", "status"]);
-  if (ghRc !== 0) {
+  const hasTokenEnv = Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
+  const [ghRc, ghStdout, ghStderr] = runCommand(["gh", "auth", "token"]);
+  if (!hasTokenEnv && (ghRc !== 0 || ghStdout.trim().length === 0)) {
     logJson("validation_error", {
-      error: "GitHub CLI not authenticated. Run 'gh auth login'",
+      error: "GitHub API auth unavailable. Set GITHUB_TOKEN/GH_TOKEN or run 'gh auth login'.",
       stderr: ghStderr,
     });
     return false;
