@@ -10,8 +10,8 @@ order: 2
 | Tool | Why | Notes |
 | --- | --- | --- |
 | **Node.js 22+** | Runtime | Check with `node --version` |
-| **npm** | Dependency & script management | Ships with Node.js |
-| **[gh](https://cli.github.com/)** | GitHub API access | Authenticate with `gh auth login` |
+| **npm / npx** | Package runner | Ships with Node.js |
+| **[gh](https://cli.github.com/)** | GitHub API access | Existing token auth is fine; use `gh auth login` only if needed |
 | **`pi`** | The AI coding agent | Must be on your `PATH`. merge-god talks to it through a [coordination API](./how-it-works/) and the `merge-god` extension (`pi/extensions/merge-god`). |
 | **Git** | Repo operations | With a GitHub remote |
 
@@ -25,52 +25,65 @@ order: 2
   credentials before launching each repo monitor. See
   [Configuration](./configuration/#doormat-aws-credentials).
 
-## 1. Install dependencies
+## 1. Check prerequisites
 
 ```bash
-npm install
+node --version
+gh --version
+pi --version
 ```
 
-## 2. Install & authenticate the GitHub CLI
+## 2. Make sure GitHub API auth is available
+
+merge-god uses existing auth in this order: `GITHUB_TOKEN`, `GH_TOKEN`, then
+`gh auth token`. If `gh auth token` already prints a token, you are done.
 
 ```bash
-# macOS
-brew install gh
-# Linux: apt install gh   |   Windows: winget install --id GitHub.cli
-
-gh auth login   # complete the login flow
+gh auth token >/dev/null || gh auth login
 ```
 
-## 3. Ensure `pi` is available
+## 3. Initialize merge-god
 
-merge-god drives the [pi](https://github.com/earendil-works/pi-coding-agent) AI
-coding agent through a small coordination API and a custom extension that ships
-in this repo (`pi/extensions/merge-god`). Verify `pi` is reachable:
+Create `config.yaml` in the current directory:
 
 ```bash
-pi --version     # should print a version
+npx merge-god@latest init
 ```
 
-The extension is loaded automatically when merge-god runs pi (via
-`pi --extension`); you can also install it as a package with `pi install ./pi`.
+You can seed one or more repos explicitly:
 
-## 4. Clone merge-god
+```bash
+npx merge-god@latest init --repo /path/to/repo --repo /path/to/another-repo
+```
+
+## 4. Verify
+
+Run the doctor before starting the dashboard:
+
+```bash
+npx merge-god@latest doctor
+```
+
+## 5. Run
+
+Run the dashboard (best inside `tmux` or `screen` for long sessions):
+
+```bash
+npx merge-god@latest dashboard
+```
+
+You're ready — head to the [Quickstart](./quickstart/).
+
+## Source checkout
+
+For development, clone the repo and run scripts directly:
 
 ```bash
 git clone https://github.com/jrepp/merge-god.git
 cd merge-god
+npm install
+npm run dashboard
 ```
-
-## 5. Verify
-
-Run the dashboard in dry-run mode to confirm everything wires up before going
-live:
-
-```bash
-npx tsx dashboard.ts --dry-run
-```
-
-You're ready — head to the [Quickstart](./quickstart/).
 
 ## Why npm + tsx?
 

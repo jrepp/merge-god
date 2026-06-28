@@ -32,14 +32,22 @@ See **[How it works](docs/how-it-works.md)** for the gather → prompt → act p
 ## Quick start
 
 ```bash
-# Prerequisites: Node.js 22+, gh (authenticated), and `pi` (AI agent) on PATH
+# Prerequisites: Node.js 22+, gh, and `pi` on PATH
+npx merge-god@latest init
+npx merge-god@latest doctor
+npx merge-god@latest dashboard
+```
+
+`doctor` accepts existing GitHub auth from `GITHUB_TOKEN`, `GH_TOKEN`, or
+`gh auth token`; run `gh auth login` only if no token is available.
+
+For local development from source:
+
+```bash
 git clone https://github.com/jrepp/merge-god.git
 cd merge-god
 npm install
-
-cp config.example.yaml config.yaml   # then edit: add your repos
-npx tsx dashboard.ts --dry-run        # validate
-npx tsx dashboard.ts                  # run (best inside tmux/screen)
+npm run dashboard
 ```
 
 Then label a PR `for-landing` or `for-review` on GitHub and watch it land.

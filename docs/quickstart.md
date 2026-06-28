@@ -5,20 +5,23 @@ group: Getting Started
 order: 3
 ---
 
-Make sure you've completed [Installation](./installation/) first.
+Make sure Node.js 22+, `gh`, and `pi` are on your `PATH`.
 
-## 1. Create your config
+## 1. Initialize
 
-If `config.yaml` doesn't exist, the dashboard offers to build one interactively
-(validates paths, suggests names, writes commented YAML). You can also copy the
-example:
+Create `config.yaml` in the current directory:
 
 ```bash
-cp config.example.yaml config.yaml
-$EDITOR config.yaml
+npx merge-god@latest init
 ```
 
-Add at least one repository:
+Or seed it with known repo paths:
+
+```bash
+npx merge-god@latest init --repo /Users/you/dev/my-project
+```
+
+The generated config is plain YAML:
 
 ```yaml
 repos:
@@ -29,23 +32,25 @@ repos:
 
 See [Configuration](./configuration/) for every option.
 
-## 2. Validate
+## 2. Check your machine
 
-Dry-run checks that paths exist, are valid git repos, and that `pr-loop.ts` is
-present — without starting anything:
+`doctor` verifies Node, git, `gh`, GitHub API auth, `pi`, and repo paths:
 
 ```bash
-npx tsx dashboard.ts --dry-run
+npx merge-god@latest doctor
 ```
+
+It accepts existing GitHub auth from `GITHUB_TOKEN`, `GH_TOKEN`, or
+`gh auth token`. Run `gh auth login` only if no token is available.
 
 ## 3. Run
 
 Run the dashboard (ideally inside `tmux` or `screen` so it persists):
 
 ```bash
-npx tsx dashboard.ts
+npx merge-god@latest dashboard
 # or point at a specific config:
-npx tsx dashboard.ts path/to/config.yaml
+npx merge-god@latest --config path/to/config.yaml dashboard
 ```
 
 You'll see a live, color-coded view of every repo, the PRs being processed, and
