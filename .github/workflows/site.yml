@@ -22,7 +22,7 @@ permissions:
 
 # Allow only one concurrent deployment, cancel runs in-progress on PRs.
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
