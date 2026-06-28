@@ -45,16 +45,15 @@ jobs:
         run: npm ci
 
       - name: Configure Pages
+        if: github.event_name != 'pull_request'
         id: pages
         uses: actions/configure-pages@v5
 
       - name: Build with Astro
         run: npm run build
-        env:
-          # Makes the Pages base path available to the build.
-          BASE_URL: ${{ steps.pages.outputs.base_path }}
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/dist
