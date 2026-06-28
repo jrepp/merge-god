@@ -27,7 +27,7 @@ configured repository at once.
 - **Multi-repo dashboard** — live, color-coded status for every repo, with non-TUI fallback for CI.
 - **Observable** — JSON event logging and optional real-time notifications.
 
-See **[How it works](docs/how-it-works.md)** for the gather → prompt → act pipeline.
+See **[How it works](docs/how-it-works.md)** for the gather -> prompt -> act pipeline.
 
 ## Quick start
 
@@ -44,7 +44,7 @@ npx tsx dashboard.ts                  # run (best inside tmux/screen)
 
 Then label a PR `for-landing` or `for-review` on GitHub and watch it land.
 
-➡️ Full setup: **[Installation](docs/installation.md)** · **[Quickstart](docs/quickstart.md)**
+Full setup: **[Installation](docs/installation.md)** · **[Quickstart](docs/quickstart.md)**
 
 ## Controlling PRs with labels
 
@@ -52,7 +52,7 @@ Labels are how you tell merge-god what to do.
 
 | Label | On | Effect |
 | --- | --- | --- |
-| `for-landing` | PR | Resolve conflicts → address reviews → fix CI → merge. |
+| `for-landing` | PR | Resolve conflicts -> address reviews -> fix CI -> merge. |
 | `for-review` | PR | Everything above, plus a second quality/security review pass. |
 | `for-impl` | Issue | Implement the issue as a PR (requires `watch_issues: true`). |
 | _(none)_ | PR | Skipped. Drafts and WIP PRs are always excluded. |
@@ -61,13 +61,15 @@ See **[Usage](docs/usage.md)** and **[Configuration](docs/configuration.md)**.
 
 ## Documentation
 
-The website renders the canonical docs in [`docs/`](docs/). Read them on the
+The website renders the canonical public docs in [`docs/`](docs/). Read them on the
 **[website](https://jrepp.github.io/merge-god/docs/)** or directly in the repo:
 
 - **Getting started** — [Introduction](docs/introduction.md), [Installation](docs/installation.md), [Quickstart](docs/quickstart.md)
 - **Guides** — [Configuration](docs/configuration.md), [Usage](docs/usage.md), [How it works](docs/how-it-works.md)
 - **Reference** — [Prompt example](docs/prompt-example.md), [Architecture decisions](docs/architecture.md), [uv guide](docs/uv-guide.md)
 - **Project** — [Development](docs/development.md), [Testing](docs/testing.md), [Agent testing](docs/agent-testing.md)
+
+Design and governance docs live in [`docs-cms/`](docs-cms/): PRDs, ADRs, RFCs, and technical memos.
 
 Other root files: [CHANGELOG.md](CHANGELOG.md) · [PRD.md](PRD.md) · [archive/](archive/) (historical review notes).
 

@@ -1,0 +1,949 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://metro.dev/schema-registry/workflow-ir/workflow-ir.schema.json",
+  "title": "WorkflowIR v1",
+  "description": "Engine-neutral workflow intermediate representation for Metro, Gantry, BPM/workflow engines, DAG schedulers, and agentic orchestration backends.",
+  "type": "object",
+  "required": ["ir_version", "workflow", "graph"],
+  "additionalProperties": true,
+  "properties": {
+    "ir_version": {
+      "const": "workflow-ir/v1"
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflow"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/capabilities"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/input"
+      }
+    },
+    "graph": {
+      "$ref": "#/$defs/graph"
+    },
+    "dataflow": {
+      "$ref": "#/$defs/dataflow"
+    },
+    "gates": {
+      "$ref": "#/$defs/gates"
+    },
+    "resources": {
+      "$ref": "#/$defs/resources"
+    },
+    "artifacts": {
+      "$ref": "#/$defs/artifacts"
+    },
+    "execution_hints": {
+      "$ref": "#/$defs/freeformObject"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9._:-]+/[A-Za-z0-9._:/-]+$"
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^P(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+(\\.\\d+)?S)?|(?=\\d)(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+(\\.\\d+)?S)?)?)$|^\\d+(ms|s|m|h|d)$"
+    },
+    "freeformObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["id", "version", "title"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "profile": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "safety": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "tier": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "required_profiles": {
+          "$ref": "#/$defs/profileList"
+        },
+        "optional_profiles": {
+          "$ref": "#/$defs/profileList"
+        },
+        "required_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/requiredExtension"
+          }
+        }
+      }
+    },
+    "profileList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/profile"
+      },
+      "uniqueItems": true
+    },
+    "profile": {
+      "enum": [
+        "basic-dag",
+        "typed-dataflow",
+        "human-gates",
+        "gateways",
+        "events-timers",
+        "subworkflows",
+        "error-handling",
+        "agentic"
+      ]
+    },
+    "requiredExtension": {
+      "type": "object",
+      "required": ["name", "version", "reason"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]+/[A-Za-z0-9._:/-]+$"
+        },
+        "version": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "schema_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "required": ["name", "value_type"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": true,
+        "secret": {
+          "type": "boolean"
+        },
+        "constraints": {
+          "$ref": "#/$defs/freeformObject"
+        },
+        "value_type": {
+          "$ref": "#/$defs/valueType"
+        }
+      }
+    },
+    "valueType": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": ["string", "integer", "number", "boolean", "object", "array", "null", "bytes", "duration", "timestamp", "secret"]
+        },
+        "schema_ref": {
+          "type": "string"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "items": {
+          "$ref": "#/$defs/valueType"
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/valueType"
+          }
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "required": ["nodes", "edges"],
+      "additionalProperties": true,
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/edge"
+          }
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": ["action", "gate", "gateway", "join", "wait", "subworkflow"]
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expression"
+          }
+        },
+        "start_when": {
+          "enum": ["all_success", "any_success", "all_done", "always", "expression"]
+        },
+        "timeout": {
+          "$ref": "#/$defs/timeout"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "on_error": {
+          "$ref": "#/$defs/onError"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/freeformObject"
+        },
+        "compensation": {
+          "$ref": "#/$defs/compensation"
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeformObject"
+        },
+        "action": {
+          "$ref": "#/$defs/action"
+        },
+        "gate_ref": {
+          "$ref": "#/$defs/ref"
+        },
+        "gateway": {
+          "$ref": "#/$defs/gateway"
+        },
+        "join": {
+          "$ref": "#/$defs/join"
+        },
+        "wait": {
+          "$ref": "#/$defs/wait"
+        },
+        "workflow_ref": {
+          "$ref": "#/$defs/workflowRef"
+        },
+        "input_mapping": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "output_mapping": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/outputMapping"
+          }
+        },
+        "invocation": {
+          "enum": ["sync", "async", "fire_and_forget"]
+        },
+        "error_propagation": {
+          "enum": ["propagate", "isolate", "map_to_output"]
+        },
+        "cancellation_propagation": {
+          "enum": ["propagate", "isolate"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "gate"}
+            }
+          },
+          "then": {
+            "required": ["gate_ref"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "gateway"}
+            }
+          },
+          "then": {
+            "required": ["gateway"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "join"}
+            }
+          },
+          "then": {
+            "required": ["join"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "wait"}
+            }
+          },
+          "then": {
+            "required": ["wait"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {"const": "subworkflow"}
+            }
+          },
+          "then": {
+            "required": ["workflow_ref"]
+          }
+        }
+      ]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/ref"
+        },
+        "mode": {
+          "enum": ["deterministic", "agentic", "human", "external"]
+        },
+        "tool_ref": {
+          "type": "string"
+        },
+        "operation_ref": {
+          "type": "string"
+        },
+        "agent": {
+          "$ref": "#/$defs/freeformObject"
+        },
+        "idempotency": {
+          "enum": ["required", "recommended", "not_required", "unknown"]
+        }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": ["exclusive", "inclusive", "parallel", "event_based"]
+        },
+        "default_edge": {
+          "$ref": "#/$defs/ref"
+        }
+      }
+    },
+    "join": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": ["all", "any", "quorum", "discriminator"]
+        },
+        "quorum": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "wait": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": ["duration", "timestamp", "condition", "message", "signal", "event"]
+        },
+        "duration": {
+          "$ref": "#/$defs/duration"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "condition": {
+          "$ref": "#/$defs/expression"
+        },
+        "message_ref": {
+          "type": "string"
+        },
+        "signal_ref": {
+          "type": "string"
+        },
+        "event_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "workflowRef": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": ["control", "data", "guard", "event", "compensation", "correlation"]
+        },
+        "when": {
+          "$ref": "#/$defs/expression"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "on_status": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/lifecycleStatus"
+          },
+          "uniqueItems": true
+        },
+        "metadata": {
+          "$ref": "#/$defs/freeformObject"
+        }
+      }
+    },
+    "lifecycleStatus": {
+      "enum": ["pending", "ready", "running", "waiting", "succeeded", "failed", "skipped", "cancelled"]
+    },
+    "expression": {
+      "type": "object",
+      "required": ["language", "expr"],
+      "additionalProperties": true,
+      "properties": {
+        "language": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "backoff": {
+          "enum": ["none", "fixed", "linear", "exponential"]
+        },
+        "initial_delay": {
+          "$ref": "#/$defs/duration"
+        },
+        "max_delay": {
+          "$ref": "#/$defs/duration"
+        },
+        "retry_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "timeout": {
+      "type": "object",
+      "required": ["duration"],
+      "additionalProperties": true,
+      "properties": {
+        "duration": {
+          "$ref": "#/$defs/duration"
+        },
+        "on_timeout": {
+          "enum": ["fail", "skip", "cancel", "route", "compensate"]
+        },
+        "target_node": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "onError": {
+      "type": "object",
+      "required": ["strategy"],
+      "additionalProperties": true,
+      "properties": {
+        "strategy": {
+          "enum": ["fail_workflow", "continue", "skip", "route", "compensate", "raise_event"]
+        },
+        "target_node": {
+          "$ref": "#/$defs/id"
+        },
+        "error_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "compensation": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "handler_node": {
+          "$ref": "#/$defs/id"
+        },
+        "trigger": {
+          "enum": ["on_failure", "on_cancel", "manual", "always"]
+        }
+      }
+    },
+    "dataflow": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "captures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capture"
+          }
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflowOutput"
+          }
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "required": ["from_node", "name", "value_type"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from_node": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "$ref": "#/$defs/id"
+        },
+        "value_type": {
+          "$ref": "#/$defs/valueType"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "required": ["input", "from"],
+      "additionalProperties": true,
+      "properties": {
+        "to_node": {
+          "$ref": "#/$defs/id"
+        },
+        "input": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "value_type": {
+          "$ref": "#/$defs/valueType"
+        }
+      }
+    },
+    "workflowOutput": {
+      "type": "object",
+      "required": ["name", "from", "value_type"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "type": "string"
+        },
+        "value_type": {
+          "$ref": "#/$defs/valueType"
+        }
+      }
+    },
+    "outputMapping": {
+      "type": "object",
+      "required": ["output", "to"],
+      "additionalProperties": true,
+      "properties": {
+        "output": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "type": "string"
+        },
+        "value_type": {
+          "$ref": "#/$defs/valueType"
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gateDefinition"
+          }
+        }
+      }
+    },
+    "gateDefinition": {
+      "type": "object",
+      "required": ["id", "decision_type"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "decision_type": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "required_role": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gateOption"
+          }
+        },
+        "default_option": {
+          "$ref": "#/$defs/id"
+        },
+        "timeout": {
+          "$ref": "#/$defs/timeout"
+        },
+        "evidence_requirements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "policy_ref": {
+          "type": "string"
+        },
+        "on_timeout": {
+          "enum": ["fail", "skip", "cancel", "route", "default_option"]
+        }
+      }
+    },
+    "gateOption": {
+      "type": "object",
+      "required": ["id", "label"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "systems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resourceSystem"
+          }
+        },
+        "resource_types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeformObject"
+          }
+        },
+        "secret_requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/secretRequirement"
+          }
+        },
+        "locks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeformObject"
+          }
+        },
+        "quotas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/freeformObject"
+          }
+        }
+      }
+    },
+    "resourceSystem": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "secretRequirement": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "required_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "injection": {
+          "enum": ["env", "file", "reference", "runtime_broker"]
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifactOutput"
+          }
+        }
+      }
+    },
+    "artifactOutput": {
+      "type": "object",
+      "required": ["id", "kind", "producer_node"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "producer_node": {
+          "$ref": "#/$defs/id"
+        },
+        "value_type": {
+          "$ref": "#/$defs/valueType"
+        },
+        "publish": {
+          "type": ["boolean", "object"]
+        },
+        "path_hint": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "compiled_from": {
+          "$ref": "#/$defs/freeformObject"
+        },
+        "compiler": {
+          "$ref": "#/$defs/freeformObject"
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]+:[A-Za-z0-9+/=_-]+$"
+        },
+        "projection_targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

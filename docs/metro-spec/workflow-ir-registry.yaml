@@ -1,0 +1,81 @@
+version: 1
+schema_family: workflow-ir
+owner: metro
+status: proposed
+compatibility: additive-preferred
+description: Canonical shared workflow intermediate representation between Metro authoring documents and Gantry coordination/runtime projections.
+consumers:
+  - metro
+  - gantry
+  - agent
+  - notebook
+  - web
+  - bpm-engine-adapters
+  - dag-schedulers
+contracts:
+  - id: workflow-ir
+    version: v1
+    status: proposed
+    spec_ref: metro/spec/WORKFLOW-IR-SPEC.md
+    guide_ref: metro/spec/WORKFLOW-IR-GUIDE.md
+    schema_ref: metro/schema-registry/workflow-ir/workflow-ir.schema.json
+    ir_version: workflow-ir/v1
+    description: Engine-neutral workflow graph contract with typed inputs, dataflow, gates, resources, artifacts, conformance profiles, and optional execution hints.
+    canonical_sections:
+      - ir_version
+      - workflow
+      - capabilities
+      - inputs
+      - graph
+      - dataflow
+      - gates
+      - resources
+      - artifacts
+      - execution_hints
+      - provenance
+      - extensions
+    required_sections:
+      - ir_version
+      - workflow
+      - graph
+    profiles:
+      - id: basic-dag
+        description: Action and gate nodes, acyclic control edges, all-success inbound behavior, primitive inputs, artifacts, and advisory hints.
+      - id: typed-dataflow
+        description: Captures, bindings, workflow outputs, schema refs, and data edges.
+      - id: human-gates
+        description: Gate definitions, gate nodes, required roles, options, evidence requirements, and gate timeouts.
+      - id: gateways
+        description: Gateway and join nodes with conditional routing and non-default merge behavior.
+      - id: events-timers
+        description: Wait nodes, event edges, message/signal/timer semantics.
+      - id: subworkflows
+        description: Subworkflow nodes with input/output mapping and propagation rules.
+      - id: error-handling
+        description: Retry, timeout, on-error routing, cancellation, and compensation.
+      - id: agentic
+        description: Agentic action mode, tool contracts, autonomy boundaries, evidence requirements, and escalation behavior.
+    non_goals:
+      - metro-authoring-markdown-format
+      - gantry-runtime-state-object
+      - live-execution-log
+      - universal-policy-engine
+    projections:
+      - metro-authoring-compile
+      - gantry-workflow-task-graph
+      - simple-dag
+      - bpm-workflow-engine
+      - durable-workflow-engine
+      - agentic-orchestrator
+    review_passes:
+      - contract
+      - basic-backend
+      - complex-backend
+      - agentic-backend
+      - projection-diagnostics
+      - durability
+    projection_requirements:
+      - reject-unsupported-required-profiles
+      - report-lossy-mappings
+      - keep-runtime-state-out-of-ir
+      - preserve-required-extension-semantics

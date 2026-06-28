@@ -8,13 +8,13 @@ This directory contains structured technical documentation using the docs-cms pa
 docs-cms/
 ├── docs-project.yaml      # Project configuration
 ├── adr/                   # Architecture Decision Records
-│   └── adr-000-template.md
+│   └── adr-NNN-short-description.md
 ├── rfcs/                  # Request for Comments
-│   └── rfc-000-template.md
+│   └── rfc-NNN-short-description.md
 ├── memos/                 # Technical Memos
-│   └── memo-000-template.md
+│   └── memo-NNN-short-description.md
 ├── prd/                   # Product Requirements Documents
-│   └── prd-000-template.md
+│   └── prd-NNN-short-description.md
 └── templates/             # Document templates
 ```
 
@@ -39,6 +39,10 @@ Technical notes, findings, research, or informal documentation that doesn't fit 
 Product requirements and feature specifications.
 
 **Filename format**: `prd-NNN-short-description.md` (lowercase, dashes)
+
+## Publishing Boundary
+
+`docs-cms` is the source of truth for publishable project documentation. Root-level markdown is reserved for operational guides such as the README, installation, testing, and changelog. The `docs/` directory is for historical or vendored reference material unless explicitly promoted into `docs-cms`.
 
 ## Getting Started
 
@@ -78,6 +82,7 @@ Edit `docs-project.yaml` to customize:
 - Update the `updated` field when making changes
 - Use appropriate tags for categorization
 - Link to related documents using relative paths
+- Put new PRDs, ADRs, RFCs, and memos under `docs-cms` so CI and publishing tools can index them
 
 ## Need Help?
 

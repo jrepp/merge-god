@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - 'docs-cms/**'
+      - 'docs/metro-spec/**'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [main]
     paths:
       - 'docs-cms/**'
+      - 'docs/metro-spec/**'
       - '.github/workflows/docs.yml'
 
 permissions:
