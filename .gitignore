@@ -38,7 +38,6 @@ config.yaml
 
 # Node.js
 node_modules/
-package-lock.json
 
 # Test and coverage
 .coverage
@@ -69,4 +68,9 @@ dist/
 
 # Documentation build
 docs/_build/
-site/
+
+# Website (Astro) build output & deps — source is tracked.
+# See site/.gitignore for finer-grained ignores within site/.
+site/dist/
+site/node_modules/
+site/.astro/

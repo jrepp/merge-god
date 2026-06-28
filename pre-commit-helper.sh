@@ -66,15 +66,13 @@ Commands:
 Examples:
   $0 run                  # Run all hooks on all files
   $0 staged               # Run hooks on staged files only
-  $0 hook ruff            # Run only the ruff hook
+  $0 hook markdownlint    # Run only the markdownlint hook
   $0 update               # Update all hooks
 
 Configured hooks:
-  - trailing-whitespace, end-of-file-fixer, check-yaml, etc.
-  - ruff (linter and formatter)
-  - mypy (type checker)
-  - bandit (security scanner)
+  - trailing-whitespace, end-of-file-fixer, check-yaml, etc. (file checks)
   - markdownlint
+  (TypeScript typecheck + node:test run via `just ci`, not as commit hooks.)
 EOF
         ;;
 

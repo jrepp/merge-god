@@ -2,3 +2,6 @@
 # Its template convention uses multiple top-level headings (H1) per document,
 # which conflicts with markdownlint's MD025 rule. docuchango owns this tree.
 docs-cms/
+
+# Historical code-review notes — kept for the record, not edited or linted.
+archive/

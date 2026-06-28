@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" role="img" aria-labelledby="title desc">
+  <title id="title">merge-god dashboard illustration</title>
+  <desc id="desc">A stylized terminal dashboard with pull-request cards flowing into a merged branch.</desc>
+  <defs>
+    <radialGradient id="bg" cx="48%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#77f2d8" stop-opacity="0.9"/>
+      <stop offset="0.38" stop-color="#6c7cff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#08111f"/>
+    </radialGradient>
+    <linearGradient id="panel" x1="120" x2="1100" y1="160" y2="1060">
+      <stop offset="0" stop-color="#17233a"/>
+      <stop offset="1" stop-color="#0b1020"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="250" x2="1000" y1="300" y2="920">
+      <stop offset="0" stop-color="#6fffe9"/>
+      <stop offset="0.5" stop-color="#8a7cff"/>
+      <stop offset="1" stop-color="#ffb86b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="28" stdDeviation="36" flood-color="#020617" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="1254" height="1254" rx="140" fill="url(#bg)"/>
+  <circle cx="1012" cy="210" r="92" fill="#ffffff" opacity="0.1"/>
+  <circle cx="206" cy="988" r="150" fill="#6fffe9" opacity="0.12"/>
+  <g filter="url(#shadow)">
+    <rect x="144" y="178" width="966" height="820" rx="46" fill="url(#panel)" stroke="#9ab8ff" stroke-opacity="0.28" stroke-width="4"/>
+    <rect x="144" y="178" width="966" height="92" rx="46" fill="#111a2d"/>
+    <circle cx="206" cy="224" r="13" fill="#ff6b6b"/>
+    <circle cx="250" cy="224" r="13" fill="#ffd166"/>
+    <circle cx="294" cy="224" r="13" fill="#45e6a8"/>
+    <text x="352" y="235" fill="#b9c7e6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="30">merge-god dashboard</text>
+  </g>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M338 706c145-160 245-160 390 0" stroke="url(#accent)" stroke-width="24"/>
+    <path d="M728 706c70 78 138 115 220 115" stroke="#6fffe9" stroke-width="24"/>
+    <path d="M728 706c70-78 138-115 220-115" stroke="#ffb86b" stroke-width="24"/>
+    <circle cx="338" cy="706" r="36" fill="#101827" stroke="#6fffe9" stroke-width="16"/>
+    <circle cx="728" cy="706" r="36" fill="#101827" stroke="#8a7cff" stroke-width="16"/>
+    <circle cx="948" cy="591" r="30" fill="#101827" stroke="#ffb86b" stroke-width="14"/>
+    <circle cx="948" cy="821" r="30" fill="#101827" stroke="#6fffe9" stroke-width="14"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+    <rect x="238" y="350" width="318" height="118" rx="24" fill="#101827" stroke="#6fffe9" stroke-opacity="0.6"/>
+    <text x="276" y="404" fill="#6fffe9" font-size="30">PR #142</text>
+    <text x="276" y="444" fill="#d7e1ff" font-size="24">for-landing</text>
+    <rect x="698" y="350" width="318" height="118" rx="24" fill="#101827" stroke="#ffb86b" stroke-opacity="0.65"/>
+    <text x="736" y="404" fill="#ffb86b" font-size="30">CI</text>
+    <text x="736" y="444" fill="#d7e1ff" font-size="24">agent fixing</text>
+    <rect x="238" y="872" width="318" height="88" rx="24" fill="#101827" stroke="#8a7cff" stroke-opacity="0.65"/>
+    <text x="276" y="928" fill="#d7e1ff" font-size="26">review handled</text>
+    <rect x="698" y="872" width="318" height="88" rx="24" fill="#101827" stroke="#6fffe9" stroke-opacity="0.65"/>
+    <text x="736" y="928" fill="#d7e1ff" font-size="26">merged cleanly</text>
+  </g>
+</svg>

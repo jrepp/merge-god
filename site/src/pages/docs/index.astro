@@ -1,0 +1,105 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { base } from "../../lib/site";
+
+const entries = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
+
+const groups: Record<string, typeof entries> = {};
+for (const entry of entries) {
+  (groups[entry.data.group] ||= []).push(entry);
+}
+const groupOrder = Array.from(new Set(entries.map((e) => e.data.group)));
+
+const card = (g: string) => ({
+  "Getting Started": "Get merge-god installed and processing your first PR.",
+  "Guides": "Operate merge-god day to day — config, the dashboard, labels, and the processing pipeline.",
+  "Reference": "Worked examples and the reasoning behind the design.",
+  "Project": "Develop, test, and understand how merge-god is built.",
+}[g] ?? "Documentation.");
+---
+
+<BaseLayout
+  title="Docs · merge-god"
+  description="Documentation for merge-god — installation, configuration, usage, and development."
+>
+  <section class="section">
+    <div class="container container-narrow docs-intro">
+      <span class="eyebrow">Documentation</span>
+      <h1>Everything you need to run merge-god.</h1>
+      <p class="lead">
+        From a fresh clone to a live multi-repo dashboard in minutes. Pick a section below,
+        or start with the <a href={`${base}docs/quickstart/`}>quickstart</a>.
+      </p>
+    </div>
+
+    <div class="container">
+      {groupOrder.map((group) => (
+        <div class="doc-group">
+          <div class="doc-group-head">
+            <h2>{group}</h2>
+            <p>{card(group)}</p>
+          </div>
+          <div class="doc-cards">
+            {groups[group].map((entry) => {
+              const href = `${base}docs/${entry.id.replace(/\.md$/, "")}/`;
+              return (
+                <a class="card doc-card" href={href}>
+                  <h3>{entry.data.title}</h3>
+                  <p>{entry.data.description}</p>
+                  <span class="doc-card-link">Read →</span>
+                </a>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .docs-intro {
+    margin-bottom: var(--space-10);
+  }
+  .docs-intro h1 {
+    margin: var(--space-3) 0;
+  }
+  .doc-group {
+    margin-bottom: var(--space-10);
+  }
+  .doc-group-head h2 {
+    margin-bottom: var(--space-2);
+  }
+  .doc-group-head p {
+    margin-bottom: var(--space-5);
+    color: var(--color-text-subtle);
+  }
+  .doc-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-5);
+  }
+  .doc-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    color: var(--color-text);
+  }
+  .doc-card:hover {
+    color: var(--color-text);
+  }
+  .doc-card h3 {
+    color: var(--color-text);
+  }
+  .doc-card p {
+    color: var(--color-text-muted);
+    font-size: 0.94rem;
+    flex: 1;
+  }
+  .doc-card-link {
+    color: var(--color-primary-bright);
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+</style>

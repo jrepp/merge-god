@@ -1,0 +1,416 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { base } from "../lib/site";
+
+const repoUrl = "https://github.com/jrepp/merge-god";
+
+const features = [
+  {
+    icon: "loop",
+    title: "Continuous PR loop",
+    body: "Loops through open PRs and processes them in order — syncing with origin, resolving conflicts, responding to reviews, and fixing failing CI.",
+  },
+  {
+    icon: "context",
+    title: "Deep context gathering",
+    body: "Feeds the agent full PR metadata, comments, review threads, commit history, diffs, merge-conflict detection, and CI/CD status before it acts.",
+  },
+  {
+    icon: "label",
+    title: "Label-driven control",
+    body: "`for-landing` merges with minimal touches. `for-review` runs a two-pass review for quality, security, and best practices. No label = skipped.",
+  },
+  {
+    icon: "grid",
+    title: "Multi-repo dashboard",
+    body: "A live TUI dashboard monitors every repo at once, with color-coded status, per-repo logs, and automatic non-TUI fallback for CI.",
+  },
+  {
+    icon: "issue",
+    title: "Issue → PR automation",
+    body: "Optionally watch issues labeled `for-impl`. merge-god branches, implements, opens a PR, and links it back — all before touching existing PRs.",
+  },
+  {
+    icon: "bell",
+    title: "Structured & observable",
+    body: "JSON event logging, real-time ntfy.sh notifications, and a rich generated prompt you can inspect for every single PR.",
+  },
+];
+
+const steps = [
+  {
+    n: "01",
+    title: "Gather",
+    body: "Collects the complete state of each PR — conflicts, reviews, CI failures, diffs, and discussion — into one structured context.",
+  },
+  {
+    n: "02",
+    title: "Prompt",
+    body: "Generates a prioritized mission and a comprehensive markdown prompt with every detail the agent needs to succeed.",
+  },
+  {
+    n: "03",
+    title: "Act & merge",
+    body: "pi (via the merge-god extension) resolves conflicts, addresses reviews, fixes CI, then commits and lands the PR. Loop advances to the next one.",
+  },
+];
+
+const quickstart = `# 1. Install prerequisites
+curl -LsSf https://astral.sh/uv/install.sh | sh
+brew install gh && gh auth login
+
+# 2. Clone
+git clone https://github.com/jrepp/merge-god.git
+cd merge-god
+
+# 3. Configure your repos
+cp config.example.yaml config.yaml
+$EDITOR config.yaml
+
+# 4. Validate, then run (best inside tmux/screen)
+./dashboard.py --dry-run
+./dashboard.py`;
+---
+
+<BaseLayout>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <span class="pill"><span class="dot"></span> AI-powered PR automation</span>
+        <h1>Land pull requests <span class="gradient-text">while you sleep</span>.</h1>
+        <p class="lead">
+          merge-god loops over your open PRs and uses an AI agent to resolve conflicts,
+          address reviews, fix failing CI, and merge — across every repo, from a single
+          live dashboard.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href={`${base}docs/quickstart/`}>
+            Get started
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn btn-ghost" href={repoUrl} target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+        <ul class="hero-meta">
+          <li><span class="check"></span> TypeScript + Node 22</li>
+          <li><span class="check"></span> pi agent + gh CLI</li>
+          <li><span class="check"></span> MIT licensed</li>
+        </ul>
+      </div>
+
+      <div class="hero-visual">
+        <img
+          class="hero-img"
+          src={`${base}merge-god.svg`}
+          alt="merge-god — the multi-repo PR processing dashboard"
+          width="1254"
+          height="1254"
+          loading="eager"
+        />
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="section">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">Features</span>
+        <h2>Everything the agent needs, handled.</h2>
+        <p class="lead">merge-god does the tedious pre-work so the agent can do real work — review, resolve, and land.</p>
+      </div>
+      <div class="feature-grid">
+        {features.map((f) => (
+          <article class="card feature">
+            <span class="feature-icon" aria-hidden="true">
+              {f.icon === "loop" && (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>)}
+              {f.icon === "context" && (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>)}
+              {f.icon === "label" && (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/></svg>)}
+              {f.icon === "grid" && (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>)}
+              {f.icon === "issue" && (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>)}
+              {f.icon === "bell" && (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>)}
+            </span>
+            <h3>{f.title}</h3>
+            <p>{f.body}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="section how">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">How it works</span>
+        <h2>Gather. Prompt. Land.</h2>
+        <p class="lead">A predictable pipeline turns raw PR context into autonomous, auditable merges.</p>
+      </div>
+      <ol class="steps">
+        {steps.map((s) => (
+          <li class="card step">
+            <span class="step-n gradient-text">{s.n}</span>
+            <h3>{s.title}</h3>
+            <p>{s.body}</p>
+          </li>
+        ))}
+      </ol>
+    </div>
+  </section>
+
+  <!-- QUICKSTART -->
+  <section id="quickstart" class="section quickstart">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">Quickstart</span>
+        <h2>Running in under a minute.</h2>
+        <p class="lead">Bring <code>uv</code>, <code>gh</code>, and <code>pi</code> on your PATH — merge-god talks to it through a coordination API and the bundled <code>merge-god</code> extension.</p>
+      </div>
+      <div class="qs-shell">
+        <div class="terminal-bar">
+          <span class="tb-dot red"></span>
+          <span class="tb-dot amber"></span>
+          <span class="tb-dot green"></span>
+          <span class="tb-title">bash</span>
+        </div>
+        <pre class="terminal-body"><code>{quickstart}</code></pre>
+      </div>
+      <div class="qs-foot">
+        <a class="btn btn-ghost" href={`${base}docs/`}>Read the docs</a>
+        <a class="btn btn-ghost" href={`${base}docs/configuration/`}>Configuration reference</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="section">
+    <div class="container">
+      <div class="cta card">
+        <div>
+          <h2>Stop babysitting pull requests.</h2>
+          <p class="lead">Point merge-god at your repos, label what should land, and let the loop run.</p>
+        </div>
+        <div class="cta-actions">
+          <a class="btn btn-primary" href={`${base}docs/quickstart/`}>Get started</a>
+          <a class="btn btn-ghost" href={repoUrl} target="_blank" rel="noopener">Star on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  /* HERO */
+  .hero {
+    padding-block: var(--space-10) var(--space-8);
+  }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: var(--space-10);
+    align-items: center;
+  }
+  .pill {
+    margin-bottom: var(--space-5);
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-green);
+    box-shadow: 0 0 10px var(--color-green);
+  }
+  .hero h1 {
+    margin-bottom: var(--space-4);
+  }
+  .hero-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-6);
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-5);
+    margin-top: var(--space-6);
+    color: var(--color-text-subtle);
+    font-size: 0.9rem;
+  }
+  .hero-meta li {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .check {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--gradient-brand);
+    position: relative;
+  }
+  .check::after {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 2px;
+    width: 4px;
+    height: 8px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  /* Terminal */
+  .terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.7rem 1rem;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border-subtle);
+    border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  .tb-dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+  }
+  .tb-dot.red { background: #ff5f57; }
+  .tb-dot.amber { background: #febc2e; }
+  .tb-dot.green { background: #28c840; }
+  .tb-title {
+    margin-left: var(--space-3);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--color-text-subtle);
+  }
+  .terminal-body {
+    margin: 0;
+    border-radius: 0 0 var(--radius) var(--radius);
+    border-top: none;
+    font-size: 0.82rem;
+    background: linear-gradient(180deg, #0d0e18 0%, #0a0b13 100%);
+  }
+  .hero-visual {
+    box-shadow: var(--shadow-lg);
+    border-radius: var(--radius-lg);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero-visual::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius-lg);
+    padding: 1px;
+    background: var(--gradient-brand);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0.5;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .hero-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: var(--radius-lg);
+  }
+
+  /* Section heads */
+  .section-head {
+    max-width: 64ch;
+    margin-bottom: var(--space-8);
+  }
+  .section-head .eyebrow {
+    margin-bottom: var(--space-3);
+  }
+  .section-head h2 {
+    margin-bottom: var(--space-3);
+  }
+
+  /* Feature grid */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-5);
+  }
+  .feature h3 {
+    margin-bottom: var(--space-2);
+  }
+  .feature-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius);
+    color: var(--color-primary-bright);
+    background: var(--gradient-brand-soft);
+    border: 1px solid var(--color-border-subtle);
+    margin-bottom: var(--space-4);
+  }
+
+  /* Steps */
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-5);
+    counter-reset: step;
+  }
+  .step-n {
+    display: block;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 1.5rem;
+    margin-bottom: var(--space-3);
+  }
+  .step h3 {
+    margin-bottom: var(--space-2);
+  }
+
+  /* Quickstart */
+  .qs-shell {
+    max-width: 760px;
+    box-shadow: var(--shadow);
+  }
+  .qs-foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-5);
+  }
+
+  /* CTA */
+  .cta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    background:
+      radial-gradient(ellipse 60% 120% at 100% 0%, rgba(211, 169, 96, 0.18), transparent),
+      linear-gradient(180deg, var(--color-surface) 0%, var(--color-bg-elevated) 100%);
+  }
+  .cta h2 {
+    margin-bottom: var(--space-3);
+  }
+  .cta-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  @media (max-width: 960px) {
+    .hero-grid { grid-template-columns: 1fr; }
+    .feature-grid { grid-template-columns: repeat(2, 1fr); }
+    .steps { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .feature-grid { grid-template-columns: 1fr; }
+    .cta { flex-direction: column; align-items: flex-start; }
+  }
+</style>

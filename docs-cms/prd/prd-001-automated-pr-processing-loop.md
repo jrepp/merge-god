@@ -24,7 +24,7 @@ Automated PR Processing Loop for the merge-god PR automation system.
 - [x] Exclude draft PRs from processing
 - [x] Exclude WIP-labeled PRs
 - [x] Sync repository before processing
-- [x] Use `bob` (AI assistant wrapper) for PR fixes
+- [x] Use `pi` (via the merge-god extension + coordination API) for PR fixes
 - [x] Structured JSON logging for all operations
 - [x] Modern Python 3.12+ with uv shebang support
 

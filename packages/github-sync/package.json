@@ -1,0 +1,32 @@
+{
+  "name": "@merge-god/github-sync",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Async, multi-forge (GitHub / Gitea / Codeberg / GitLab) sync library: normalize PR + branch + CI data to SQLite for offline processing. merge-god's dedicated GitHub-integration layer.",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src", "README.md"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@gitbeaker/rest": "^42.0.0",
+    "@octokit/auth-token": "^5.1.0",
+    "@octokit/core": "^6.1.0",
+    "@octokit/graphql": "^8.1.0",
+    "@octokit/plugin-paginate-rest": "^11.1.0",
+    "@octokit/plugin-retry": "^7.1.0",
+    "@octokit/plugin-throttling": "^9.1.0",
+    "@octokit/rest": "^21.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

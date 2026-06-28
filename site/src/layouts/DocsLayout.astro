@@ -1,0 +1,282 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { base } from "../lib/site";
+
+// Build grouped, ordered sidebar navigation from the collection frontmatter.
+const entries = (await getCollection("docs")).sort(
+  (a, b) => a.data.order - b.data.order
+);
+
+const groups: Record<string, typeof entries> = {};
+for (const entry of entries) {
+  const g = entry.data.group;
+  (groups[g] ||= []).push(entry);
+}
+const groupOrder = Array.from(new Set(entries.map((e) => e.data.group)));
+
+// Active entry id from the current route.
+const path = Astro.url.pathname.replace(/\/+$/, "");
+const currentSlug = path.split("/docs/")[1] || "";
+
+const repoUrl = "https://github.com/jrepp/merge-god";
+
+interface Props {
+  title: string;
+  description?: string;
+  group?: string;
+  /** Repo-relative path to the source markdown (e.g. docs/installation.md). */
+  editPath?: string;
+}
+const { title, description, editPath } = Astro.props;
+---
+
+<BaseLayout title={`${title} · merge-god docs`} description={description}>
+  <div class="container docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation navigation">
+      <nav>
+        <a class:list={["docs-home", { active: currentSlug === "" }]} href={`${base}docs/`}>Overview</a>
+        {groupOrder.map((group) => (
+          <div class="nav-group">
+            <p class="nav-group-title">{group}</p>
+            <ul>
+              {groups[group].map((entry) => {
+                const href = `${base}docs/${entry.id.replace(/\.md$/, "")}/`;
+                const isActive = currentSlug === entry.id.replace(/\.md$/, "");
+                return (
+                  <li>
+                    <a href={href} class:list={{ active: isActive }}>{entry.data.title}</a>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+        <div class="nav-group">
+          <p class="nav-group-title">Reference</p>
+          <ul>
+            <li><a href={`${repoUrl}/blob/main/config.example.yaml`} target="_blank" rel="noopener">config.example.yaml</a></li>
+            <li><a href={`${repoUrl}/blob/main/CHANGELOG.md`} target="_blank" rel="noopener">Changelog ↗</a></li>
+            <li><a href={`${repoUrl}/blob/main/PRD.md`} target="_blank" rel="noopener">Product requirements ↗</a></li>
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <article class="docs-content">
+      <header class="docs-header">
+        <p class="eyebrow">{Astro.props.group ?? "Documentation"}</p>
+        <h1>{title}</h1>
+        {description && <p class="lead">{description}</p>}
+      </header>
+      <div class="prose">
+        <slot />
+      </div>
+      <hr class="docs-rule" />
+      <p class="docs-edit">
+        Spotted something off?
+        {editPath ? (
+          <a href={`${repoUrl}/edit/main/${editPath}`} target="_blank" rel="noopener">
+            Edit this page on GitHub ↗
+          </a>
+        ) : (
+          <a href={`${repoUrl}/tree/main/docs`} target="_blank" rel="noopener">
+            Edit these docs on GitHub ↗
+          </a>
+        )}
+      </p>
+    </article>
+  </div>
+</BaseLayout>
+
+<style>
+  .docs-shell {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: var(--space-8);
+    padding-block: var(--space-8) var(--space-10);
+    align-items: start;
+  }
+
+  .docs-sidebar {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+    padding-right: var(--space-3);
+  }
+  .docs-home {
+    display: block;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-3);
+  }
+  .docs-home:hover,
+  .docs-home.active {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .nav-group {
+    margin-bottom: var(--space-5);
+  }
+  .nav-group-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-subtle);
+    font-weight: 600;
+    padding: 0 0.6rem;
+    margin-bottom: var(--space-2);
+  }
+  .nav-group ul {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .nav-group a {
+    display: block;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    font-size: 0.92rem;
+  }
+  .nav-group a:hover {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+  .nav-group a.active {
+    color: var(--color-primary-bright);
+    background: var(--gradient-brand-soft);
+  }
+
+  .docs-content {
+    min-width: 0;
+    max-width: 760px;
+  }
+  .docs-header {
+    margin-bottom: var(--space-6);
+  }
+  .docs-header h1 {
+    margin: var(--space-2) 0 var(--space-3);
+  }
+  .docs-rule {
+    border: none;
+    border-top: 1px solid var(--color-border-subtle);
+    margin: var(--space-8) 0 var(--space-4);
+  }
+  .docs-edit {
+    font-size: 0.88rem;
+    color: var(--color-text-subtle);
+  }
+
+  @media (max-width: 960px) {
+    .docs-shell {
+      grid-template-columns: 1fr;
+    }
+    .docs-sidebar {
+      position: static;
+      max-height: none;
+      border-bottom: 1px solid var(--color-border-subtle);
+      padding-bottom: var(--space-5);
+    }
+  }
+</style>
+
+<style is:global>
+  /* Long-form prose styling for rendered markdown */
+  .prose {
+    color: var(--color-text-muted);
+    font-size: 1.02rem;
+    line-height: 1.7;
+  }
+  .prose h2 {
+    color: var(--color-text);
+    margin: var(--space-8) 0 var(--space-3);
+    padding-top: var(--space-2);
+  }
+  .prose h3 {
+    color: var(--color-text);
+    margin: var(--space-6) 0 var(--space-2);
+  }
+  .prose h4 {
+    color: var(--color-text);
+    margin: var(--space-5) 0 var(--space-2);
+  }
+  .prose p,
+  .prose ul,
+  .prose ol {
+    margin: 0 0 var(--space-4);
+  }
+  .prose ul,
+  .prose ol {
+    padding-left: 1.4rem;
+  }
+  .prose ul {
+    list-style: disc;
+  }
+  .prose ol {
+    list-style: decimal;
+  }
+  .prose li {
+    margin-bottom: var(--space-2);
+  }
+  .prose li::marker {
+    color: var(--color-primary-bright);
+  }
+  .prose a {
+    color: var(--color-primary-bright);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: rgba(211, 169, 96, 0.4);
+  }
+  .prose a:hover {
+    color: var(--color-text);
+  }
+  .prose strong {
+    color: var(--color-text);
+    font-weight: 600;
+  }
+  .prose blockquote {
+    border-left: 3px solid var(--color-primary);
+    padding: var(--space-1) 0 var(--space-1) var(--space-4);
+    margin: 0 0 var(--space-4);
+    color: var(--color-text-muted);
+    background: var(--gradient-brand-soft);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .prose hr {
+    border: none;
+    border-top: 1px solid var(--color-border-subtle);
+    margin: var(--space-6) 0;
+  }
+  .prose table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 var(--space-5);
+    font-size: 0.94rem;
+  }
+  .prose th,
+  .prose td {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+  .prose th {
+    color: var(--color-text);
+    font-weight: 600;
+  }
+  .prose :not(pre) > code {
+    color: var(--color-primary-bright);
+  }
+  .prose pre {
+    margin: 0 0 var(--space-5);
+  }
+  .prose img {
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border-subtle);
+    margin: var(--space-4) 0;
+  }
+</style>
