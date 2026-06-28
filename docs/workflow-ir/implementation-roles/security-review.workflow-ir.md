@@ -1,3 +1,10 @@
+---
+title: Security Review WorkflowIR
+description: WorkflowIR reference for security review.
+group: WorkflowIR References
+order: 50
+---
+
 # Security Review WorkflowIR
 
 **Canonical source**: `internal/agents/adversarial-reviews/security_review.go`

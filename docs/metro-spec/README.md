@@ -1,3 +1,10 @@
+---
+title: Metro Spec References
+description: Index of vendored Metro workflow, WorkflowIR, and prompt references.
+group: Metro References
+order: 1
+---
+
 # Metro Spec References
 
 This directory contains shared reference copies of Metro workflow, WorkflowIR,

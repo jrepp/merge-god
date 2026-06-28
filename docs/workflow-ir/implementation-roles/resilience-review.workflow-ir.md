@@ -1,3 +1,10 @@
+---
+title: Resilience Review WorkflowIR
+description: WorkflowIR reference for resilience review.
+group: WorkflowIR References
+order: 70
+---
+
 # Resilience Review WorkflowIR
 
 **Canonical source**: `internal/agents/adversarial-reviews/resilience_review.go`

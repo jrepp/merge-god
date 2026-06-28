@@ -1,3 +1,10 @@
+---
+title: WorkflowIR Implementer Guide
+description: Plain-language guide for reading and projecting WorkflowIR.
+group: Metro References
+order: 30
+---
+
 # WorkflowIR Implementer Guide
 
 **Status**: Draft companion guide

@@ -1,3 +1,10 @@
+---
+title: Workflow Quick Reference
+description: Condensed reference for Metro workflow authoring fields and validation rules.
+group: Metro References
+order: 20
+---
+
 # Workflow Quick Reference
 
 Supplements [WORKFLOW-SPEC.md](WORKFLOW-SPEC.md). Start with

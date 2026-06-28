@@ -1,3 +1,10 @@
+---
+title: WorkflowIR Specification v1
+description: Normative reference for the WorkflowIR graph contract.
+group: Metro References
+order: 25
+---
+
 # WorkflowIR Specification v1
 
 **Date**: 2026-06-04

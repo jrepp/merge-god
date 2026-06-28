@@ -1,3 +1,10 @@
+---
+title: Requirements Architecture WorkflowIR
+description: WorkflowIR reference for requirements architecture.
+group: WorkflowIR References
+order: 20
+---
+
 # Requirements Architecture WorkflowIR
 
 **Canonical source**: `internal/agents/implementations/requirements_architecture.go`

@@ -1,3 +1,10 @@
+---
+title: Implementation Role WorkflowIR Index
+description: Index of standalone WorkflowIR documents for implementation roles.
+group: WorkflowIR References
+order: 1
+---
+
 # Implementation Role WorkflowIR Index
 
 This directory encodes each implementation role as a standalone WorkflowIR

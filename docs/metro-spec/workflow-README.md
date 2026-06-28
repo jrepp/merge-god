@@ -1,3 +1,10 @@
+---
+title: Workflow Documentation Hub
+description: Overview of Metro workflow authoring and WorkflowIR reference layers.
+group: Metro References
+order: 5
+---
+
 # Workflow Documentation Hub
 
 This directory is the entry point for Metro/Meridian workflow documentation.

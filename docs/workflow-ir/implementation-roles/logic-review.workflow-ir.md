@@ -1,3 +1,10 @@
+---
+title: Logic Review WorkflowIR
+description: WorkflowIR reference for logic review.
+group: WorkflowIR References
+order: 60
+---
+
 # Logic Review WorkflowIR
 
 **Canonical source**: `internal/agents/adversarial-reviews/logic_review.go`

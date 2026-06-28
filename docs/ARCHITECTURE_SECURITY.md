@@ -1,3 +1,10 @@
+---
+title: Architecture And Security Scanning
+description: Architecture and security scanning notes for WorkflowIR extraction.
+group: Reference
+order: 60
+---
+
 # Architecture And Security Scanning
 
 This document captures architecture and security specifics using the Go implementation as the

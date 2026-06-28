@@ -1,3 +1,10 @@
+---
+title: Workflow Specification v1
+description: Reference copy of the Metro workflow authoring specification.
+group: Metro References
+order: 15
+---
+
 # Workflow Specification v1
 
 **Date**: 2026-03-09

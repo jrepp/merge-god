@@ -1,3 +1,10 @@
+---
+title: Adversarial Review Coordination WorkflowIR
+description: WorkflowIR reference for coordinating adversarial review roles.
+group: WorkflowIR References
+order: 40
+---
+
 # Adversarial Review Coordination WorkflowIR
 
 **Canonical source**: `internal/agents/adversarial-reviews/adversarial_review_coordination.go`

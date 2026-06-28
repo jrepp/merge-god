@@ -1,3 +1,10 @@
+---
+title: Metro Prompt Specification v1
+description: Reference copy of the Metro prompt authoring specification.
+group: Metro References
+order: 10
+---
+
 # Metro Prompt Specification v1
 
 **Date**: 2026-04-03

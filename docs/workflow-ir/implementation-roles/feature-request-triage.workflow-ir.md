@@ -1,3 +1,10 @@
+---
+title: Feature Request Triage WorkflowIR
+description: WorkflowIR reference for feature request triage.
+group: WorkflowIR References
+order: 10
+---
+
 # Feature Request Triage WorkflowIR
 
 **Canonical source**: `internal/agents/implementations/feature_request_triage_prime.go`
