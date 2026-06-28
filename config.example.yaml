@@ -4,10 +4,10 @@
 # Copy this file to config.yaml and customize for your setup.
 #
 # Usage:
-#   ./dashboard.py config.yaml
+#   npx tsx dashboard.ts config.yaml
 #
 # Or specify a different config file:
-#   ./dashboard.py /path/to/my-config.yaml
+#   npx tsx dashboard.ts /path/to/my-config.yaml
 
 # List of repositories to monitor and process
 repos:

@@ -42,7 +42,7 @@ tmux new-session -d -s "$SESSION_NAME" -x 120 -y 40
 
 # Launch dashboard in the session
 echo -e "${GREEN}Launching dashboard...${NC}"
-tmux send-keys -t "$SESSION_NAME" "./dashboard.py config.yaml" C-m
+tmux send-keys -t "$SESSION_NAME" "npx tsx dashboard.ts config.yaml" Cm
 
 # Wait for initial startup
 sleep 2

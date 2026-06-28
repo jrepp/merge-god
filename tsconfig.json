@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": false,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "types": ["node"]
+  },
+  "include": [
+    "*.ts",
+    "merge_god/**/*.ts",
+    "agents/**/*.ts",
+    "tests/**/*.ts",
+    "packages/github-sync/src/**/*.ts",
+    "packages/github-sync/tests/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".venv", "site", "pi/extensions", "packages/*/node_modules"]
+}

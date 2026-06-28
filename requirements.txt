@@ -1,4 +1,0 @@
-# State tracking system dependencies
-PyGithub>=2.1.0
-rich>=13.0.0
-pyyaml>=6.0

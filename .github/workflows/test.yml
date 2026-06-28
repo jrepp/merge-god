@@ -18,19 +18,19 @@ permissions:
 
 jobs:
   test:
-    name: pytest
+    name: node:test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          enable-cache: true
-          python-version: '3.13'
+          node-version: '22'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: npm ci
 
-      - name: Run tests
-        run: uv run pytest tests/ -v
+      - name: Run CI
+        run: npm run ci

@@ -1,0 +1,136 @@
+---
+import Logo from "./Logo.astro";
+import { base } from "../lib/site";
+const repoUrl = "https://github.com/jrepp/merge-god";
+const year = new Date().getFullYear();
+
+const links = {
+  Docs: [
+    { href: `${base}docs/installation/`, label: "Installation" },
+    { href: `${base}docs/quickstart/`, label: "Quickstart" },
+    { href: `${base}docs/configuration/`, label: "Configuration" },
+    { href: `${base}docs/`, label: "All docs" },
+  ],
+  Project: [
+    { href: `${repoUrl}`, label: "GitHub" },
+    { href: `${repoUrl}/issues`, label: "Issues" },
+    { href: `${repoUrl}/blob/main/CHANGELOG.md`, label: "Changelog" },
+  ],
+};
+---
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a href={`${base}`} class="brand">
+        <Logo size={28} />
+        <span>merge<span class="gradient-text">-god</span></span>
+      </a>
+      <p class="footer-tag">Automated AI-driven PR processing &amp; merging.</p>
+    </div>
+
+    {
+      Object.entries(links).map(([heading, items]) => (
+        <nav class="footer-col" aria-label={heading}>
+          <h4>{heading}</h4>
+          <ul>
+            {items.map((item) => (
+              <li>
+                <a href={item.href}>{item.label}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      ))
+    }
+  </div>
+
+  <div class="container footer-bottom">
+    <p>&copy; {year} merge-god contributors. Released under the MIT License.</p>
+    <p class="footer-meta">
+      <a href={repoUrl}>Source</a> · <a href={`${base}docs/`}>Docs</a>
+    </p>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    margin-top: var(--space-12);
+    border-top: 1px solid var(--color-border-subtle);
+    background: var(--color-bg-elevated);
+    padding-block: var(--space-8) var(--space-6);
+  }
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: var(--space-8);
+    padding-bottom: var(--space-8);
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    color: var(--color-text);
+    font-weight: 700;
+    font-size: 1.05rem;
+  }
+  .brand:hover {
+    color: var(--color-text);
+  }
+
+  .footer-tag {
+    margin-top: var(--space-3);
+    font-size: 0.92rem;
+    color: var(--color-text-subtle);
+    max-width: 32ch;
+  }
+
+  .footer-col h4 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-subtle);
+    margin-bottom: var(--space-3);
+    font-weight: 600;
+  }
+
+  .footer-col ul {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .footer-col a {
+    color: var(--color-text-muted);
+    font-size: 0.92rem;
+  }
+  .footer-col a:hover {
+    color: var(--color-text);
+  }
+
+  .footer-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    padding-top: var(--space-5);
+    border-top: 1px solid var(--color-border-subtle);
+    font-size: 0.88rem;
+    color: var(--color-text-subtle);
+  }
+  .footer-meta a {
+    color: var(--color-text-subtle);
+  }
+  .footer-meta a:hover {
+    color: var(--color-text);
+  }
+
+  @media (max-width: 720px) {
+    .footer-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+</style>

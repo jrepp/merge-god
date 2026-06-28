@@ -7,7 +7,26 @@ on:
     branches: [main]
 
 jobs:
-  # Run general file checks
+  # TypeScript typecheck (the TS analogue of the former mypy job)
+  typecheck:
+    name: TypeScript Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tsc --noEmit
+        run: npx tsc --noEmit
+
+  # Run general file-check hooks (trailing whitespace, EOF, YAML, JSON, etc.)
   pre-commit-checks:
     name: Pre-commit Checks
     runs-on: ubuntu-latest
@@ -19,112 +38,35 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run pre-commit hooks (file checks only)
-        uses: pre-commit/action@v3.0.0
-        with:
-          extra_args: --hook-stage manual trailing-whitespace end-of-file-fixer check-yaml check-added-large-files check-json check-toml check-merge-conflict check-case-conflict detect-private-key mixed-line-ending
+      - name: Install pre-commit
+        run: python -m pip install pre-commit
 
-  # Run isort import sorting check
-  isort:
-    name: isort
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install isort
-        run: pip install isort==5.13.2
-
-      - name: Run isort check
-        run: isort --profile black --check-only --diff .
-
-  # Run Ruff linting
-  ruff-lint:
-    name: Ruff Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Ruff
-        run: pip install ruff==0.1.15
-
-      - name: Run Ruff linting
-        run: ruff check .
-
-  # Run Ruff formatting check
-  ruff-format:
-    name: Ruff Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Ruff
-        run: pip install ruff==0.1.15
-
-      - name: Run Ruff format check
-        run: ruff format --check .
-
-  # Run mypy type checking
-  mypy:
-    name: mypy Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
+      - name: Run pre-commit file-check hooks on all files
         run: |
-          pip install mypy==1.8.0
-          pip install types-PyYAML>=6.0.0
+          for hook in trailing-whitespace end-of-file-fixer check-yaml \
+                      check-added-large-files check-json check-toml \
+                      check-merge-conflict check-case-conflict \
+                      detect-private-key mixed-line-ending; do
+            echo "::group::pre-commit: $hook"
+            pre-commit run "$hook" --all-files
+            echo "::endgroup::"
+          done
 
-      - name: Run mypy
-        run: mypy --strict-optional --warn-return-any --exclude '^(test_.*\.py|.*_test\.py)$' .
-
-  # Run Bandit security checks
-  bandit:
-    name: Bandit Security
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Bandit
-        run: pip install 'bandit[toml]==1.7.6'
-
-      - name: Run Bandit
-        run: bandit -c pyproject.toml -r . --exclude './test_*.py'
-
-  # Run Markdown linting
+  # Run Markdown linting using the same dependency/version as local checks.
   markdownlint:
     name: Markdown Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run markdownlint
-        uses: nosborn/github-action-markdown-cli@v3.3.0
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          files: .
-          config_file: .markdownlintrc
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run markdownlint
+        run: npm run markdownlint -- --ignore node_modules --ignore .venv --ignore site '**/*.md'
