@@ -423,6 +423,8 @@ function cmdStatus(g: GlobalArgs): number {
         logText(`  Cached PRs: ${prCount}`, "info");
         const sessionCount = countRows(db, "agent_sessions");
         logText(`  Agent sessions: ${sessionCount}`, "info");
+        const runCount = countRows(db, "orchestration_runs");
+        logText(`  Orchestration runs: ${runCount}`, "info");
         if (sessionCount > 0) {
           const row = db
             .prepare(

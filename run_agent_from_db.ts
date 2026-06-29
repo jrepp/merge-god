@@ -32,6 +32,8 @@ import {
 } from "./agents/__init__";
 import { SyncStore } from "@merge-god/github-sync";
 import { AppStore } from "./app_store";
+import { TrajectoryRuntime } from "./trajectory_runtime";
+import type { CompatibilityTrajectoryIds } from "./trajectory";
 
 function logJson(eventType: string, data: Record<string, unknown>): void {
   const logEntry = {
@@ -103,6 +105,14 @@ function disableNotification(): boolean {
   return true;
 }
 
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
 export async function runAgentFromDb(
   dbPath: string,
   repoName: string,
@@ -144,6 +154,7 @@ export async function runAgentFromDb(
 
   const syncStore = new SyncStore(dbPath);
   const appStore = new AppStore(dbPath);
+  const trajectoryRuntime = new TrajectoryRuntime(appStore);
   try {
     await syncStore.initialize();
   } catch (e) {
@@ -261,6 +272,7 @@ export async function runAgentFromDb(
   }
 
   let sessionId: string | null = randomUUID();
+  let trajectoryIds: CompatibilityTrajectoryIds | null = null;
 
   try {
     appStore.createAgentSession(repoName, prNumber, sessionId, mode, model, "1.0");
@@ -275,6 +287,37 @@ export async function runAgentFromDb(
       hint: "Session telemetry will not be recorded",
     });
     sessionId = null;
+  }
+
+  try {
+    const workflow = trajectoryRuntime.startPrAgentWorkflow({
+      repo_name: repoName,
+      repo_path: repoPath ?? process.cwd(),
+      pr_number: prNumber,
+      mode,
+      title: stringValue(prDetails["title"]),
+      url: stringValue(prContextDict["url"]),
+      labels: stringArray(prDetails["labels"]),
+      base_ref: stringValue(prDetails["baseRefName"]) ?? stringValue(prDetails["base_branch"]),
+      head_ref: stringValue(prDetails["headRefName"]) ?? stringValue(prDetails["head_branch"]),
+      current_sha: stringValue(prDetails["head_sha"]),
+      session_id: sessionId,
+      model,
+    });
+    trajectoryIds = workflow.ids;
+    logJson("agent_from_db", {
+      action: "trajectory_created",
+      run_id: trajectoryIds.run_id,
+      workflow_id: workflow.workflow.id,
+      work_item_id: trajectoryIds.work_item_id,
+      activity_id: trajectoryIds.activity_id,
+    });
+  } catch (e) {
+    logJson("agent_from_db", {
+      action: "warning",
+      warning: `Failed to create trajectory record: ${String(e)}`,
+      hint: "Agent processing will continue without durable RFC-006 trajectory state",
+    });
   }
 
   const agent = new PRAgent(client, {
@@ -315,6 +358,24 @@ export async function runAgentFromDb(
       }
     }
 
+    if (trajectoryIds) {
+      try {
+        trajectoryRuntime.completePrAgentWorkflow(
+          trajectoryIds,
+          {
+            success: result.success,
+            summary: `Agent completed with ${result.actions.length} action(s)`,
+            error_message: result.success ? null : "Agent reported failure",
+          },
+        );
+      } catch (e) {
+        logJson("agent_from_db", {
+          action: "warning",
+          warning: `Failed to complete trajectory record: ${String(e)}`,
+        });
+      }
+    }
+
     logJson("agent_from_db", {
       action: "complete",
       pr_number: prNumber,
@@ -338,6 +399,24 @@ export async function runAgentFromDb(
         logJson("agent_from_db", {
           action: "warning",
           warning: `Failed to record error in session: ${String(dbError)}`,
+        });
+      }
+    }
+
+    if (trajectoryIds) {
+      try {
+        trajectoryRuntime.completePrAgentWorkflow(
+          trajectoryIds,
+          {
+            success: false,
+            summary: "Agent threw before completion",
+            error_message: String(e),
+          },
+        );
+      } catch (dbError) {
+        logJson("agent_from_db", {
+          action: "warning",
+          warning: `Failed to complete trajectory after error: ${String(dbError)}`,
         });
       }
     }
