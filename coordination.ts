@@ -11,7 +11,7 @@
  * `bob --json <prompt>` subprocess contract.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync } from "node:fs";
@@ -401,16 +401,52 @@ export async function runPiAgent(
       ext,
       instruction,
     ];
-    const proc = spawnSync("pi", args, {
+    const proc = spawn("pi", args, {
       cwd: repoPath,
       env,
-      encoding: "utf8",
-      timeout: timeout * 1000,
+      stdio: ["ignore", "pipe", "pipe"],
     });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.setEncoding("utf8");
+    proc.stderr.setEncoding("utf8");
+    proc.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    proc.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | null = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGTERM");
+      killTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
+    }, timeout * 1000);
+
+    const exit = await new Promise<{ code: number; error?: unknown }>((resolve) => {
+      let settled = false;
+      const settle = (result: { code: number; error?: unknown }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        resolve(result);
+      };
+      proc.on("error", (error) => settle({ code: -1, error }));
+      proc.on("close", (code) => settle({ code: code ?? -1 }));
+    });
+    if (timedOut) {
+      stderr += stderr.endsWith("\n") || stderr.length === 0 ? "pi process timed out\n" : "\npi process timed out\n";
+    }
+    if (exit.error) {
+      stderr += stderr.endsWith("\n") || stderr.length === 0 ? String(exit.error) : `\n${String(exit.error)}`;
+    }
     return {
-      returncode: proc.status ?? -1,
-      stdout: proc.stdout ?? "",
-      stderr: proc.stderr ?? "",
+      returncode: exit.code,
+      stdout,
+      stderr,
       result: server.getResult(),
     };
   } finally {
