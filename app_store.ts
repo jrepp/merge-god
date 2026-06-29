@@ -10,7 +10,21 @@
  * release it.
  */
 
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import type {
+  ActivityRecord,
+  ActivitySessionRecord,
+  ActivityType,
+  CompatibilityTrajectoryIds,
+  CompatibilityTrajectoryInput,
+  JsonObject,
+  OrchestrationRunRecord,
+  TrajectoryEventRecord,
+  TrajectoryState,
+  WorkItemRecord,
+  WorksetRecord,
+} from "./trajectory";
 
 export class DatabaseError extends Error {}
 
@@ -22,6 +36,32 @@ function nowIso(): string {
 /** Encode a boolean as a SQLite integer (1/0). */
 function b2i(value: boolean): number {
   return value ? 1 : 0;
+}
+
+function stringifyJson(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+function parseJsonObject(value: unknown): JsonObject {
+  if (typeof value !== "string" || value.length === 0) return {};
+  const parsed = JSON.parse(value) as unknown;
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? (parsed as JsonObject)
+    : {};
+}
+
+function parseJsonArray<T = unknown>(value: unknown): T[] {
+  if (typeof value !== "string" || value.length === 0) return [];
+  const parsed = JSON.parse(value) as unknown;
+  return Array.isArray(parsed) ? (parsed as T[]) : [];
+}
+
+function strOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function numOrNull(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
 }
 
 /**
@@ -189,6 +229,259 @@ export class AppStore {
 
       CREATE INDEX IF NOT EXISTS idx_agent_file_ops_path
       ON agent_file_operations(file_path, operation_type);
+
+      CREATE TABLE IF NOT EXISTS orchestration_runs (
+          run_id TEXT PRIMARY KEY,
+          repo_name TEXT NOT NULL,
+          repo_path TEXT,
+          base_branch TEXT,
+          strategy_version TEXT NOT NULL,
+          workflow_ir_refs TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL,
+          current_phase TEXT NOT NULL,
+          started_at TIMESTAMP NOT NULL,
+          heartbeat_at TIMESTAMP,
+          completed_at TIMESTAMP,
+          objective TEXT,
+          operator_policy TEXT NOT NULL DEFAULT '{}',
+          model_policy TEXT NOT NULL DEFAULT '{}',
+          metadata TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_orchestration_runs_repo_status
+      ON orchestration_runs(repo_name, status, started_at DESC);
+
+      CREATE TABLE IF NOT EXISTS worksets (
+          workset_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          selection_reason TEXT,
+          status TEXT NOT NULL,
+          approval_state TEXT NOT NULL,
+          strategy TEXT,
+          created_at TIMESTAMP NOT NULL,
+          updated_at TIMESTAMP NOT NULL,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_worksets_run_status
+      ON worksets(run_id, status, created_at);
+
+      CREATE TABLE IF NOT EXISTS work_items (
+          work_item_id TEXT PRIMARY KEY,
+          workset_id TEXT NOT NULL,
+          source_kind TEXT NOT NULL,
+          repo_name TEXT NOT NULL,
+          number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          url TEXT,
+          mode TEXT,
+          labels TEXT NOT NULL DEFAULT '[]',
+          base_ref TEXT,
+          head_ref TEXT,
+          start_sha TEXT,
+          current_sha TEXT,
+          status TEXT NOT NULL,
+          disposition_setting TEXT,
+          computed_disposition TEXT,
+          priority INTEGER,
+          model_tier TEXT,
+          next_action TEXT,
+          blockers TEXT NOT NULL DEFAULT '[]',
+          risk_signals TEXT NOT NULL DEFAULT '{}',
+          context_pack_refs TEXT NOT NULL DEFAULT '[]',
+          created_at TIMESTAMP NOT NULL,
+          updated_at TIMESTAMP NOT NULL,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (workset_id) REFERENCES worksets(workset_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_work_items_workset_status
+      ON work_items(workset_id, status, priority);
+
+      CREATE INDEX IF NOT EXISTS idx_work_items_source
+      ON work_items(repo_name, source_kind, number);
+
+      CREATE TABLE IF NOT EXISTS activities (
+          activity_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workset_id TEXT,
+          work_item_id TEXT,
+          parent_activity_id TEXT,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          model_profile TEXT NOT NULL DEFAULT '{}',
+          tool_policy TEXT NOT NULL DEFAULT '{}',
+          prompt_runtime_ref TEXT,
+          context_pack_refs TEXT NOT NULL DEFAULT '[]',
+          output_summary_ref TEXT,
+          evidence_refs TEXT NOT NULL DEFAULT '[]',
+          created_at TIMESTAMP NOT NULL,
+          updated_at TIMESTAMP NOT NULL,
+          completed_at TIMESTAMP,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (workset_id) REFERENCES worksets(workset_id),
+          FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+          FOREIGN KEY (parent_activity_id) REFERENCES activities(activity_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_activities_run_status
+      ON activities(run_id, status, created_at);
+
+      CREATE INDEX IF NOT EXISTS idx_activities_work_item
+      ON activities(work_item_id, type, status);
+
+      CREATE TABLE IF NOT EXISTS activity_sessions (
+          activity_session_id TEXT PRIMARY KEY,
+          activity_id TEXT NOT NULL,
+          session_id TEXT,
+          model TEXT,
+          prompt_runtime_ref TEXT,
+          prompt_hash TEXT,
+          tool_set TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL,
+          started_at TIMESTAMP NOT NULL,
+          completed_at TIMESTAMP,
+          input_tokens INTEGER DEFAULT 0,
+          output_tokens INTEGER DEFAULT 0,
+          total_tokens INTEGER DEFAULT 0,
+          estimated_cost REAL DEFAULT 0.0,
+          output_digest TEXT,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id),
+          FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_activity_sessions_activity
+      ON activity_sessions(activity_id, started_at);
+
+      CREATE INDEX IF NOT EXISTS idx_activity_sessions_session
+      ON activity_sessions(session_id);
+
+      CREATE TABLE IF NOT EXISTS trajectory_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id TEXT NOT NULL UNIQUE,
+          run_id TEXT NOT NULL,
+          workset_id TEXT,
+          work_item_id TEXT,
+          activity_id TEXT,
+          activity_session_id TEXT,
+          event_type TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          payload TEXT NOT NULL DEFAULT '{}',
+          created_at TIMESTAMP NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (workset_id) REFERENCES worksets(workset_id),
+          FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id),
+          FOREIGN KEY (activity_session_id) REFERENCES activity_sessions(activity_session_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_trajectory_events_run
+      ON trajectory_events(run_id, id);
+
+      CREATE TABLE IF NOT EXISTS context_captures (
+          context_capture_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          work_item_id TEXT,
+          capture_reason TEXT NOT NULL,
+          source_refs TEXT NOT NULL DEFAULT '{}',
+          freshness TEXT NOT NULL DEFAULT '{}',
+          content_digest TEXT,
+          artifact_ref TEXT,
+          captured_at TIMESTAMP NOT NULL,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS context_packs (
+          context_pack_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          work_item_id TEXT,
+          activity_id TEXT,
+          kind TEXT NOT NULL,
+          version TEXT NOT NULL,
+          schema_ref TEXT,
+          content_digest TEXT,
+          token_estimate INTEGER DEFAULT 0,
+          freshness TEXT NOT NULL DEFAULT '{}',
+          artifact_ref TEXT,
+          source_entity_refs TEXT NOT NULL DEFAULT '{}',
+          created_at TIMESTAMP NOT NULL,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_context_packs_entity
+      ON context_packs(run_id, work_item_id, kind, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS guardrail_checks (
+          guardrail_check_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workset_id TEXT,
+          work_item_id TEXT,
+          activity_id TEXT,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          policy_version TEXT,
+          result TEXT NOT NULL DEFAULT '{}',
+          evidence_refs TEXT NOT NULL DEFAULT '[]',
+          checked_at TIMESTAMP NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (workset_id) REFERENCES worksets(workset_id),
+          FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_guardrail_checks_entity
+      ON guardrail_checks(run_id, work_item_id, activity_id, checked_at DESC);
+
+      CREATE TABLE IF NOT EXISTS evidence_artifacts (
+          evidence_artifact_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          workset_id TEXT,
+          work_item_id TEXT,
+          activity_id TEXT,
+          kind TEXT NOT NULL,
+          summary TEXT,
+          content_digest TEXT,
+          artifact_ref TEXT,
+          created_at TIMESTAMP NOT NULL,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (workset_id) REFERENCES worksets(workset_id),
+          FOREIGN KEY (work_item_id) REFERENCES work_items(work_item_id),
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_evidence_artifacts_entity
+      ON evidence_artifacts(run_id, work_item_id, activity_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS tool_invocations (
+          tool_invocation_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          activity_id TEXT,
+          activity_session_id TEXT,
+          tool_ref TEXT NOT NULL,
+          inputs TEXT NOT NULL DEFAULT '{}',
+          outputs TEXT NOT NULL DEFAULT '{}',
+          error TEXT,
+          artifact_refs TEXT NOT NULL DEFAULT '[]',
+          started_at TIMESTAMP NOT NULL,
+          completed_at TIMESTAMP,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id),
+          FOREIGN KEY (activity_session_id) REFERENCES activity_sessions(activity_session_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tool_invocations_activity
+      ON tool_invocations(activity_id, started_at);
     `);
   }
 
@@ -671,5 +964,530 @@ export class AppStore {
     session["file_operations"] = fileOps;
 
     return session;
+  }
+
+  // ------------------------------------------------------------------
+  // RFC-006 Trajectory Operations
+  // ------------------------------------------------------------------
+
+  /** Create a minimal durable trajectory around the current one-shot PR path. */
+  createCompatibilityTrajectoryForPr(
+    input: CompatibilityTrajectoryInput,
+  ): CompatibilityTrajectoryIds {
+    if (!input.repo_name) throw new DatabaseError("repo_name is required");
+    if (!Number.isInteger(input.pr_number) || input.pr_number <= 0) {
+      throw new DatabaseError("pr_number must be a positive integer");
+    }
+
+    const runId = randomUUID();
+    const worksetId = randomUUID();
+    const workItemId = randomUUID();
+    const activityId = randomUUID();
+    const activitySessionId = input.session_id || input.model ? randomUUID() : null;
+    const now = nowIso();
+    const title = input.title ?? `PR #${input.pr_number}`;
+    const activityType: ActivityType = input.mode === "for-review" ? "review_workflow" : "merge_gate";
+
+    try {
+      this.db.exec("BEGIN");
+      this.db
+        .prepare(
+          `
+          INSERT INTO orchestration_runs (
+              run_id, repo_name, repo_path, base_branch, strategy_version,
+              workflow_ir_refs, status, current_phase, started_at, heartbeat_at,
+              objective, operator_policy, model_policy, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          runId,
+          input.repo_name,
+          input.repo_path ?? null,
+          input.base_ref ?? null,
+          "compatibility-v1",
+          stringifyJson([]),
+          "executing",
+          "agent_processing",
+          now,
+          now,
+          `Process ${input.repo_name} PR #${input.pr_number}`,
+          stringifyJson({ mode: input.mode }),
+          stringifyJson({ model: input.model ?? null }),
+          stringifyJson({ compatibility_path: "run_agent_from_db" }),
+        );
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO worksets (
+              workset_id, run_id, kind, selection_reason, status,
+              approval_state, strategy, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          worksetId,
+          runId,
+          "pr_queue",
+          "Compatibility workset for a single PR agent invocation",
+          "active",
+          "not_required",
+          "one-shot-pr-agent",
+          now,
+          now,
+          stringifyJson({ source: "compatibility" }),
+        );
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO work_items (
+              work_item_id, workset_id, source_kind, repo_name, number, title,
+              url, mode, labels, base_ref, head_ref, start_sha, current_sha,
+              status, priority, model_tier, next_action, blockers,
+              risk_signals, context_pack_refs, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          workItemId,
+          worksetId,
+          "pull_request",
+          input.repo_name,
+          input.pr_number,
+          title,
+          input.url ?? null,
+          input.mode,
+          stringifyJson(input.labels ?? []),
+          input.base_ref ?? null,
+          input.head_ref ?? null,
+          input.current_sha ?? null,
+          input.current_sha ?? null,
+          "running",
+          0,
+          input.model ?? null,
+          "run_agent",
+          stringifyJson([]),
+          stringifyJson({ compatibility_path: true }),
+          stringifyJson([]),
+          now,
+          now,
+          stringifyJson({ source: "run_agent_from_db" }),
+        );
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO activities (
+              activity_id, run_id, workset_id, work_item_id, type, status,
+              model_profile, tool_policy, prompt_runtime_ref,
+              context_pack_refs, evidence_refs, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          activityId,
+          runId,
+          worksetId,
+          workItemId,
+          activityType,
+          "running",
+          stringifyJson({ model: input.model ?? null }),
+          stringifyJson({ compatibility_path: true }),
+          null,
+          stringifyJson([]),
+          stringifyJson([]),
+          now,
+          now,
+          stringifyJson({ mode: input.mode }),
+        );
+
+      if (activitySessionId) {
+        this.db
+          .prepare(
+            `
+            INSERT INTO activity_sessions (
+                activity_session_id, activity_id, session_id, model, status,
+                started_at, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            `,
+          )
+          .run(
+            activitySessionId,
+            activityId,
+            input.session_id ?? null,
+            input.model ?? null,
+            "running",
+            now,
+            stringifyJson({ compatibility_path: true }),
+          );
+      }
+
+      this.insertTrajectoryEvent({
+        run_id: runId,
+        workset_id: worksetId,
+        work_item_id: workItemId,
+        activity_id: activityId,
+        activity_session_id: activitySessionId,
+        event_type: "compatibility_trajectory.started",
+        actor: "merge-god",
+        payload: {
+          repo_name: input.repo_name,
+          pr_number: input.pr_number,
+          mode: input.mode,
+          session_id: input.session_id ?? null,
+        },
+      });
+
+      this.db.exec("COMMIT");
+      return {
+        run_id: runId,
+        workset_id: worksetId,
+        work_item_id: workItemId,
+        activity_id: activityId,
+        activity_session_id: activitySessionId,
+      };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to create compatibility trajectory: ${String(e)}`);
+    }
+  }
+
+  /** Mark a compatibility trajectory complete and append its terminal event. */
+  completeCompatibilityTrajectory(
+    ids: CompatibilityTrajectoryIds,
+    success: boolean,
+    summary: string | null = null,
+    errorMessage: string | null = null,
+  ): void {
+    const now = nowIso();
+    const runStatus = success ? "completed" : "failed";
+    const activityStatus = success ? "succeeded" : "failed";
+    const workItemStatus = success ? "validated" : "failed";
+
+    try {
+      this.db.exec("BEGIN");
+      this.db
+        .prepare(
+          `
+          UPDATE activity_sessions
+          SET status = ?, completed_at = ?, metadata = ?
+          WHERE activity_session_id = ?
+          `,
+        )
+        .run(
+          runStatus,
+          now,
+          stringifyJson({ summary, error_message: errorMessage }),
+          ids.activity_session_id ?? "",
+        );
+
+      this.db
+        .prepare(
+          `
+          UPDATE activities
+          SET status = ?, output_summary_ref = ?, completed_at = ?, updated_at = ?
+          WHERE activity_id = ?
+          `,
+        )
+        .run(activityStatus, summary, now, now, ids.activity_id);
+
+      this.db
+        .prepare(
+          `
+          UPDATE work_items
+          SET status = ?, next_action = ?, updated_at = ?
+          WHERE work_item_id = ?
+          `,
+        )
+        .run(workItemStatus, success ? "operator_handoff" : "inspect_failure", now, ids.work_item_id);
+
+      this.db
+        .prepare(
+          `
+          UPDATE worksets
+          SET status = ?, updated_at = ?
+          WHERE workset_id = ?
+          `,
+        )
+        .run(success ? "completed" : "blocked", now, ids.workset_id);
+
+      this.db
+        .prepare(
+          `
+          UPDATE orchestration_runs
+          SET status = ?, current_phase = ?, heartbeat_at = ?, completed_at = ?
+          WHERE run_id = ?
+          `,
+        )
+        .run(
+          runStatus,
+          success ? "completed" : "failed",
+          now,
+          now,
+          ids.run_id,
+        );
+
+      this.insertTrajectoryEvent({
+        run_id: ids.run_id,
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: ids.activity_session_id,
+        event_type: "compatibility_trajectory.completed",
+        actor: "merge-god",
+        payload: { success, summary, error_message: errorMessage },
+      });
+
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to complete compatibility trajectory: ${String(e)}`);
+    }
+  }
+
+  /** Append a structured trajectory event for a run. */
+  appendTrajectoryEvent(
+    runId: string,
+    eventType: string,
+    actor: string,
+    payload: JsonObject = {},
+    refs: {
+      workset_id?: string | null;
+      work_item_id?: string | null;
+      activity_id?: string | null;
+      activity_session_id?: string | null;
+    } = {},
+  ): string {
+    return this.insertTrajectoryEvent({
+      run_id: runId,
+      workset_id: refs.workset_id ?? null,
+      work_item_id: refs.work_item_id ?? null,
+      activity_id: refs.activity_id ?? null,
+      activity_session_id: refs.activity_session_id ?? null,
+      event_type: eventType,
+      actor,
+      payload,
+    });
+  }
+
+  /** List recent orchestration runs. */
+  getOrchestrationRuns(limit: number = 20): OrchestrationRunRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM orchestration_runs ORDER BY started_at DESC LIMIT ?")
+      .all(limit) as Record<string, unknown>[];
+    return rows.map((row) => this.parseOrchestrationRun(row));
+  }
+
+  /** Load one run with its worksets, work items, activities, sessions, and events. */
+  getTrajectoryState(runId: string): TrajectoryState | null {
+    const runRow = this.db
+      .prepare("SELECT * FROM orchestration_runs WHERE run_id = ?")
+      .get(runId) as Record<string, unknown> | undefined;
+    if (!runRow) return null;
+
+    const worksets = this.db
+      .prepare("SELECT * FROM worksets WHERE run_id = ? ORDER BY created_at, workset_id")
+      .all(runId) as Record<string, unknown>[];
+    const worksetIds = worksets.map((row) => String(row["workset_id"]));
+    const worksetMarks = worksetIds.map(() => "?").join(",");
+
+    const workItems = worksetIds.length > 0
+      ? this.db
+        .prepare(`SELECT * FROM work_items WHERE workset_id IN (${worksetMarks}) ORDER BY priority, created_at`)
+        .all(...worksetIds) as Record<string, unknown>[]
+      : [];
+
+    const activities = this.db
+      .prepare("SELECT * FROM activities WHERE run_id = ? ORDER BY created_at, activity_id")
+      .all(runId) as Record<string, unknown>[];
+    const activityIds = activities.map((row) => String(row["activity_id"]));
+    const activityMarks = activityIds.map(() => "?").join(",");
+    const activitySessions = activityIds.length > 0
+      ? this.db
+        .prepare(`SELECT * FROM activity_sessions WHERE activity_id IN (${activityMarks}) ORDER BY started_at`)
+        .all(...activityIds) as Record<string, unknown>[]
+      : [];
+
+    const events = this.db
+      .prepare("SELECT * FROM trajectory_events WHERE run_id = ? ORDER BY id")
+      .all(runId) as Record<string, unknown>[];
+
+    return {
+      run: this.parseOrchestrationRun(runRow),
+      worksets: worksets.map((row) => this.parseWorkset(row)),
+      work_items: workItems.map((row) => this.parseWorkItem(row)),
+      activities: activities.map((row) => this.parseActivity(row)),
+      activity_sessions: activitySessions.map((row) => this.parseActivitySession(row)),
+      events: events.map((row) => this.parseTrajectoryEvent(row)),
+    };
+  }
+
+  private insertTrajectoryEvent(input: {
+    run_id: string;
+    workset_id?: string | null;
+    work_item_id?: string | null;
+    activity_id?: string | null;
+    activity_session_id?: string | null;
+    event_type: string;
+    actor: string;
+    payload: JsonObject;
+  }): string {
+    const eventId = randomUUID();
+    this.db
+      .prepare(
+        `
+        INSERT INTO trajectory_events (
+            event_id, run_id, workset_id, work_item_id, activity_id,
+            activity_session_id, event_type, actor, payload, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      )
+      .run(
+        eventId,
+        input.run_id,
+        input.workset_id ?? null,
+        input.work_item_id ?? null,
+        input.activity_id ?? null,
+        input.activity_session_id ?? null,
+        input.event_type,
+        input.actor,
+        stringifyJson(input.payload),
+        nowIso(),
+      );
+    return eventId;
+  }
+
+  private parseOrchestrationRun(row: Record<string, unknown>): OrchestrationRunRecord {
+    return {
+      run_id: String(row["run_id"]),
+      repo_name: String(row["repo_name"]),
+      repo_path: strOrNull(row["repo_path"]),
+      base_branch: strOrNull(row["base_branch"]),
+      strategy_version: String(row["strategy_version"]),
+      workflow_ir_refs: parseJsonArray<string>(row["workflow_ir_refs"]),
+      status: row["status"] as OrchestrationRunRecord["status"],
+      current_phase: String(row["current_phase"]),
+      started_at: String(row["started_at"]),
+      heartbeat_at: strOrNull(row["heartbeat_at"]),
+      completed_at: strOrNull(row["completed_at"]),
+      objective: strOrNull(row["objective"]),
+      operator_policy: parseJsonObject(row["operator_policy"]),
+      model_policy: parseJsonObject(row["model_policy"]),
+      metadata: parseJsonObject(row["metadata"]),
+    };
+  }
+
+  private parseWorkset(row: Record<string, unknown>): WorksetRecord {
+    return {
+      workset_id: String(row["workset_id"]),
+      run_id: String(row["run_id"]),
+      kind: row["kind"] as WorksetRecord["kind"],
+      selection_reason: strOrNull(row["selection_reason"]),
+      status: row["status"] as WorksetRecord["status"],
+      approval_state: row["approval_state"] as WorksetRecord["approval_state"],
+      strategy: strOrNull(row["strategy"]),
+      created_at: String(row["created_at"]),
+      updated_at: String(row["updated_at"]),
+      metadata: parseJsonObject(row["metadata"]),
+    };
+  }
+
+  private parseWorkItem(row: Record<string, unknown>): WorkItemRecord {
+    return {
+      work_item_id: String(row["work_item_id"]),
+      workset_id: String(row["workset_id"]),
+      source_kind: row["source_kind"] as WorkItemRecord["source_kind"],
+      repo_name: String(row["repo_name"]),
+      number: Number(row["number"]),
+      title: String(row["title"]),
+      url: strOrNull(row["url"]),
+      mode: strOrNull(row["mode"]),
+      labels: parseJsonArray<string>(row["labels"]),
+      base_ref: strOrNull(row["base_ref"]),
+      head_ref: strOrNull(row["head_ref"]),
+      start_sha: strOrNull(row["start_sha"]),
+      current_sha: strOrNull(row["current_sha"]),
+      status: row["status"] as WorkItemRecord["status"],
+      disposition_setting: strOrNull(row["disposition_setting"]),
+      computed_disposition: strOrNull(row["computed_disposition"]),
+      priority: numOrNull(row["priority"]),
+      model_tier: strOrNull(row["model_tier"]),
+      next_action: strOrNull(row["next_action"]),
+      blockers: parseJsonArray<JsonObject>(row["blockers"]),
+      risk_signals: parseJsonObject(row["risk_signals"]),
+      context_pack_refs: parseJsonArray<string>(row["context_pack_refs"]),
+      created_at: String(row["created_at"]),
+      updated_at: String(row["updated_at"]),
+      metadata: parseJsonObject(row["metadata"]),
+    };
+  }
+
+  private parseActivity(row: Record<string, unknown>): ActivityRecord {
+    return {
+      activity_id: String(row["activity_id"]),
+      run_id: String(row["run_id"]),
+      workset_id: strOrNull(row["workset_id"]),
+      work_item_id: strOrNull(row["work_item_id"]),
+      parent_activity_id: strOrNull(row["parent_activity_id"]),
+      type: row["type"] as ActivityRecord["type"],
+      status: row["status"] as ActivityRecord["status"],
+      model_profile: parseJsonObject(row["model_profile"]),
+      tool_policy: parseJsonObject(row["tool_policy"]),
+      prompt_runtime_ref: strOrNull(row["prompt_runtime_ref"]),
+      context_pack_refs: parseJsonArray<string>(row["context_pack_refs"]),
+      output_summary_ref: strOrNull(row["output_summary_ref"]),
+      evidence_refs: parseJsonArray<string>(row["evidence_refs"]),
+      created_at: String(row["created_at"]),
+      updated_at: String(row["updated_at"]),
+      completed_at: strOrNull(row["completed_at"]),
+      metadata: parseJsonObject(row["metadata"]),
+    };
+  }
+
+  private parseActivitySession(row: Record<string, unknown>): ActivitySessionRecord {
+    return {
+      activity_session_id: String(row["activity_session_id"]),
+      activity_id: String(row["activity_id"]),
+      session_id: strOrNull(row["session_id"]),
+      model: strOrNull(row["model"]),
+      prompt_runtime_ref: strOrNull(row["prompt_runtime_ref"]),
+      prompt_hash: strOrNull(row["prompt_hash"]),
+      tool_set: parseJsonArray<string>(row["tool_set"]),
+      status: String(row["status"]),
+      started_at: String(row["started_at"]),
+      completed_at: strOrNull(row["completed_at"]),
+      input_tokens: Number(row["input_tokens"] ?? 0),
+      output_tokens: Number(row["output_tokens"] ?? 0),
+      total_tokens: Number(row["total_tokens"] ?? 0),
+      estimated_cost: Number(row["estimated_cost"] ?? 0),
+      output_digest: strOrNull(row["output_digest"]),
+      metadata: parseJsonObject(row["metadata"]),
+    };
+  }
+
+  private parseTrajectoryEvent(row: Record<string, unknown>): TrajectoryEventRecord {
+    return {
+      id: Number(row["id"]),
+      event_id: String(row["event_id"]),
+      run_id: String(row["run_id"]),
+      workset_id: strOrNull(row["workset_id"]),
+      work_item_id: strOrNull(row["work_item_id"]),
+      activity_id: strOrNull(row["activity_id"]),
+      activity_session_id: strOrNull(row["activity_session_id"]),
+      event_type: String(row["event_type"]),
+      actor: String(row["actor"]),
+      payload: parseJsonObject(row["payload"]),
+      created_at: String(row["created_at"]),
+    };
   }
 }

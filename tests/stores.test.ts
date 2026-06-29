@@ -80,11 +80,22 @@ describe("SyncStore", () => {
         .all() as { name: string }[];
       const tables = rows.map((r) => r.name);
       const expected = [
+        "activities",
+        "activity_sessions",
         "branch_states",
+        "context_captures",
+        "context_packs",
+        "evidence_artifacts",
+        "guardrail_checks",
+        "orchestration_runs",
         "pr_context",
         "pull_requests",
         "repositories",
         "schema_meta",
+        "tool_invocations",
+        "trajectory_events",
+        "work_items",
+        "worksets",
       ];
       for (const t of expected) {
         assert.ok(tables.includes(t), `expected table '${t}' to exist`);
@@ -413,5 +424,90 @@ describe("AppStore", () => {
     assert.equal(state!["status"], "idle");
     assert.equal(state!["prs_processed"], 10);
     assert.equal(state!["successes"], 9);
+  });
+
+  test("createCompatibilityTrajectoryForPr persists RFC-006 run state", () => {
+    appStore.createAgentSession("test-repo", 42, "sess-trajectory", "for-review", "claude-test");
+
+    const ids = appStore.createCompatibilityTrajectoryForPr({
+      repo_name: "test-repo",
+      repo_path: "/repo",
+      pr_number: 42,
+      mode: "for-review",
+      title: "Trajectory PR",
+      url: "https://example.com/pull/42",
+      labels: ["for-review", "bug"],
+      base_ref: "main",
+      head_ref: "feature",
+      current_sha: "abc123",
+      session_id: "sess-trajectory",
+      model: "claude-test",
+    });
+
+    assert.ok(ids.run_id);
+    assert.ok(ids.workset_id);
+    assert.ok(ids.work_item_id);
+    assert.ok(ids.activity_id);
+    assert.ok(ids.activity_session_id);
+
+    const runs = appStore.getOrchestrationRuns();
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!["repo_name"], "test-repo");
+    assert.equal(runs[0]!["status"], "executing");
+    assert.deepEqual(runs[0]!["model_policy"], { model: "claude-test" });
+
+    const state = appStore.getTrajectoryState(ids.run_id);
+    assert.ok(state !== null);
+    assert.equal(state!.worksets.length, 1);
+    assert.equal(state!.worksets[0]!["kind"], "pr_queue");
+    assert.equal(state!.work_items.length, 1);
+    assert.equal(state!.work_items[0]!["number"], 42);
+    assert.equal(state!.work_items[0]!["title"], "Trajectory PR");
+    assert.deepEqual(state!.work_items[0]!["labels"], ["for-review", "bug"]);
+    assert.equal(state!.activities.length, 1);
+    assert.equal(state!.activities[0]!["type"], "review_workflow");
+    assert.equal(state!.activity_sessions.length, 1);
+    assert.equal(state!.activity_sessions[0]!["session_id"], "sess-trajectory");
+    assert.equal(state!.events.length, 1);
+    assert.equal(state!.events[0]!["event_type"], "compatibility_trajectory.started");
+  });
+
+  test("appendTrajectoryEvent and completeCompatibilityTrajectory update run state", () => {
+    const ids = appStore.createCompatibilityTrajectoryForPr({
+      repo_name: "test-repo",
+      pr_number: 7,
+      mode: "for-landing",
+      title: "Landing PR",
+    });
+
+    const eventId = appStore.appendTrajectoryEvent(
+      ids.run_id,
+      "guardrail.checked",
+      "test",
+      { name: "label_contract", status: "passed" },
+      {
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+      },
+    );
+    assert.ok(eventId);
+
+    appStore.completeCompatibilityTrajectory(ids, true, "Validated by test", null);
+
+    const state = appStore.getTrajectoryState(ids.run_id);
+    assert.ok(state !== null);
+    assert.equal(state!.run.status, "completed");
+    assert.equal(state!.worksets[0]!["status"], "completed");
+    assert.equal(state!.work_items[0]!["status"], "validated");
+    assert.equal(state!.activities[0]!["status"], "succeeded");
+    assert.deepEqual(
+      state!.events.map((event) => event.event_type),
+      [
+        "compatibility_trajectory.started",
+        "guardrail.checked",
+        "compatibility_trajectory.completed",
+      ],
+    );
   });
 });

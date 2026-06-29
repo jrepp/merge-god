@@ -31,6 +31,12 @@ describe("module imports", () => {
     assert.ok(mod.DatabaseError, "expected DatabaseError export");
   });
 
+  test("trajectory runtime imports successfully", async () => {
+    const mod = await import("../trajectory_runtime");
+    assert.ok(mod.TrajectoryRuntime, "expected TrajectoryRuntime export");
+    assert.ok(mod.ONE_SHOT_PR_AGENT_WORKFLOW, "expected workflow definition export");
+  });
+
   test("pr-loop imports successfully", async () => {
     const mod = await import("../pr-loop");
     assert.equal(typeof mod.validateGitRef, "function");
