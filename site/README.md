@@ -7,8 +7,9 @@ and deployed to GitHub Pages at **<https://jrepp.github.io/merge-god/>**.
 
 - Astro 5 (static output)
 - Plain `.astro` components + scoped styles — no UI framework
-- Docs rendered from the **repo-root [`docs/`](../docs/)** directory (single
-  source of truth) via a content collection (`src/content.config.ts`).
+- Docs rendered from the **repo-root [`docs/`](../docs/)** directory and design
+  RFCs rendered from **[`docs-cms/rfcs/`](../docs-cms/rfcs/)** via content
+  collections (`src/content.config.ts`).
 
 ## Develop
 
@@ -37,12 +38,16 @@ site/
     ├── lib/site.ts         # normalized base-path helper
     ├── pages/
     │   ├── index.astro     # landing page
+    │   ├── design/         # docs-cms RFC index + [...slug] route
     │   └── docs/           # docs index + [...slug] route
     └── styles/global.css   # theme + design tokens
 ```
 
 The markdown source for every docs page lives one level up, in
 [`../docs/`](../docs/) — not under `site/`.
+
+Design RFC pages are sourced from [`../docs-cms/rfcs/`](../docs-cms/rfcs/) and
+rendered under `/design/rfcs/<slug>/`.
 
 ## Adding a docs page
 

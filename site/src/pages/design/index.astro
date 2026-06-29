@@ -1,0 +1,131 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { base } from "../../lib/site";
+
+const rfcs = (await getCollection("rfcs")).sort((a, b) => b.data.id.localeCompare(a.data.id));
+
+const formatDate = (value: string | Date) => {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(date);
+};
+---
+
+<BaseLayout
+  title="Design · merge-god"
+  description="Reviewable design documents and RFCs for merge-god."
+>
+  <section class="section">
+    <div class="container container-narrow design-intro">
+      <span class="eyebrow">Design</span>
+      <h1>Review active merge-god proposals.</h1>
+      <p class="lead">
+        RFCs from <code>docs-cms/rfcs</code> are rendered here so design work can be read,
+        shared, and discussed through the web UI.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="doc-group-head">
+        <h2>RFCs</h2>
+        <p>Draft and accepted design proposals for orchestration, workflow, and agent behavior.</p>
+      </div>
+      <div class="rfc-list">
+        {rfcs.map((entry) => {
+          const href = `${base}design/rfcs/${entry.id.replace(/\.md$/, "")}/`;
+          return (
+            <a class="card rfc-card" href={href}>
+              <div class="rfc-card-head">
+                <span>{entry.data.id.toUpperCase()}</span>
+                <strong>{entry.data.status}</strong>
+              </div>
+              <h3>{entry.data.title}</h3>
+              <p>Created {formatDate(entry.data.created)} by {entry.data.author}.</p>
+              <ul aria-label="Tags">
+                {entry.data.tags.slice(0, 5).map((tag) => <li>{tag}</li>)}
+              </ul>
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  .design-intro {
+    margin-bottom: var(--space-10);
+  }
+
+  .design-intro h1 {
+    margin: var(--space-3) 0;
+  }
+
+  .doc-group-head h2 {
+    margin-bottom: var(--space-2);
+  }
+
+  .doc-group-head p {
+    margin-bottom: var(--space-5);
+    color: var(--color-text-subtle);
+  }
+
+  .rfc-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-5);
+  }
+
+  .rfc-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    color: var(--color-text);
+  }
+
+  .rfc-card:hover {
+    color: var(--color-text);
+  }
+
+  .rfc-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    color: var(--color-text-subtle);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .rfc-card-head strong {
+    color: var(--color-primary-bright);
+    font-weight: 700;
+  }
+
+  .rfc-card h3 {
+    color: var(--color-text);
+  }
+
+  .rfc-card p {
+    font-size: 0.94rem;
+  }
+
+  .rfc-card ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: auto;
+  }
+
+  .rfc-card li {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-pill);
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+    padding: 0.2rem 0.55rem;
+    font-size: 0.78rem;
+  }
+</style>

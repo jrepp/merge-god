@@ -1,0 +1,369 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { base } from "../lib/site";
+
+const rfcs = (await getCollection("rfcs")).sort((a, b) => a.data.id.localeCompare(b.data.id));
+const repoUrl = "https://github.com/jrepp/merge-god";
+
+const path = Astro.url.pathname.replace(/\/+$/, "");
+const currentSlug = path.split("/design/rfcs/")[1] || "";
+
+const formatDate = (value: string | Date) => {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeZone: "UTC" }).format(date);
+};
+
+interface Props {
+  title: string;
+  status: string;
+  created: string | Date;
+  updated?: string | Date;
+  tags?: string[];
+  editPath: string;
+}
+
+const { title, status, created, updated, tags = [], editPath } = Astro.props;
+---
+
+<BaseLayout
+  title={`${title} · merge-god design`}
+  description={`Design document: ${title}`}
+>
+  <div class="container design-shell">
+    <aside class="design-sidebar" aria-label="Design document navigation">
+      <nav>
+        <a class:list={["design-home", { active: path.endsWith("/design") }]} href={`${base}design/`}>
+          Design index
+        </a>
+        <div class="nav-group">
+          <p class="nav-group-title">RFCs</p>
+          <ul>
+            {rfcs.map((entry) => {
+              const slug = entry.id.replace(/\.md$/, "");
+              const href = `${base}design/rfcs/${slug}/`;
+              const isActive = currentSlug === slug;
+              return (
+                <li>
+                  <a href={href} class:list={{ active: isActive }}>
+                    <span>{entry.data.id.toUpperCase()}</span>
+                    {entry.data.title}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </nav>
+    </aside>
+
+    <article class="design-content">
+      <header class="design-header">
+        <p class="eyebrow">Design RFC</p>
+        <h1>{title}</h1>
+        <dl class="metadata">
+          <div>
+            <dt>Status</dt>
+            <dd>{status}</dd>
+          </div>
+          <div>
+            <dt>Created</dt>
+            <dd>{formatDate(created)}</dd>
+          </div>
+          {updated && (
+            <div>
+              <dt>Updated</dt>
+              <dd>{formatDate(updated)}</dd>
+            </div>
+          )}
+        </dl>
+        {tags.length > 0 && (
+          <ul class="tag-list" aria-label="Tags">
+            {tags.map((tag) => <li>{tag}</li>)}
+          </ul>
+        )}
+      </header>
+      <div class="prose">
+        <slot />
+      </div>
+      <hr class="design-rule" />
+      <p class="design-edit">
+        Review source:
+        <a href={`${repoUrl}/edit/main/${editPath}`} target="_blank" rel="noopener">
+          Edit this RFC on GitHub ↗
+        </a>
+      </p>
+    </article>
+  </div>
+</BaseLayout>
+
+<style>
+  .design-shell {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap: var(--space-8);
+    padding-block: var(--space-8) var(--space-10);
+    align-items: start;
+  }
+
+  .design-sidebar {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+    padding-right: var(--space-3);
+  }
+
+  .design-home {
+    display: block;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-3);
+  }
+
+  .design-home:hover,
+  .design-home.active {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .nav-group {
+    margin-bottom: var(--space-5);
+  }
+
+  .nav-group-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-subtle);
+    font-weight: 600;
+    padding: 0 0.6rem;
+    margin-bottom: var(--space-2);
+  }
+
+  .nav-group ul {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .nav-group a {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    font-size: 0.9rem;
+  }
+
+  .nav-group a span {
+    color: var(--color-text-subtle);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .nav-group a:hover {
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .nav-group a.active {
+    color: var(--color-primary-bright);
+    background: var(--gradient-brand-soft);
+  }
+
+  .design-content {
+    min-width: 0;
+    max-width: 820px;
+  }
+
+  .design-header {
+    margin-bottom: var(--space-6);
+  }
+
+  .design-header h1 {
+    margin: var(--space-2) 0 var(--space-4);
+  }
+
+  .metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .metadata div {
+    min-width: 9rem;
+    padding: 0.65rem 0.8rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+  }
+
+  .metadata dt {
+    font-size: 0.72rem;
+    color: var(--color-text-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+
+  .metadata dd {
+    color: var(--color-text);
+    font-weight: 600;
+  }
+
+  .tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .tag-list li {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-pill);
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+    padding: 0.25rem 0.65rem;
+    font-size: 0.8rem;
+  }
+
+  .design-rule {
+    border: none;
+    border-top: 1px solid var(--color-border-subtle);
+    margin: var(--space-8) 0 var(--space-4);
+  }
+
+  .design-edit {
+    font-size: 0.88rem;
+    color: var(--color-text-subtle);
+  }
+
+  @media (max-width: 960px) {
+    .design-shell {
+      grid-template-columns: 1fr;
+    }
+
+    .design-sidebar {
+      position: static;
+      max-height: none;
+      border-bottom: 1px solid var(--color-border-subtle);
+      padding-bottom: var(--space-5);
+    }
+  }
+</style>
+
+<style is:global>
+  .prose {
+    color: var(--color-text-muted);
+    font-size: 1.02rem;
+    line-height: 1.7;
+  }
+
+  .prose h2 {
+    color: var(--color-text);
+    font-size: 1.55rem;
+    letter-spacing: 0;
+    margin: var(--space-8) 0 var(--space-3);
+    padding-top: var(--space-2);
+  }
+
+  .prose h1 {
+    color: var(--color-text);
+    font-size: 2rem;
+    letter-spacing: 0;
+    margin: var(--space-8) 0 var(--space-3);
+    padding-top: var(--space-2);
+  }
+
+  .prose h3 {
+    color: var(--color-text);
+    font-size: 1.25rem;
+    letter-spacing: 0;
+    margin: var(--space-6) 0 var(--space-2);
+  }
+
+  .prose h4 {
+    color: var(--color-text);
+    font-size: 1.05rem;
+    letter-spacing: 0;
+    margin: var(--space-5) 0 var(--space-2);
+  }
+
+  .prose p,
+  .prose ul,
+  .prose ol {
+    margin: 0 0 var(--space-4);
+  }
+
+  .prose ul,
+  .prose ol {
+    padding-left: 1.4rem;
+  }
+
+  .prose ul {
+    list-style: disc;
+  }
+
+  .prose ol {
+    list-style: decimal;
+  }
+
+  .prose li {
+    margin-bottom: var(--space-2);
+  }
+
+  .prose li::marker {
+    color: var(--color-primary-bright);
+  }
+
+  .prose a {
+    color: var(--color-primary-bright);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: rgba(211, 169, 96, 0.4);
+  }
+
+  .prose a:hover {
+    color: var(--color-text);
+  }
+
+  .prose strong {
+    color: var(--color-text);
+    font-weight: 600;
+  }
+
+  .prose table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    margin: 0 0 var(--space-5);
+    font-size: 0.94rem;
+  }
+
+  .prose th,
+  .prose td {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--color-border-subtle);
+    min-width: 9rem;
+  }
+
+  .prose th {
+    color: var(--color-text);
+    font-weight: 600;
+  }
+
+  .prose :not(pre) > code {
+    color: var(--color-primary-bright);
+  }
+
+  .prose pre {
+    margin: 0 0 var(--space-5);
+  }
+</style>
