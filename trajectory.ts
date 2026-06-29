@@ -204,6 +204,59 @@ export interface CompatibilityTrajectoryIds {
   activity_session_id: string | null;
 }
 
+export interface TrajectoryWorkItemInput {
+  repo_name: string;
+  number: number;
+  title: string;
+  url?: string | null;
+  mode?: string | null;
+  labels?: string[];
+  base_ref?: string | null;
+  head_ref?: string | null;
+  current_sha?: string | null;
+  priority?: number | null;
+  model_tier?: string | null;
+  disposition_setting?: string | null;
+}
+
+export interface PrQueueTrajectoryInput {
+  repo_name: string;
+  repo_path?: string | null;
+  base_branch?: string | null;
+  objective?: string | null;
+  strategy?: string | null;
+  items: TrajectoryWorkItemInput[];
+}
+
+export interface PrQueueTrajectoryIds {
+  run_id: string;
+  workset_id: string;
+  work_item_ids: string[];
+  activity_ids: string[];
+}
+
+export interface ActivityClaim {
+  ids: CompatibilityTrajectoryIds;
+  activity: ActivityRecord;
+  work_item: WorkItemRecord | null;
+}
+
+export interface ProposedNextActionInput {
+  next_action: string;
+  rationale: string;
+  blockers?: JsonObject[];
+  evidence_refs?: string[];
+}
+
+export interface ChildActivityInput {
+  type: ActivityType;
+  summary: string;
+  prompt_runtime_ref?: string | null;
+  context_pack_refs?: string[];
+  evidence_refs?: string[];
+  metadata?: JsonObject;
+}
+
 export interface TrajectoryState {
   run: OrchestrationRunRecord;
   worksets: WorksetRecord[];

@@ -425,6 +425,16 @@ function cmdStatus(g: GlobalArgs): number {
         logText(`  Agent sessions: ${sessionCount}`, "info");
         const runCount = countRows(db, "orchestration_runs");
         logText(`  Orchestration runs: ${runCount}`, "info");
+        if (runCount > 0) {
+          const row = db
+            .prepare(
+              "SELECT repo_name, status, current_phase FROM orchestration_runs ORDER BY started_at DESC LIMIT 1",
+            )
+            .get() as { repo_name: string; status: string; current_phase: string } | undefined;
+          if (row) {
+            logText(`  Latest trajectory: ${row.repo_name} - ${row.status} (${row.current_phase})`, "info");
+          }
+        }
         if (sessionCount > 0) {
           const row = db
             .prepare(

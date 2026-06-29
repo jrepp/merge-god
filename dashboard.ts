@@ -1534,6 +1534,7 @@ class Dashboard {
 
     const stateLines = this.renderStateSection(monitor);
     const prQueueLines = this.renderPrQueueSection(monitor);
+    const trajectoryLines = this.renderTrajectorySection(monitor);
 
     const logsLines = new Lines();
     for (const log of monitor.logs.sliceLast(8)) logsLines.append(log + "\n", "dim");
@@ -1543,6 +1544,7 @@ class Dashboard {
     body.push(...statusLines);
     if (stateLines) body.push(...stateLines);
     if (prQueueLines) body.push(...prQueueLines);
+    if (trajectoryLines) body.push(...trajectoryLines);
     body.push("");
     body.push(...logsRendered);
 
@@ -1556,6 +1558,36 @@ class Dashboard {
     };
     const border = borderStyleMap[statusKey] ?? "white";
     return renderPanel(monitor.name, body, border);
+  }
+
+  private renderTrajectorySection(monitor: RepoMonitor): string[] | null {
+    if (!this.db) return null;
+    try {
+      const run = this.db.appStore
+        .getOrchestrationRuns(10)
+        .find((item) => item.repo_name === monitor.name || item.repo_path === monitor.path);
+      if (!run) return null;
+      const state = this.db.appStore.getTrajectoryState(run.run_id);
+      if (!state) return null;
+      const activeActivities = state.activities.filter((activity) =>
+        ["ready", "claimed", "running"].includes(activity.status),
+      );
+      const blockers = state.work_items.reduce((count, item) => count + item.blockers.length, 0);
+      const text = new Lines();
+      text.append("\nTrajectory:\n", "bold cyan");
+      text.append(`  Run: ${run.status}`, run.status === "completed" ? "green" : "yellow");
+      text.append(` | Phase: ${run.current_phase}`, "dim");
+      text.append(` | Work items: ${state.work_items.length}`, "white");
+      text.append(` | Active: ${activeActivities.length}`, activeActivities.length > 0 ? "yellow" : "dim");
+      text.append(` | Events: ${state.events.length}\n`, "dim");
+      if (blockers > 0) text.append(`  Blockers: ${blockers}\n`, "red");
+      return text.render();
+    } catch (e) {
+      const text = new Lines();
+      text.append("\nTrajectory: ", "bold cyan");
+      text.append(`unavailable (${truncate(errMsg(e), 80)})\n`, "red dim");
+      return text.render();
+    }
   }
 
   private renderStateSection(monitor: RepoMonitor): string[] | null {

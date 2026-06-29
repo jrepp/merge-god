@@ -32,6 +32,33 @@ export interface WorkItem {
 
 export type JsonResult = Record<string, unknown> | null;
 
+export interface TrajectoryEventInput {
+  event_type: string;
+  actor?: string;
+  payload?: Record<string, unknown>;
+  refs?: Record<string, unknown>;
+}
+
+export interface CoordinationTrajectoryBridge {
+  getState(): unknown | Promise<unknown>;
+  appendEvent(input: TrajectoryEventInput): unknown | Promise<unknown>;
+  heartbeat?(input: Record<string, unknown>): unknown | Promise<unknown>;
+  proposeNext?(input: {
+    next_action: string;
+    rationale: string;
+    blockers?: Record<string, unknown>[];
+    evidence_refs?: string[];
+  }): unknown | Promise<unknown>;
+  createChildActivity?(input: {
+    type: string;
+    summary: string;
+    prompt_runtime_ref?: string | null;
+    context_pack_refs?: string[];
+    evidence_refs?: string[];
+    metadata?: Record<string, unknown>;
+  }): unknown | Promise<unknown>;
+}
+
 /** Locate the merge-god pi extension entry, walking up from this file. */
 export function findExtension(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -73,10 +100,11 @@ export class CoordinationServer {
   private _work: WorkItem | null = null;
   private _result: JsonResult = null;
   private _server: http.Server;
+  private _trajectory: CoordinationTrajectoryBridge | null;
   host: string;
   port: number;
 
-  constructor(host = "127.0.0.1", port = 0) {
+  constructor(host = "127.0.0.1", port = 0, trajectory: CoordinationTrajectoryBridge | null = null) {
     this._server = http.createServer((req, res) => this._handleRequest(req, res));
     // Synchronously grab a port by listening; we use the returned address below.
     // Note: listen() is async, but server.address() is populated by the time the
@@ -84,6 +112,7 @@ export class CoordinationServer {
     // possible; instead callers should `await server.start()`.
     this.host = host;
     this.port = port;
+    this._trajectory = trajectory;
   }
 
   start(): Promise<void> {
@@ -122,6 +151,10 @@ export class CoordinationServer {
 
   getResult(): JsonResult {
     return this._result;
+  }
+
+  setTrajectoryBridge(trajectory: CoordinationTrajectoryBridge | null): void {
+    this._trajectory = trajectory;
   }
 
   private _send(res: ServerResponse, status: number, payload: unknown): void {
@@ -165,6 +198,17 @@ export class CoordinationServer {
         }
         return;
       }
+      if (url === "/trajectory") {
+        const fallback = this.getWork()?.["trajectory"] ?? null;
+        if (!this._trajectory && fallback === null) {
+          this._send(res, 404, { ok: false, error: "no trajectory state" });
+          return;
+        }
+        Promise.resolve(this._trajectory ? this._trajectory.getState() : fallback)
+          .then((trajectory) => this._send(res, 200, { ok: true, trajectory }))
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
       this._send(res, 404, { ok: false, error: "not found" });
       return;
     }
@@ -178,6 +222,114 @@ export class CoordinationServer {
           .catch(() => this._send(res, 400, { ok: false, error: "bad request" }));
         return;
       }
+      if (url === "/trajectory/event") {
+        if (!this._trajectory) {
+          this._send(res, 404, { ok: false, error: "no trajectory bridge" });
+          return;
+        }
+        this._readBody(req)
+          .then((body) => {
+            const eventType = typeof body["event_type"] === "string" ? body["event_type"] : "";
+            if (!eventType) {
+              this._send(res, 400, { ok: false, error: "event_type is required" });
+              return;
+            }
+            const refs = typeof body["refs"] === "object" && body["refs"] !== null
+              ? (body["refs"] as Record<string, unknown>)
+              : {};
+            const payload = typeof body["payload"] === "object" && body["payload"] !== null
+              ? (body["payload"] as Record<string, unknown>)
+              : {};
+            return Promise.resolve(
+              this._trajectory!.appendEvent({
+                event_type: eventType,
+                actor: typeof body["actor"] === "string" ? body["actor"] : "pi-agent",
+                payload,
+                refs,
+              }),
+            ).then((event) => this._send(res, 200, { ok: true, event }));
+          })
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
+      if (url === "/trajectory/heartbeat") {
+        if (!this._trajectory?.heartbeat) {
+          this._send(res, 404, { ok: false, error: "no trajectory heartbeat bridge" });
+          return;
+        }
+        this._readBody(req)
+          .then((body) => Promise.resolve(this._trajectory!.heartbeat!(body)))
+          .then((heartbeat) => this._send(res, 200, { ok: true, heartbeat }))
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
+      if (url === "/trajectory/propose-next") {
+        if (!this._trajectory?.proposeNext) {
+          this._send(res, 404, { ok: false, error: "no trajectory propose-next bridge" });
+          return;
+        }
+        this._readBody(req)
+          .then((body) => {
+            const nextAction = typeof body["next_action"] === "string" ? body["next_action"] : "";
+            const rationale = typeof body["rationale"] === "string" ? body["rationale"] : "";
+            if (!nextAction || !rationale) {
+              this._send(res, 400, { ok: false, error: "next_action and rationale are required" });
+              return;
+            }
+            const blockers = Array.isArray(body["blockers"])
+              ? body["blockers"].filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+              : [];
+            const evidenceRefs = Array.isArray(body["evidence_refs"])
+              ? body["evidence_refs"].filter((item): item is string => typeof item === "string")
+              : [];
+            return Promise.resolve(
+              this._trajectory!.proposeNext!({
+                next_action: nextAction,
+                rationale,
+                blockers,
+                evidence_refs: evidenceRefs,
+              }),
+            ).then((proposal) => this._send(res, 200, { ok: true, proposal }));
+          })
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
+      if (url === "/trajectory/child-activity") {
+        if (!this._trajectory?.createChildActivity) {
+          this._send(res, 404, { ok: false, error: "no trajectory child-activity bridge" });
+          return;
+        }
+        this._readBody(req)
+          .then((body) => {
+            const type = typeof body["type"] === "string" ? body["type"] : "";
+            const summary = typeof body["summary"] === "string" ? body["summary"] : "";
+            if (!type || !summary) {
+              this._send(res, 400, { ok: false, error: "type and summary are required" });
+              return;
+            }
+            const contextPackRefs = Array.isArray(body["context_pack_refs"])
+              ? body["context_pack_refs"].filter((item): item is string => typeof item === "string")
+              : [];
+            const evidenceRefs = Array.isArray(body["evidence_refs"])
+              ? body["evidence_refs"].filter((item): item is string => typeof item === "string")
+              : [];
+            const metadata = typeof body["metadata"] === "object" && body["metadata"] !== null
+              ? (body["metadata"] as Record<string, unknown>)
+              : {};
+            return Promise.resolve(
+              this._trajectory!.createChildActivity!({
+                type,
+                summary,
+                prompt_runtime_ref: typeof body["prompt_runtime_ref"] === "string" ? body["prompt_runtime_ref"] : null,
+                context_pack_refs: contextPackRefs,
+                evidence_refs: evidenceRefs,
+                metadata,
+              }),
+            ).then((activity) => this._send(res, 200, { ok: true, activity }));
+          })
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
       this._send(res, 404, { ok: false, error: "not found" });
       return;
     }
@@ -189,9 +341,13 @@ export const DEFAULT_INSTRUCTION =
   "You are operating as the merge-god PR agent.\n" +
   "1) Call the `merge_god_context` tool to load your work item from the " +
   "merge-god coordination API.\n" +
-  "2) Carry out the work described there in this repository using your file " +
+  "2) When a trajectory is available, use `merge_god_trajectory_state` to " +
+  "inspect the current run/work/activity state, and use " +
+  "`merge_god_trajectory_event` for meaningful checkpoints, decisions, " +
+  "blockers, and evidence references.\n" +
+  "3) Carry out the work described there in this repository using your file " +
   "and shell tools.\n" +
-  "3) Call the `merge_god_complete` tool with status and a concise summary of " +
+  "4) Call the `merge_god_complete` tool with status and a concise summary of " +
   "what you did, then stop.";
 
 export interface PiAgentResult {
@@ -217,6 +373,7 @@ export async function runPiAgent(
     instruction?: string;
     extensionPath?: string;
     extraEnv?: Record<string, string>;
+    trajectory?: CoordinationTrajectoryBridge;
   } = {},
 ): Promise<PiAgentResult> {
   const {
@@ -224,10 +381,11 @@ export async function runPiAgent(
     instruction = DEFAULT_INSTRUCTION,
     extensionPath,
     extraEnv,
+    trajectory,
   } = opts;
 
   const ext = extensionPath ?? findExtension();
-  const server = new CoordinationServer();
+  const server = new CoordinationServer("127.0.0.1", 0, trajectory ?? null);
   await server.start();
   const env: NodeJS.ProcessEnv = { ...process.env, MERGE_GOD_API: server.baseUrl };
   if (extraEnv) Object.assign(env, extraEnv);

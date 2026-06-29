@@ -14,12 +14,17 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type {
   ActivityRecord,
+  ActivityClaim,
   ActivitySessionRecord,
   ActivityType,
+  ChildActivityInput,
   CompatibilityTrajectoryIds,
   CompatibilityTrajectoryInput,
   JsonObject,
   OrchestrationRunRecord,
+  PrQueueTrajectoryIds,
+  PrQueueTrajectoryInput,
+  ProposedNextActionInput,
   TrajectoryEventRecord,
   TrajectoryState,
   WorkItemRecord,
@@ -969,6 +974,478 @@ export class AppStore {
   // ------------------------------------------------------------------
   // RFC-006 Trajectory Operations
   // ------------------------------------------------------------------
+
+  /** Create a durable PR queue run with one ready activity per work item. */
+  createPrQueueTrajectory(input: PrQueueTrajectoryInput): PrQueueTrajectoryIds {
+    if (!input.repo_name) throw new DatabaseError("repo_name is required");
+    if (input.items.length === 0) throw new DatabaseError("at least one work item is required");
+
+    const runId = randomUUID();
+    const worksetId = randomUUID();
+    const workItemIds: string[] = [];
+    const activityIds: string[] = [];
+    const now = nowIso();
+
+    try {
+      this.db.exec("BEGIN");
+      this.db
+        .prepare(
+          `
+          INSERT INTO orchestration_runs (
+              run_id, repo_name, repo_path, base_branch, strategy_version,
+              workflow_ir_refs, status, current_phase, started_at, heartbeat_at,
+              objective, operator_policy, model_policy, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          runId,
+          input.repo_name,
+          input.repo_path ?? null,
+          input.base_branch ?? null,
+          "queue-runtime-v1",
+          stringifyJson([]),
+          "planning",
+          "queue_ready",
+          now,
+          now,
+          input.objective ?? `Process ${input.items.length} queued PR(s)`,
+          stringifyJson({ labels_required: ["for-review", "for-landing"] }),
+          stringifyJson({}),
+          stringifyJson({ runtime_path: "pr_queue" }),
+        );
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO worksets (
+              workset_id, run_id, kind, selection_reason, status,
+              approval_state, strategy, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          worksetId,
+          runId,
+          "pr_queue",
+          "Queued PRs selected by deterministic label and priority policy",
+          "ready",
+          "not_required",
+          input.strategy ?? "priority-order",
+          now,
+          now,
+          stringifyJson({ item_count: input.items.length }),
+        );
+
+      for (let i = 0; i < input.items.length; i++) {
+        const item = input.items[i]!;
+        if (!Number.isInteger(item.number) || item.number <= 0) {
+          throw new DatabaseError(`invalid PR number at queue index ${i}`);
+        }
+        const workItemId = randomUUID();
+        const activityId = randomUUID();
+        workItemIds.push(workItemId);
+        activityIds.push(activityId);
+        const activityType: ActivityType = item.mode === "for-review" ? "review_workflow" : "merge_gate";
+
+        this.db
+          .prepare(
+            `
+            INSERT INTO work_items (
+                work_item_id, workset_id, source_kind, repo_name, number, title,
+                url, mode, labels, base_ref, head_ref, start_sha, current_sha,
+                status, disposition_setting, priority, model_tier, next_action,
+                blockers, risk_signals, context_pack_refs, created_at, updated_at, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+          )
+          .run(
+            workItemId,
+            worksetId,
+            "pull_request",
+            item.repo_name,
+            item.number,
+            item.title,
+            item.url ?? null,
+            item.mode ?? null,
+            stringifyJson(item.labels ?? []),
+            item.base_ref ?? input.base_branch ?? null,
+            item.head_ref ?? null,
+            item.current_sha ?? null,
+            item.current_sha ?? null,
+            "queued",
+            item.disposition_setting ?? null,
+            item.priority ?? i,
+            item.model_tier ?? null,
+            "claim_activity",
+            stringifyJson([]),
+            stringifyJson({ label_contract_checked: true }),
+            stringifyJson([]),
+            now,
+            now,
+            stringifyJson({ queue_index: i }),
+          );
+
+        this.db
+          .prepare(
+            `
+            INSERT INTO activities (
+                activity_id, run_id, workset_id, work_item_id, type, status,
+                model_profile, tool_policy, prompt_runtime_ref,
+                context_pack_refs, evidence_refs, created_at, updated_at, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+          )
+          .run(
+            activityId,
+            runId,
+            worksetId,
+            workItemId,
+            activityType,
+            "ready",
+            stringifyJson({ model_tier: item.model_tier ?? null }),
+            stringifyJson({
+              mutating_allowed: item.disposition_setting !== "observe" && item.disposition_setting !== "validate",
+            }),
+            null,
+            stringifyJson([]),
+            stringifyJson([]),
+            now,
+            now,
+            stringifyJson({ mode: item.mode ?? null }),
+          );
+      }
+
+      this.insertTrajectoryEvent({
+        run_id: runId,
+        workset_id: worksetId,
+        event_type: "runtime.queue.created",
+        actor: "merge-god",
+        payload: {
+          item_count: input.items.length,
+          activity_count: activityIds.length,
+          strategy: input.strategy ?? "priority-order",
+        },
+      });
+
+      this.db.exec("COMMIT");
+      return { run_id: runId, workset_id: worksetId, work_item_ids: workItemIds, activity_ids: activityIds };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to create PR queue trajectory: ${String(e)}`);
+    }
+  }
+
+  /** Claim the next ready activity for a run according to work item priority. */
+  claimNextActivity(runId: string): ActivityClaim | null {
+    const now = nowIso();
+    try {
+      this.db.exec("BEGIN");
+      const row = this.db
+        .prepare(
+          `
+          SELECT
+              a.*,
+              wi.priority AS work_item_priority,
+              wi.created_at AS work_item_created_at
+          FROM activities a
+          LEFT JOIN work_items wi ON wi.work_item_id = a.work_item_id
+          WHERE a.run_id = ? AND a.status = 'ready'
+          ORDER BY COALESCE(wi.priority, 999999), wi.created_at, a.created_at, a.activity_id
+          LIMIT 1
+          `,
+        )
+        .get(runId) as Record<string, unknown> | undefined;
+
+      if (!row) {
+        this.db.exec("COMMIT");
+        return null;
+      }
+
+      const activityId = String(row["activity_id"]);
+      const worksetId = strOrNull(row["workset_id"]);
+      const workItemId = strOrNull(row["work_item_id"]);
+      this.db
+        .prepare("UPDATE activities SET status = 'claimed', updated_at = ? WHERE activity_id = ?")
+        .run(now, activityId);
+      if (workItemId) {
+        this.db
+          .prepare("UPDATE work_items SET status = 'running', next_action = 'start_activity', updated_at = ? WHERE work_item_id = ?")
+          .run(now, workItemId);
+      }
+      this.db
+        .prepare("UPDATE orchestration_runs SET status = 'executing', current_phase = 'activity_claimed', heartbeat_at = ? WHERE run_id = ?")
+        .run(now, runId);
+      this.insertTrajectoryEvent({
+        run_id: runId,
+        workset_id: worksetId,
+        work_item_id: workItemId,
+        activity_id: activityId,
+        event_type: "activity.claimed",
+        actor: "merge-god",
+        payload: { activity_id: activityId, work_item_id: workItemId },
+      });
+      this.db.exec("COMMIT");
+
+      const state = this.getTrajectoryState(runId);
+      const activity = state?.activities.find((a) => a.activity_id === activityId);
+      const workItem = workItemId ? state?.work_items.find((item) => item.work_item_id === workItemId) ?? null : null;
+      if (!activity) throw new DatabaseError(`claimed activity not found after update: ${activityId}`);
+      return {
+        ids: {
+          run_id: runId,
+          workset_id: worksetId ?? "",
+          work_item_id: workItemId ?? "",
+          activity_id: activityId,
+          activity_session_id: null,
+        },
+        activity,
+        work_item: workItem,
+      };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to claim next activity: ${String(e)}`);
+    }
+  }
+
+  /** Start a claimed activity by binding a concrete model/tool session. */
+  startClaimedActivity(
+    ids: CompatibilityTrajectoryIds,
+    sessionId: string | null,
+    model: string | null = null,
+  ): CompatibilityTrajectoryIds {
+    const activitySessionId = randomUUID();
+    const now = nowIso();
+    try {
+      this.db.exec("BEGIN");
+      this.db
+        .prepare("UPDATE activities SET status = 'running', updated_at = ? WHERE activity_id = ? AND status = 'claimed'")
+        .run(now, ids.activity_id);
+      this.db
+        .prepare(
+          `
+          INSERT INTO activity_sessions (
+              activity_session_id, activity_id, session_id, model, status,
+              started_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(activitySessionId, ids.activity_id, sessionId, model, "running", now, stringifyJson({ runtime_path: "queue" }));
+      this.insertTrajectoryEvent({
+        run_id: ids.run_id,
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: activitySessionId,
+        event_type: "activity.started",
+        actor: "merge-god",
+        payload: { session_id: sessionId, model },
+      });
+      this.db.exec("COMMIT");
+      return { ...ids, activity_session_id: activitySessionId };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to start claimed activity: ${String(e)}`);
+    }
+  }
+
+  /** Complete one queued activity and advance run/workset terminal state when exhausted. */
+  completeActivity(
+    ids: CompatibilityTrajectoryIds,
+    success: boolean,
+    summary: string | null = null,
+    errorMessage: string | null = null,
+  ): void {
+    const now = nowIso();
+    const activityStatus = success ? "succeeded" : "failed";
+
+    try {
+      this.db.exec("BEGIN");
+      if (ids.activity_session_id) {
+        this.db
+          .prepare("UPDATE activity_sessions SET status = ?, completed_at = ?, metadata = ? WHERE activity_session_id = ?")
+          .run(activityStatus, now, stringifyJson({ summary, error_message: errorMessage }), ids.activity_session_id);
+      }
+      this.db
+        .prepare("UPDATE activities SET status = ?, output_summary_ref = ?, completed_at = ?, updated_at = ? WHERE activity_id = ?")
+        .run(activityStatus, summary, now, now, ids.activity_id);
+      if (ids.work_item_id) {
+        const pendingForItem = this.db
+          .prepare("SELECT COUNT(*) AS count FROM activities WHERE work_item_id = ? AND status IN ('ready', 'claimed', 'running')")
+          .get(ids.work_item_id) as { count: number } | undefined;
+        const failedForItem = this.db
+          .prepare("SELECT COUNT(*) AS count FROM activities WHERE work_item_id = ? AND status = 'failed'")
+          .get(ids.work_item_id) as { count: number } | undefined;
+        const itemHasFailure = !success || (failedForItem?.count ?? 0) > 0;
+        const itemHasPending = (pendingForItem?.count ?? 0) > 0;
+        const workItemStatus = itemHasFailure ? "failed" : (itemHasPending ? "running" : "validated");
+        const nextAction = itemHasFailure ? "inspect_failure" : (itemHasPending ? "claim_activity" : "operator_handoff");
+        this.db
+          .prepare("UPDATE work_items SET status = ?, next_action = ?, updated_at = ? WHERE work_item_id = ?")
+          .run(workItemStatus, nextAction, now, ids.work_item_id);
+      }
+      this.insertTrajectoryEvent({
+        run_id: ids.run_id,
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: ids.activity_session_id,
+        event_type: "activity.completed",
+        actor: "merge-god",
+        payload: { success, summary, error_message: errorMessage },
+      });
+
+      const pending = this.db
+        .prepare("SELECT COUNT(*) AS count FROM activities WHERE run_id = ? AND status IN ('ready', 'claimed', 'running')")
+        .get(ids.run_id) as { count: number } | undefined;
+      if ((pending?.count ?? 0) === 0) {
+        const failed = this.db
+          .prepare("SELECT COUNT(*) AS count FROM activities WHERE run_id = ? AND status = 'failed'")
+          .get(ids.run_id) as { count: number } | undefined;
+        const hasFailures = (failed?.count ?? 0) > 0;
+        this.db
+          .prepare("UPDATE worksets SET status = ?, updated_at = ? WHERE workset_id = ?")
+          .run(hasFailures ? "blocked" : "completed", now, ids.workset_id);
+        this.db
+          .prepare("UPDATE orchestration_runs SET status = ?, current_phase = ?, heartbeat_at = ?, completed_at = ? WHERE run_id = ?")
+          .run(hasFailures ? "blocked" : "completed", hasFailures ? "blocked" : "completed", now, now, ids.run_id);
+      }
+
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to complete activity: ${String(e)}`);
+    }
+  }
+
+  /** Record a model-proposed next action for the current work item/activity. */
+  proposeNextAction(ids: CompatibilityTrajectoryIds, input: ProposedNextActionInput): void {
+    const now = nowIso();
+    try {
+      this.db.exec("BEGIN");
+      if (ids.work_item_id) {
+        this.db
+          .prepare(
+            `
+            UPDATE work_items
+            SET next_action = ?,
+                blockers = ?,
+                updated_at = ?
+            WHERE work_item_id = ?
+            `,
+          )
+          .run(
+            input.next_action,
+            stringifyJson(input.blockers ?? []),
+            now,
+            ids.work_item_id,
+          );
+      }
+      if ((input.evidence_refs ?? []).length > 0) {
+        this.db
+          .prepare("UPDATE activities SET evidence_refs = ?, updated_at = ? WHERE activity_id = ?")
+          .run(stringifyJson(input.evidence_refs ?? []), now, ids.activity_id);
+      }
+      this.insertTrajectoryEvent({
+        run_id: ids.run_id,
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: ids.activity_session_id,
+        event_type: "activity.next_action.proposed",
+        actor: "pi-agent",
+        payload: {
+          next_action: input.next_action,
+          rationale: input.rationale,
+          blockers: input.blockers ?? [],
+          evidence_refs: input.evidence_refs ?? [],
+        },
+      });
+      this.db.exec("COMMIT");
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to record proposed next action: ${String(e)}`);
+    }
+  }
+
+  /** Create a ready child activity under an existing activity. */
+  createChildActivity(ids: CompatibilityTrajectoryIds, input: ChildActivityInput): string {
+    const now = nowIso();
+    const activityId = randomUUID();
+    try {
+      this.db.exec("BEGIN");
+      this.db
+        .prepare(
+          `
+          INSERT INTO activities (
+              activity_id, run_id, workset_id, work_item_id, parent_activity_id,
+              type, status, model_profile, tool_policy, prompt_runtime_ref,
+              context_pack_refs, evidence_refs, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          activityId,
+          ids.run_id,
+          ids.workset_id || null,
+          ids.work_item_id || null,
+          ids.activity_id,
+          input.type,
+          "ready",
+          stringifyJson({}),
+          stringifyJson({ inherited_from: ids.activity_id }),
+          input.prompt_runtime_ref ?? null,
+          stringifyJson(input.context_pack_refs ?? []),
+          stringifyJson(input.evidence_refs ?? []),
+          now,
+          now,
+          stringifyJson({ summary: input.summary, ...(input.metadata ?? {}) }),
+        );
+      this.insertTrajectoryEvent({
+        run_id: ids.run_id,
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: ids.activity_session_id,
+        event_type: "activity.child_created",
+        actor: "pi-agent",
+        payload: {
+          child_activity_id: activityId,
+          type: input.type,
+          summary: input.summary,
+        },
+      });
+      this.db.exec("COMMIT");
+      return activityId;
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to create child activity: ${String(e)}`);
+    }
+  }
 
   /** Create a minimal durable trajectory around the current one-shot PR path. */
   createCompatibilityTrajectoryForPr(

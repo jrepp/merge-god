@@ -93,6 +93,111 @@ describe("agent flow: coordination round-trip", () => {
       await s.stop();
     }
   });
+
+  test("trajectory bridge exposes state and records events", async () => {
+    const events: unknown[] = [];
+      const s = new CoordinationServer("127.0.0.1", 0, {
+      getState() {
+        return { run: { run_id: "run-1", status: "executing" }, events };
+      },
+      appendEvent(input) {
+        events.push(input);
+        return { event_id: `event-${events.length}` };
+      },
+      heartbeat(input) {
+        return { ok: true, phase: input["phase"] ?? null };
+      },
+      proposeNext(input) {
+        return { accepted: input.next_action === "continue", next_action: input.next_action };
+      },
+      createChildActivity(input) {
+        return { accepted: input.type === "ci_fix", child_activity_id: "child-1" };
+      },
+    });
+    await s.start();
+    try {
+      const stateRes = await fetch(`${s.baseUrl}/trajectory`);
+      const stateBody = (await stateRes.json()) as {
+        ok: boolean;
+        trajectory: { run: { run_id: string }; events: unknown[] };
+      };
+      assert.equal(stateRes.status, 200);
+      assert.equal(stateBody.ok, true);
+      assert.equal(stateBody.trajectory.run.run_id, "run-1");
+
+      const eventRes = await fetch(`${s.baseUrl}/trajectory/event`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          event_type: "decision.made",
+          actor: "test",
+          payload: { summary: "chose next activity" },
+        }),
+      });
+      const eventBody = (await eventRes.json()) as { ok: boolean; event: { event_id: string } };
+      assert.equal(eventRes.status, 200);
+      assert.equal(eventBody.ok, true);
+      assert.equal(eventBody.event.event_id, "event-1");
+      assert.equal(events.length, 1);
+
+      const heartbeatRes = await fetch(`${s.baseUrl}/trajectory/heartbeat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phase: "validation" }),
+      });
+      const heartbeatBody = (await heartbeatRes.json()) as {
+        ok: boolean;
+        heartbeat: { phase: string };
+      };
+      assert.equal(heartbeatRes.status, 200);
+      assert.equal(heartbeatBody.heartbeat.phase, "validation");
+
+      const proposeRes = await fetch(`${s.baseUrl}/trajectory/propose-next`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ next_action: "continue", rationale: "test" }),
+      });
+      const proposeBody = (await proposeRes.json()) as {
+        ok: boolean;
+        proposal: { accepted: boolean };
+      };
+      assert.equal(proposeRes.status, 200);
+      assert.equal(proposeBody.proposal.accepted, true);
+
+      const childRes = await fetch(`${s.baseUrl}/trajectory/child-activity`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "ci_fix", summary: "fix failing check" }),
+      });
+      const childBody = (await childRes.json()) as {
+        ok: boolean;
+        activity: { accepted: boolean; child_activity_id: string };
+      };
+      assert.equal(childRes.status, 200);
+      assert.equal(childBody.activity.accepted, true);
+      assert.equal(childBody.activity.child_activity_id, "child-1");
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("trajectory endpoint can expose work item trajectory snapshot without a bridge", async () => {
+    const s = new CoordinationServer("127.0.0.1", 0);
+    await s.start();
+    try {
+      s.setWork({
+        prompt: "work",
+        trajectory: { run: { run_id: "snapshot-run" } },
+      });
+      const res = await fetch(`${s.baseUrl}/trajectory`);
+      const body = (await res.json()) as { ok: boolean; trajectory: { run: { run_id: string } } };
+      assert.equal(res.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.trajectory.run.run_id, "snapshot-run");
+    } finally {
+      await s.stop();
+    }
+  });
 });
 
 describe("agent flow: runPiAgent result contract", () => {
