@@ -50,7 +50,7 @@ npm run dashboard -- --dry-run   # extra args after --
 ```
 
 | Script | Purpose |
-|--------|---------|
+| ------ | ------- |
 | **dashboard.ts** | TUI dashboard (the main user entrypoint) |
 | **pr-loop.ts** | Per-repo processing loop |
 | **merge-god.ts** | Unified CLI dispatcher (`dashboard\|scan\|agent\|validate\|test\|status`) |

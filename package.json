@@ -32,7 +32,7 @@
     "tsconfig.json"
   ],
   "scripts": {
-    "ci": "tsc --noEmit && node --import tsx --test tests/*.test.ts packages/github-sync/tests/*.test.ts packages/workflow-ir-core/tests/*.test.ts",
+    "ci": "npm run typecheck && npm test && npm run markdownlint",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts packages/github-sync/tests/*.test.ts packages/workflow-ir-core/tests/*.test.ts",
     "dashboard": "tsx dashboard.ts",
@@ -40,8 +40,8 @@
     "agent": "tsx merge-god.ts",
     "validate": "tsx merge_god/validate.ts",
     "status": "tsx merge-god.ts status",
-    "lint": "markdownlint --config .markdownlintrc .",
-    "markdownlint": "markdownlint --config .markdownlintrc ."
+    "lint": "npm run markdownlint",
+    "markdownlint": "markdownlint --config .markdownlintrc --ignore node_modules --ignore .venv --ignore site '**/*.md'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
