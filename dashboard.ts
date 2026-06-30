@@ -39,6 +39,7 @@ import YAML from "yaml";
 
 import { AppStore, DatabaseError as AppDatabaseError } from "./app_store";
 import { SyncStore, DatabaseError as SyncDatabaseError } from "@merge-god/github-sync";
+import type { TrajectoryState } from "./trajectory";
 
 /** Combined DB-store holder: SyncStore (async, PR/repo) + AppStore (sync, processing/dashboard). */
 interface DbStores {
@@ -520,6 +521,39 @@ interface RepoStats {
   iteration: number;
 }
 
+interface WorkflowStateSnapshot {
+  run_id: string;
+  workflow_label: string;
+  status: string;
+  phase: string;
+  started_at: Date;
+  heartbeat_at: Date | null;
+  completed_at: Date | null;
+  work_item_count: number;
+  active_activity_count: number;
+  failed_activity_count: number;
+  blocked_activity_count: number;
+  blocker_count: number;
+  active_pr_numbers: number[];
+  current_work: string | null;
+  next_action: string | null;
+  latest_event: string | null;
+  latest_event_actor: string | null;
+  latest_event_at: Date | null;
+}
+
+const ACTIVE_RUN_STATUSES = new Set(["created", "surveying", "planning", "executing", "waiting"]);
+const ACTIVE_WORK_ITEM_STATUSES = new Set([
+  "queued",
+  "ready",
+  "syncing",
+  "conflicted",
+  "validating",
+  "embarked",
+  "running",
+]);
+const ACTIVE_ACTIVITY_STATUSES = new Set(["ready", "claimed", "running"]);
+
 /** Convert a raw pr_details record into a PRQueueInfo. */
 function toQueueInfo(pr: Record<string, unknown>): PRQueueInfo {
   return {
@@ -536,6 +570,67 @@ function toQueueInfo(pr: Record<string, unknown>): PRQueueInfo {
 function setsIntersect<T>(a: Set<T>, b: Set<T>): boolean {
   for (const v of a) if (b.has(v)) return true;
   return false;
+}
+
+function workflowLabel(state: TrajectoryState): string {
+  const metadata = state.run.metadata;
+  const runtimePath = toStr(metadata["runtime_path"]);
+  if (runtimePath) return runtimePath.replace(/_/g, " ");
+  if (state.worksets.some((workset) => workset.kind === "embark_cohort")) return "embark cohort";
+  if (state.worksets.some((workset) => workset.kind === "pr_queue")) return "pr queue";
+  return state.run.strategy_version;
+}
+
+function buildWorkflowSnapshot(state: TrajectoryState): WorkflowStateSnapshot {
+  const activeActivities = state.activities.filter((activity) =>
+    ACTIVE_ACTIVITY_STATUSES.has(activity.status),
+  );
+  const failedActivities = state.activities.filter((activity) => activity.status === "failed");
+  const blockedActivities = state.activities.filter((activity) => activity.status === "blocked");
+  const activeWorkItems = state.work_items.filter((item) =>
+    ACTIVE_WORK_ITEM_STATUSES.has(item.status),
+  );
+  const blockerCount = state.work_items.reduce((count, item) => count + item.blockers.length, 0);
+  const activePrNumbers = activeWorkItems
+    .filter((item) => item.source_kind === "pull_request")
+    .map((item) => item.number)
+    .filter((number) => Number.isInteger(number) && number > 0);
+  const currentItem =
+    activeWorkItems.find((item) => item.status === "running") ??
+    activeWorkItems.find((item) => item.status === "validating") ??
+    activeWorkItems[0] ??
+    null;
+  const currentActivity =
+    activeActivities.find((activity) => activity.status === "running") ??
+    activeActivities.find((activity) => activity.status === "claimed") ??
+    activeActivities[0] ??
+    null;
+  const latestEvent = state.events[state.events.length - 1] ?? null;
+
+  return {
+    run_id: state.run.run_id,
+    workflow_label: workflowLabel(state),
+    status: state.run.status,
+    phase: state.run.current_phase,
+    started_at: toDate(state.run.started_at),
+    heartbeat_at: state.run.heartbeat_at ? toDate(state.run.heartbeat_at) : null,
+    completed_at: state.run.completed_at ? toDate(state.run.completed_at) : null,
+    work_item_count: state.work_items.length,
+    active_activity_count: activeActivities.length,
+    failed_activity_count: failedActivities.length,
+    blocked_activity_count: blockedActivities.length,
+    blocker_count: blockerCount,
+    active_pr_numbers: activePrNumbers,
+    current_work: currentItem
+      ? `#${currentItem.number} ${truncate(currentItem.title.replace(/\s+/g, " "), 48)}`
+      : currentActivity
+        ? currentActivity.type
+        : null,
+    next_action: currentItem?.next_action ?? null,
+    latest_event: latestEvent?.event_type ?? null,
+    latest_event_actor: latestEvent?.actor ?? null,
+    latest_event_at: latestEvent ? toDate(latestEvent.created_at) : null,
+  };
 }
 
 // --- RepoMonitor ------------------------------------------------------------
@@ -583,6 +678,8 @@ class RepoMonitor {
   currentAgentInvocation: AgentInvocation | null = null;
   agentObservations = new BoundedArray<AgentObservation>(30);
   agentRunning = false;
+  workflowSnapshot: WorkflowStateSnapshot | null = null;
+  workflowStateError: string | null = null;
 
   private pendingLines: string[] = [];
   private lineBuffer = "";
@@ -682,6 +779,7 @@ class RepoMonitor {
 
   /** Refresh data needed for a specific dashboard view. */
   refreshDataForView(viewName: DashboardScreen): void {
+    this.refreshWorkflowSnapshot();
     if (viewName === "agent_dashboard") {
       if (this.agentHistory.length === 0 && this.db) this.loadAgentHistoryFromDb();
       if (!this.stateLoaded && !this.stateLoading) {
@@ -696,6 +794,19 @@ class RepoMonitor {
           this.prQueue.untagged.length;
         if (total === 0) this.populatePrQueueFromState(false);
       }
+    }
+  }
+
+  /** Refresh the latest durable workflow state for dashboard display. */
+  refreshWorkflowSnapshot(): void {
+    if (!this.db) return;
+    try {
+      const state = this.db.appStore.getLatestTrajectoryStateForRepo(this.name, this.path || null);
+      this.workflowSnapshot = state ? buildWorkflowSnapshot(state) : null;
+      this.workflowStateError = null;
+    } catch (e) {
+      this.workflowSnapshot = null;
+      this.workflowStateError = errMsg(e).slice(0, ERROR_TRUNCATE_LENGTH);
     }
   }
 
@@ -1634,6 +1745,7 @@ class Dashboard {
     if (enabled.length === 0) {
       return renderPanel("", [chalk.yellow("No enabled repositories")], "white");
     }
+    for (const monitor of enabled) monitor.refreshWorkflowSnapshot();
     if (this.currentScreen === "world") return this.renderWorldScreen(enabled);
     const out: string[] = [];
     for (const monitor of enabled) {
@@ -1724,6 +1836,10 @@ class Dashboard {
     let failingCi = 0;
     let needsSync = 0;
     let branchesWithPrs = 0;
+    let workflowActive = 0;
+    let workflowBlocked = 0;
+    let workflowFailed = 0;
+    let workflowBlockers = 0;
 
     for (const monitor of enabled) {
       const statusKey = this.monitorStatusKey(monitor);
@@ -1749,6 +1865,15 @@ class Dashboard {
         failingCi += monitor.prQueue.for_review
           .concat(monitor.prQueue.for_landing)
           .filter((p) => p.ci_failing).length;
+      }
+      const workflow = monitor.workflowSnapshot;
+      if (workflow) {
+        if (ACTIVE_RUN_STATUSES.has(workflow.status)) workflowActive += 1;
+        if (workflow.status === "blocked" || workflow.blocker_count > 0) workflowBlocked += 1;
+        if (workflow.status === "failed" || workflow.failed_activity_count > 0) workflowFailed += 1;
+        workflowBlockers += workflow.blocker_count;
+      } else if (monitor.workflowStateError) {
+        workflowFailed += 1;
       }
     }
 
@@ -1778,6 +1903,7 @@ class Dashboard {
       `repos      ${total}`,
       `active     ${active}`,
       `agents     ${activeAgents}`,
+      `workflows  ${workflowActive}`,
       `loaded     ${loadedStates}/${total}`,
       `loading    ${loadingStates}`,
       "",
@@ -1792,6 +1918,9 @@ class Dashboard {
       `confirm    ${confirmations}`,
       `failing ci ${failingCi}`,
       `sync debt  ${needsSync}`,
+      `wf block   ${workflowBlocked}`,
+      `wf failed  ${workflowFailed}`,
+      `blockers   ${workflowBlockers}`,
       `pr branch  ${branchesWithPrs}`,
       "",
       "RUNS",
@@ -1837,7 +1966,7 @@ class Dashboard {
         body.push(line);
       }
     }
-    const border = problems > 0 ? "red" : active > 0 ? "yellow" : "cyan";
+    const border = problems > 0 || workflowFailed > 0 ? "red" : active > 0 || workflowActive > 0 ? "yellow" : "cyan";
     return renderPanel("Sanctum", body, border);
   }
 
@@ -1857,18 +1986,27 @@ class Dashboard {
             sectorActive += 1;
           }
           if (counts.review + counts.landing > 0) sectorQueued += 1;
-          if (this.isProblemRepo(monitor)) sectorRisk += 1;
+          const workflow = monitor.workflowSnapshot;
+          const workflowProblem =
+            Boolean(monitor.workflowStateError) ||
+            workflow?.status === "failed" ||
+            workflow?.status === "blocked" ||
+            Boolean(workflow && (workflow.failed_activity_count > 0 || workflow.blocker_count > 0));
+          if (this.isProblemRepo(monitor) || workflowProblem) sectorRisk += 1;
           let marker = ".";
           let style = "dim";
           if (monitor.pending_confirmation) {
             marker = "?";
             style = "bold yellow";
-          } else if (this.isProblemRepo(monitor)) {
+          } else if (this.isProblemRepo(monitor) || workflowProblem) {
             marker = "!";
             style = "bold red";
           } else if (monitor.agentRunning) {
             marker = "A";
             style = "magenta";
+          } else if (workflow && ACTIVE_RUN_STATUSES.has(workflow.status)) {
+            marker = "W";
+            style = "bold yellow";
           } else if (statusKey === "processing") {
             marker = "P";
             style = "yellow";
@@ -1897,7 +2035,7 @@ class Dashboard {
     body.push("");
     body.push(
       chalk.dim(
-        "Legend: ! problem  ? confirm  A agent  P processing  S scanning  R running  > starting  I idle  . other",
+        "Legend: ! problem  ? confirm  A agent  W workflow  P processing  S scanning  R running  > starting  I idle  . other",
       ),
     );
     return renderPanel("Repository Sectors", body, "cyan");
@@ -1909,16 +2047,24 @@ class Dashboard {
         const statusKey = this.monitorStatusKey(monitor);
         const counts = this.queueCounts(monitor);
         const queued = counts.review + counts.landing;
+        const workflow = monitor.workflowSnapshot;
+        const workflowActive = Boolean(workflow && ACTIVE_RUN_STATUSES.has(workflow.status));
+        const workflowProblem =
+          Boolean(monitor.workflowStateError) ||
+          workflow?.status === "failed" ||
+          workflow?.status === "blocked" ||
+          Boolean(workflow && (workflow.failed_activity_count > 0 || workflow.blocker_count > 0));
         const score =
           (monitor.pending_confirmation ? 1000 : 0) +
-          (this.isProblemRepo(monitor) ? 900 : 0) +
+          (this.isProblemRepo(monitor) || workflowProblem ? 900 : 0) +
           (statusKey === "processing" ? 800 : 0) +
           (monitor.agentRunning ? 700 : 0) +
+          (workflowActive ? 650 : 0) +
           (statusKey === "scanning" ? 500 : 0) +
           (statusKey === "starting" ? 300 : 0) +
           queued * 10 +
           monitor.stats.failures * 5;
-        return { monitor, statusKey, counts, queued, score };
+        return { monitor, statusKey, counts, queued, score, workflowActive, workflowProblem };
       })
       .filter((item) => item.score > 0 || item.queued > 0)
       .sort(
@@ -1936,7 +2082,9 @@ class Dashboard {
     const repoWidth = Math.max(12, Math.min(24, Math.floor(width * 0.18)));
     const actionWidth = Math.max(20, Math.min(48, width - repoWidth - 48));
     const maxRows = this.currentScreen === "world" ? 8 : 14;
-    const rows = ranked.slice(0, maxRows).map(({ monitor, statusKey, counts, queued }) => {
+    const rows = ranked.slice(0, maxRows).map(({ monitor, statusKey, counts, queued, workflowActive }) => {
+      const workflow = monitor.workflowSnapshot;
+      const workflowSignal = workflow ? `${workflow.status}/${workflow.phase}` : "";
       const work =
         monitor.pending_confirmation
           ? "confirm"
@@ -1944,13 +2092,23 @@ class Dashboard {
             ? "problem"
           : monitor.agentRunning
             ? "agent"
+            : workflowActive && workflow
+              ? workflow.workflow_label
             : queued > 0
               ? `r${counts.review}/l${counts.landing}`
               : statusKey;
       const pr = monitor.processingPR
         ? `#${monitor.processingPR.number}`
-        : monitor.current_pr ?? (queued > 0 ? `${queued} queued` : "--");
-      const signal = monitor.stateLoadError ?? monitor.current_action ?? monitor.logs.sliceLast(1)[0] ?? "";
+        : monitor.current_pr ??
+          (workflow && workflow.active_pr_numbers.length > 0
+            ? workflow.active_pr_numbers.slice(0, 2).map((n) => `#${n}`).join(",")
+            : queued > 0
+              ? `${queued} queued`
+              : "--");
+      const fallbackSignal =
+        [workflowSignal, monitor.stateLoadError, monitor.current_action, monitor.logs.sliceLast(1)[0]]
+          .find((value) => Boolean(value)) ?? "";
+      const signal = monitor.workflowStateError ?? fallbackSignal;
       return [
         statusKey,
         monitor.name,
@@ -1968,7 +2126,7 @@ class Dashboard {
     if (ranked.length > rows.length) {
       body.push(chalk.dim(`... ${ranked.length - rows.length} more repos with signal`));
     }
-    const border = ranked.some((r) => this.isProblemRepo(r.monitor)) ? "red" : "yellow";
+    const border = ranked.some((r) => this.isProblemRepo(r.monitor) || r.workflowProblem) ? "red" : "yellow";
     return renderPanel("Priority Work", body, border);
   }
 
@@ -2050,7 +2208,7 @@ class Dashboard {
 
     const stateLines = this.renderStateSection(monitor);
     const prQueueLines = this.renderPrQueueSection(monitor);
-    const trajectoryLines = this.renderTrajectorySection(monitor);
+    const workflowLines = this.renderWorkflowSection(monitor);
 
     const logsLines = new Lines();
     for (const log of monitor.logs.sliceLast(8)) logsLines.append(log + "\n", "dim");
@@ -2060,7 +2218,7 @@ class Dashboard {
     body.push(...statusLines);
     if (stateLines) body.push(...stateLines);
     if (prQueueLines) body.push(...prQueueLines);
-    if (trajectoryLines) body.push(...trajectoryLines);
+    if (workflowLines) body.push(...workflowLines);
     body.push("");
     body.push(...logsRendered);
 
@@ -2076,34 +2234,82 @@ class Dashboard {
     return renderPanel(monitor.name, body, border);
   }
 
-  private renderTrajectorySection(monitor: RepoMonitor): string[] | null {
-    if (!this.db) return null;
-    try {
-      const run = this.db.appStore
-        .getOrchestrationRuns(10)
-        .find((item) => item.repo_name === monitor.name || item.repo_path === monitor.path);
-      if (!run) return null;
-      const state = this.db.appStore.getTrajectoryState(run.run_id);
-      if (!state) return null;
-      const activeActivities = state.activities.filter((activity) =>
-        ["ready", "claimed", "running"].includes(activity.status),
-      );
-      const blockers = state.work_items.reduce((count, item) => count + item.blockers.length, 0);
-      const text = new Lines();
-      text.append("\nTrajectory:\n", "bold cyan");
-      text.append(`  Run: ${run.status}`, run.status === "completed" ? "green" : "yellow");
-      text.append(` | Phase: ${run.current_phase}`, "dim");
-      text.append(` | Work items: ${state.work_items.length}`, "white");
-      text.append(` | Active: ${activeActivities.length}`, activeActivities.length > 0 ? "yellow" : "dim");
-      text.append(` | Events: ${state.events.length}\n`, "dim");
-      if (blockers > 0) text.append(`  Blockers: ${blockers}\n`, "red");
-      return text.render();
-    } catch (e) {
-      const text = new Lines();
-      text.append("\nTrajectory: ", "bold cyan");
-      text.append(`unavailable (${truncate(errMsg(e), 80)})\n`, "red dim");
+  private renderWorkflowSection(monitor: RepoMonitor): string[] | null {
+    const workflow = monitor.workflowSnapshot;
+    if (!workflow && !monitor.workflowStateError) return null;
+
+    const text = new Lines();
+    text.append("\nWorkflow State:\n", "bold cyan");
+    if (monitor.workflowStateError) {
+      text.append("  unavailable: ", "red");
+      text.append(`${monitor.workflowStateError}\n`, "red dim");
       return text.render();
     }
+    if (!workflow) return null;
+
+    const statusStyle =
+      workflow.status === "completed"
+        ? "green"
+        : workflow.status === "failed"
+          ? "red"
+          : workflow.status === "blocked"
+            ? "bold red"
+            : ACTIVE_RUN_STATUSES.has(workflow.status)
+              ? "yellow"
+              : "white";
+    text.append("  Run: ", "dim");
+    text.append(`${workflow.workflow_label}`, "bold white");
+    text.append(` (${truncate(workflow.run_id, 8)})`, "dim");
+    text.append(" | Status: ", "dim");
+    text.append(workflow.status, statusStyle);
+    text.append(" | Phase: ", "dim");
+    text.append(`${workflow.phase}\n`, "yellow dim");
+
+    text.append("  Work: ", "dim");
+    text.append(`${workflow.work_item_count} items`, "white");
+    text.append(` | Active activities: ${workflow.active_activity_count}`, workflow.active_activity_count > 0 ? "yellow" : "dim");
+    if (workflow.failed_activity_count > 0) {
+      text.append(` | Failed: ${workflow.failed_activity_count}`, "red");
+    }
+    if (workflow.blocked_activity_count > 0) {
+      text.append(` | Blocked: ${workflow.blocked_activity_count}`, "red");
+    }
+    if (workflow.blocker_count > 0) {
+      text.append(` | Blockers: ${workflow.blocker_count}`, "bold red");
+    }
+    text.append("\n");
+
+    if (workflow.current_work || workflow.next_action) {
+      text.append("  Current: ", "dim");
+      text.append(workflow.current_work ?? "n/a", "white");
+      if (workflow.next_action) {
+        text.append(" | Next: ", "dim");
+        text.append(workflow.next_action, "cyan");
+      }
+      text.append("\n");
+    }
+
+    if (workflow.active_pr_numbers.length > 0) {
+      text.append("  PRs: ", "dim");
+      text.append(workflow.active_pr_numbers.slice(0, 5).map((n) => `#${n}`).join(", "), "cyan");
+      if (workflow.active_pr_numbers.length > 5) {
+        text.append(` +${workflow.active_pr_numbers.length - 5} more`, "dim");
+      }
+      text.append("\n");
+    }
+
+    if (workflow.latest_event) {
+      text.append("  Latest event: ", "dim");
+      text.append(workflow.latest_event, "white");
+      if (workflow.latest_event_actor) text.append(` by ${workflow.latest_event_actor}`, "dim");
+      if (workflow.latest_event_at) text.append(` ${this.ageString(workflow.latest_event_at)} ago`, "dim");
+      text.append("\n");
+    }
+
+    const heartbeat = workflow.heartbeat_at ?? workflow.completed_at ?? workflow.started_at;
+    text.append("  Updated: ", "dim");
+    text.append(`${this.ageString(heartbeat)} ago\n`, "dim");
+    return text.render();
   }
 
   private renderStateSection(monitor: RepoMonitor): string[] | null {

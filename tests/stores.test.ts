@@ -510,4 +510,29 @@ describe("AppStore", () => {
       ],
     );
   });
+
+  test("getLatestTrajectoryStateForRepo prefers active workflow state", () => {
+    const completedIds = appStore.createCompatibilityTrajectoryForPr({
+      repo_name: "test-repo",
+      repo_path: "/repo",
+      pr_number: 11,
+      mode: "for-landing",
+      title: "Completed PR",
+    });
+    appStore.completeCompatibilityTrajectory(completedIds, true, "Done", null);
+
+    const activeIds = appStore.createCompatibilityTrajectoryForPr({
+      repo_name: "test-repo",
+      repo_path: "/repo",
+      pr_number: 12,
+      mode: "for-review",
+      title: "Active PR",
+    });
+
+    const latest = appStore.getLatestTrajectoryStateForRepo("test-repo", "/repo");
+    assert.ok(latest !== null);
+    assert.equal(latest!.run.run_id, activeIds.run_id);
+    assert.equal(latest!.run.status, "executing");
+    assert.equal(latest!.work_items[0]!["number"], 12);
+  });
 });
