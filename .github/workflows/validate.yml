@@ -1,0 +1,92 @@
+name: Repository Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-cms:
+    name: docs-cms validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install docuchango
+        run: pip install 'docuchango>=1.12.3,<1.13'
+
+      - name: Validate docs-cms
+        run: docuchango validate --verbose
+
+  site-build:
+    name: site build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install site dependencies
+        run: npm ci
+
+      - name: Build Astro site
+        run: npm run build
+
+  package-smoke:
+    name: package smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check root package contents
+        run: npm pack --dry-run
+
+      - name: Check workspace package contents
+        run: |
+          npm pack --dry-run --workspace @merge-god/github-sync
+          npm pack --dry-run --workspace @merge-god/workflow-ir-core
+
+  cli-smoke:
+    name: cli smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run packaged CLI help
+        run: node bin/merge-god.js help
