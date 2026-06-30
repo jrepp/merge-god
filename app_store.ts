@@ -1971,6 +1971,43 @@ export class AppStore {
     return rows.map((row) => this.parseOrchestrationRun(row));
   }
 
+  /** Load the most relevant trajectory for a repository, preferring active runs. */
+  getLatestTrajectoryStateForRepo(repoName: string, repoPath: string | null = null): TrajectoryState | null {
+    const params: string[] = [repoName];
+    let repoPredicate = "repo_name = ?";
+    if (repoPath) {
+      repoPredicate = `(${repoPredicate} OR repo_path = ?)`;
+      params.push(repoPath);
+    }
+
+    const row = this.db
+      .prepare(
+        `
+        SELECT run_id
+        FROM orchestration_runs
+        WHERE ${repoPredicate}
+        ORDER BY
+          CASE status
+            WHEN 'executing' THEN 0
+            WHEN 'planning' THEN 1
+            WHEN 'surveying' THEN 1
+            WHEN 'waiting' THEN 2
+            WHEN 'created' THEN 3
+            WHEN 'blocked' THEN 4
+            WHEN 'failed' THEN 5
+            WHEN 'completed' THEN 6
+            ELSE 7
+          END,
+          COALESCE(heartbeat_at, started_at) DESC,
+          started_at DESC
+        LIMIT 1
+        `,
+      )
+      .get(...params) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return this.getTrajectoryState(String(row["run_id"]));
+  }
+
   /** Load one run with its worksets, work items, activities, sessions, and events. */
   getTrajectoryState(runId: string): TrajectoryState | null {
     const runRow = this.db
