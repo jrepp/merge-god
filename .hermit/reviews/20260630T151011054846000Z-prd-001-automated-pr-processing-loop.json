@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "source_path": "docs-cms/prd/prd-001-automated-pr-processing-loop.md",
+  "source_title": "Automated PR Processing Loop",
+  "document_type": "prd",
+  "base_branch": "main",
+  "base_sha": "36f219544e84cdf1ae62ebfb0fe9b6cee88d1435",
+  "previous_pr_number": 2,
+  "created_at": "2026-06-30T15:10:11Z"
+}
