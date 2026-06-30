@@ -55,6 +55,8 @@ contracts:
         description: Retry, timeout, on-error routing, cancellation, and compensation.
       - id: agentic
         description: Agentic action mode, tool contracts, autonomy boundaries, evidence requirements, and escalation behavior.
+      - id: prompt-runtime
+        description: Prompt contract references, runtime prompt inputs, model/tool envelopes, and structured output contracts for prompt-driven action nodes.
     non_goals:
       - metro-authoring-markdown-format
       - gantry-runtime-state-object

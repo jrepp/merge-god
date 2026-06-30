@@ -123,6 +123,11 @@ Meaning: a backend must support basic DAG execution and human gates. Typed dataf
 
 Practical rule: if dropping a feature changes correctness, put it in `required_profiles`.
 
+Use `prompt-runtime` when action nodes rely on registered prompt contracts,
+model/tool envelopes, or structured prompt outputs. This is separate from
+`agentic`: an agentic node describes autonomous execution semantics, while
+`prompt-runtime` describes the prompt contract surface the backend must preserve.
+
 ---
 
 ## `basic-dag`

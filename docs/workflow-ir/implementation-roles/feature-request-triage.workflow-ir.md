@@ -25,7 +25,7 @@ workflow:
       - Security reports and vulnerability disclosures are rejected from ordinary feature implementation and routed to security-specific intake.
 
 capabilities:
-  required_profiles: [agentic, gates, typed-dataflow, prompt-runtime]
+  required_profiles: [agentic, human-gates, typed-dataflow, prompt-runtime]
   required_extensions:
     - name: merge-god/source-code-grounding
       version: v1

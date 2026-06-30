@@ -22,6 +22,7 @@ This directory is vendored reference material, not the Merge God documentation s
 - `PROMPT-SPEC.md` - Metro prompt authoring spec.
 - `WORKFLOW-IR-SPEC.md` - WorkflowIR normative specification.
 - `WORKFLOW-IR-GUIDE.md` - WorkflowIR implementer guide.
+- `WORKFLOW-IR-CHANGE-LEDGER.md` - Local change ledger for vendored WorkflowIR updates that need upstream/backport handling.
 - `workflow-README.md` - Metro workflow docs hub.
 - `workflow-QUICK-REF.md` - Workflow authoring quick reference.
 - `workflow-ir-registry.yaml` - WorkflowIR schema family registry entry.
