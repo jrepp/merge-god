@@ -21,67 +21,50 @@ At the same time, PR comments are still the right place for detailed communicati
 
 # Decision
 
-Use GitHub PR labels in the `mg:*` namespace as Merge God's state schema. These labels act as compact topics/tags for current machine state. Use PR comments as the detailed event log.
+Use GitHub PR labels in the `merge:*` namespace as Merge God's state schema. These labels act as compact topics/tags for current machine state. Use PR comments as the detailed event log.
 
 Existing processing labels remain input labels:
 
 - `for-landing`: PR owner requests landing-focused processing.
 - `for-review`: PR owner requests review plus landing-focused processing.
 
-New `mg:*` labels are output labels controlled by Merge God:
+New `merge:*` labels are output labels controlled by Merge God:
 
-- `mg:proposed`: PR has been discovered as eligible or potentially eligible for Merge God processing.
-- `mg:valid-queued`: PR is queued for validation but validation has not started.
-- `mg:validating`: Merge God is gathering context and running validation gates.
-- `mg:ready`: Validation passed and the PR is ready for Merge God to start work.
-- `mg:embarked`: Merge God has started making or attempting changes for this PR.
-- `mg:needs-review`: Merge God completed its work and needs human review or approval before landing.
-- `mg:owner-action`: Merge God is waiting for the PR owner or reviewer to act.
-- `mg:blocked`: Merge God cannot continue until an external blocker is removed.
-- `mg:failed`: Merge God attempted work and hit a failure that needs investigation.
-- `mg:landed`: Merge God successfully landed or confirmed the PR was merged.
+- `merge:ready`: Merge God may process or embark this PR.
+- `merge:processing`: Merge God is actively processing this PR.
+- `merge:embarked`: Merge God included this PR in an embark cohort.
+- `merge:blocked`: Merge God cannot continue until an external blocker is removed.
+- `merge:failed`: Merge God attempted work and hit a failure that needs investigation.
+- `merge:complete`: Merge God completed processing for this PR.
 
-Only one primary `mg:*` lifecycle label should be present on a PR at a time.
+Only one primary `merge:*` lifecycle label should be present on a PR at a time.
 
 # State Transitions
 
 The expected lifecycle is:
 
-1. `mg:proposed`
-2. `mg:valid-queued`
-3. `mg:validating`
-4. `mg:ready`
-5. `mg:embarked`
-6. One terminal or waiting state:
-   - `mg:needs-review`
-   - `mg:owner-action`
-   - `mg:blocked`
-   - `mg:failed`
-   - `mg:landed`
+1. `merge:ready`
+2. `merge:processing` or `merge:embarked`
+3. One terminal or waiting state:
+   - `merge:blocked`
+   - `merge:failed`
+   - `merge:complete`
 
-Merge God may move a PR backward when new commits, new review comments, or changed checks invalidate previous state. For example, a PR in `mg:needs-review` may return to `mg:valid-queued` after the author pushes new commits.
+Merge God may move a PR backward when new commits, new review comments, or changed checks invalidate previous state. For example, an operator may remove `merge:complete` and apply `merge:ready` after the author pushes new commits.
 
 # Label Semantics
 
-`mg:proposed` means Merge God has identified the PR as a possible candidate. It does not mean work has started.
+`merge:ready` means the PR is eligible for Merge God processing. Operators or selection logic may apply it to mark a PR as ready for isolated PR processing or an embark cohort.
 
-`mg:valid-queued` means the PR is in a validation queue. This state is useful for dashboards and for owners who need to know that Merge God has accepted the request but has not inspected the PR yet.
+`merge:processing` means Merge God is actively operating on the PR through the one-PR processing path. This may include gathering context, resolving conflicts, addressing review comments, fixing checks, pushing commits, or preparing to merge.
 
-`mg:validating` means Merge God is reading PR metadata, diff, comments, reviews, mergeability, and CI state. Comments should only be posted from this state when validation fails or when the validation result changes what the owner should do.
+`merge:embarked` means Merge God included the PR in a multi-PR embark cohort. The source PR is being represented in a grouped integration attempt that can merge multiple ready PRs together, run validation once, and produce a single output PR.
 
-`mg:ready` means required validation gates passed. The PR is safe for Merge God to start its configured processing mode.
+`merge:blocked` means an external condition prevents progress. Examples include missing permissions, unavailable required checks, branch protection that Merge God cannot satisfy, missing credentials, or unresolved product decisions. A comment must name the blocker and the evidence.
 
-`mg:embarked` means Merge God is actively operating on the PR. This may include resolving conflicts, addressing review comments, fixing failing checks, pushing commits, or preparing to merge.
+`merge:failed` means Merge God attempted an operation and failed unexpectedly or repeatedly. A comment must include the failed operation, the visible error, and any known recovery path.
 
-`mg:needs-review` means Merge God made changes or reached a decision that should be reviewed by a human. A comment should summarize what changed and what the reviewer should inspect.
-
-`mg:owner-action` means Merge God needs input or action from the PR owner. A comment must explain the requested action.
-
-`mg:blocked` means an external condition prevents progress. Examples include missing permissions, unavailable required checks, branch protection that Merge God cannot satisfy, or unresolved product decisions. A comment must name the blocker and the evidence.
-
-`mg:failed` means Merge God attempted an operation and failed unexpectedly or repeatedly. A comment must include the failed operation, the visible error, and any known recovery path.
-
-`mg:landed` means the PR is merged or otherwise complete from Merge God's perspective.
+`merge:complete` means processing is complete from Merge God's perspective. The PR may be merged, or the source PR may have been represented by a completed embark output.
 
 # Comments Versus Labels
 
@@ -96,13 +79,18 @@ Use comments for:
 - Owner action requests.
 - Links to logs, commits, checks, or generated artifacts.
 
-Do not encode detailed evidence in label names. Prefer `mg:blocked` plus a comment over labels such as `mg:blocked-ci-timeout-on-macos`.
+Merge God may maintain one bot-owned review gate cache comment with rows for
+rule, status, and explanation. That comment is a projection for human scanning,
+not an input to merge decisions. Durable trajectory/database state and validation
+evidence remain the source of truth.
+
+Do not encode detailed evidence in label names. Prefer `merge:blocked` plus a comment over labels such as `merge:blocked-ci-timeout-on-macos`.
 
 # Update Rules
 
-Merge God owns labels with the `mg:` prefix and may add or remove them. It must not mutate non-`mg:` labels except where a separate decision explicitly allows that.
+Merge God owns labels with the `merge:` prefix and may add or remove them. It must not mutate non-`merge:` labels except where a separate decision explicitly allows that.
 
-When changing lifecycle state, Merge God should remove any existing primary lifecycle `mg:*` label before adding the new one. If GitHub API operations are not atomic, Merge God should converge to a single primary lifecycle label on the next sync pass.
+When changing lifecycle state, Merge God should remove any existing primary lifecycle `merge:*` label before adding the new one. If GitHub API operations are not atomic, Merge God should converge to a single primary lifecycle label on the next sync pass.
 
 Merge God should not post a comment for every polling cycle. It should comment only when:
 
@@ -116,11 +104,12 @@ Merge God should not post a comment for every polling cycle. It should comment o
 
 Useful GitHub queries:
 
-- `label:mg:valid-queued`: PRs waiting for validation.
-- `label:mg:embarked`: PRs currently being worked by Merge God.
-- `label:mg:needs-review`: PRs ready for human review after Merge God work.
-- `label:mg:blocked label:for-landing`: landing requests that cannot proceed.
-- `label:mg:failed`: PRs needing Merge God operator investigation.
+- `label:merge:ready`: PRs ready for Merge God processing or embark selection.
+- `label:merge:processing`: PRs currently being worked by Merge God.
+- `label:merge:embarked`: PRs included in a multi-PR embark cohort.
+- `label:merge:blocked label:for-landing`: landing requests that cannot proceed.
+- `label:merge:failed`: PRs needing Merge God operator investigation.
+- `label:merge:complete`: PRs completed by Merge God.
 
 # Consequences
 
@@ -129,7 +118,7 @@ Useful GitHub queries:
 - PR owners can see Merge God's current state without reading the full comment history.
 - Dashboards and sync loops can query PR state cheaply using labels.
 - Comments stay focused on durable evidence and actionable details.
-- The `mg:` namespace separates Merge God output from user-owned processing intent.
+- The `merge:` namespace separates Merge God output from user-owned processing intent.
 
 ## Negative
 
@@ -150,7 +139,7 @@ Using comments for all communication would preserve a full timeline but make cur
 
 ## GitHub Commit Statuses Or Checks
 
-Checks are useful for validation gates, but they are less visible in PR lists and are a poor fit for states such as `mg:owner-action` or `mg:needs-review`.
+Checks are useful for validation gates, but they are less visible in PR lists and are a poor fit for states such as `merge:blocked` or `merge:embarked`.
 
 ## Reusing `for-*` Labels
 

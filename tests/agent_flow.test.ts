@@ -11,8 +11,15 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { CoordinationServer, type PiAgentResult } from "../coordination";
+import { AppStore } from "../app_store";
+import { CoordinationServer, findExtension, runPiAgent, type PiAgentResult } from "../coordination";
+import { classifyPrFailureState, piAgentFailureReason, renderReviewGateStatusComment } from "../pr-loop";
+import { TrajectoryRuntime } from "../trajectory_runtime";
 
 describe("agent flow: coordination round-trip", () => {
   test("health endpoint reports ok", async () => {
@@ -93,6 +100,111 @@ describe("agent flow: coordination round-trip", () => {
       await s.stop();
     }
   });
+
+  test("trajectory bridge exposes state and records events", async () => {
+    const events: unknown[] = [];
+    const s = new CoordinationServer("127.0.0.1", 0, {
+      getState() {
+        return { run: { run_id: "run-1", status: "executing" }, events };
+      },
+      appendEvent(input) {
+        events.push(input);
+        return { event_id: `event-${events.length}` };
+      },
+      heartbeat(input) {
+        return { ok: true, phase: input["phase"] ?? null };
+      },
+      proposeNext(input) {
+        return { accepted: input.next_action === "continue", next_action: input.next_action };
+      },
+      createChildActivity(input) {
+        return { accepted: input.type === "ci_fix", child_activity_id: "child-1" };
+      },
+    });
+    await s.start();
+    try {
+      const stateRes = await fetch(`${s.baseUrl}/trajectory`);
+      const stateBody = (await stateRes.json()) as {
+        ok: boolean;
+        trajectory: { run: { run_id: string }; events: unknown[] };
+      };
+      assert.equal(stateRes.status, 200);
+      assert.equal(stateBody.ok, true);
+      assert.equal(stateBody.trajectory.run.run_id, "run-1");
+
+      const eventRes = await fetch(`${s.baseUrl}/trajectory/event`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          event_type: "decision.made",
+          actor: "test",
+          payload: { summary: "chose next activity" },
+        }),
+      });
+      const eventBody = (await eventRes.json()) as { ok: boolean; event: { event_id: string } };
+      assert.equal(eventRes.status, 200);
+      assert.equal(eventBody.ok, true);
+      assert.equal(eventBody.event.event_id, "event-1");
+      assert.equal(events.length, 1);
+
+      const heartbeatRes = await fetch(`${s.baseUrl}/trajectory/heartbeat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phase: "validation" }),
+      });
+      const heartbeatBody = (await heartbeatRes.json()) as {
+        ok: boolean;
+        heartbeat: { phase: string };
+      };
+      assert.equal(heartbeatRes.status, 200);
+      assert.equal(heartbeatBody.heartbeat.phase, "validation");
+
+      const proposeRes = await fetch(`${s.baseUrl}/trajectory/propose-next`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ next_action: "continue", rationale: "test" }),
+      });
+      const proposeBody = (await proposeRes.json()) as {
+        ok: boolean;
+        proposal: { accepted: boolean };
+      };
+      assert.equal(proposeRes.status, 200);
+      assert.equal(proposeBody.proposal.accepted, true);
+
+      const childRes = await fetch(`${s.baseUrl}/trajectory/child-activity`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "ci_fix", summary: "fix failing check" }),
+      });
+      const childBody = (await childRes.json()) as {
+        ok: boolean;
+        activity: { accepted: boolean; child_activity_id: string };
+      };
+      assert.equal(childRes.status, 200);
+      assert.equal(childBody.activity.accepted, true);
+      assert.equal(childBody.activity.child_activity_id, "child-1");
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("trajectory endpoint can expose work item trajectory snapshot without a bridge", async () => {
+    const s = new CoordinationServer("127.0.0.1", 0);
+    await s.start();
+    try {
+      s.setWork({
+        prompt: "work",
+        trajectory: { run: { run_id: "snapshot-run" } },
+      });
+      const res = await fetch(`${s.baseUrl}/trajectory`);
+      const body = (await res.json()) as { ok: boolean; trajectory: { run: { run_id: string } } };
+      assert.equal(res.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.trajectory.run.run_id, "snapshot-run");
+    } finally {
+      await s.stop();
+    }
+  });
 });
 
 describe("agent flow: runPiAgent result contract", () => {
@@ -124,5 +236,213 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.equal(failure.returncode, 1);
     assert.ok(failure.stderr.length > 0);
     assert.equal(noResult.result, null);
+  });
+
+  test("piAgentFailureReason prefers completion errors for copyable failure logs", () => {
+    assert.equal(
+      piAgentFailureReason(
+        0,
+        { status: "failure", summary: "could not land", error: "merge conflict remained" },
+        "ignored stderr",
+        "ignored stdout",
+      ),
+      "merge conflict remained",
+    );
+    assert.equal(
+      piAgentFailureReason(1, null, "fatal: missing credential\nretry failed", ""),
+      "pi exited 1: fatal: missing credential retry failed",
+    );
+    assert.equal(piAgentFailureReason(1, null, "", ""), "pi exited 1");
+  });
+
+  test("classifyPrFailureState separates blocked failures from ordinary failures", () => {
+    assert.equal(classifyPrFailureState("needs credentials before continuing"), "blocked");
+    assert.equal(classifyPrFailureState("test suite failed"), "failed");
+    assert.equal(classifyPrFailureState("", { error: "manual approval required" }), "blocked");
+  });
+
+  test("renderReviewGateStatusComment sanitizes non-authoritative gate cache rows", () => {
+    const rendered = renderReviewGateStatusComment(
+      [
+        {
+          rule: "merge | gate <script>",
+          status: "pwned",
+          explanation: "needs @ops `approval` | <img src=x onerror=alert(1)>",
+        },
+      ],
+      "2026-06-30T00:00:00.000Z",
+    );
+    assert.match(rendered, /merge-god-review-gate-cache:v1/);
+    assert.match(rendered, /Non-authoritative cache/);
+    assert.match(rendered, /merge \\| gate &lt;script&gt;/);
+    assert.match(rendered, /\| unknown \|/);
+    assert.match(rendered, /needs \(at\)ops &#96;approval&#96; \\| &lt;img/);
+    assert.doesNotMatch(rendered, /<script>|@ops|`approval`/);
+  });
+
+  test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
+    const binDir = path.join(tempDir, "bin");
+    const repoDir = path.join(tempDir, "repo");
+    const dbPath = path.join(tempDir, "trajectory.db");
+    const runnerPath = path.join(tempDir, "fake-pi-runner.mjs");
+    const piPath = path.join(binDir, "pi");
+    const tsxLoader = import.meta.resolve("tsx");
+    const store = new AppStore(dbPath);
+
+    try {
+      mkdirSync(binDir);
+      mkdirSync(repoDir);
+      writeFileSync(path.join(repoDir, "README.md"), "# fake repo\n");
+      for (const args of [
+        ["init"],
+        ["config", "user.email", "merge-god@example.test"],
+        ["config", "user.name", "merge-god test"],
+        ["add", "README.md"],
+        ["commit", "-m", "Initial commit"],
+      ]) {
+        const result = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+      }
+      writeFileSync(
+        runnerPath,
+        `
+const extensionIndex = process.argv.indexOf("--extension");
+if (extensionIndex === -1 || !process.argv[extensionIndex + 1]) {
+  console.error("missing --extension argument");
+  process.exit(2);
+}
+
+const extensionModule = await import(process.argv[extensionIndex + 1]);
+const tools = new Map();
+extensionModule.default({
+  registerTool(tool) {
+    tools.set(tool.name, tool);
+  },
+});
+
+async function callTool(name, params = {}) {
+  const tool = tools.get(name);
+  if (!tool) throw new Error("missing tool: " + name);
+  const result = await tool.execute("fake-call-id", params);
+  console.log(JSON.stringify({ tool: name, details: result.details }));
+  return result;
+}
+
+const context = await callTool("merge_god_context");
+const state = await callTool("merge_god_trajectory_state");
+const runId = state.details?.data?.trajectory?.run?.run_id ?? null;
+await callTool("merge_god_trajectory_event", {
+  event_type: "decision.made",
+  payload: {
+    summary: "fake pi inspected coordination trajectory state",
+    run_id: runId,
+    context_ok: context.details?.ok === true,
+  },
+});
+await callTool("merge_god_observe", {
+  level: "info",
+  category: "context",
+  summary: "fake pi has enough context to continue",
+  signal_refs: ["evidence://fake-pi/context"],
+  grounding_refs: ["AGENTS.md"],
+  confidence: 0.9,
+  suggested_next: "create child activity",
+});
+await callTool("merge_god_debug_snapshot");
+await callTool("merge_god_propose_next", {
+  next_action: "create_child_activity",
+  rationale: "fake pi verified trajectory state and needs scoped CI diagnosis",
+  evidence_refs: ["evidence://fake-pi/state-read"],
+});
+await callTool("merge_god_create_child_activity", {
+  type: "ci_diagnosis",
+  summary: "fake pi requested a scoped CI diagnosis child activity",
+  evidence_refs: ["evidence://fake-pi/state-read"],
+});
+await callTool("merge_god_complete", {
+  status: "success",
+  summary: "fake pi used merge-god coordination trajectory state",
+});
+`,
+      );
+      writeFileSync(
+        piPath,
+        `#!/bin/sh
+exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$@"
+`,
+      );
+      chmodSync(piPath, 0o755);
+
+      const runtime = new TrajectoryRuntime(store);
+      const started = runtime.startPrAgentWorkflow({
+        repo_name: "owner/repo",
+        repo_path: repoDir,
+        pr_number: 42,
+        mode: "for-review",
+        title: "Use trajectory state",
+        labels: ["for-review"],
+        model: "fake-pi",
+      });
+      const gitEvents: string[] = [];
+      const gitMetrics: string[] = [];
+      const observations: string[] = [];
+
+      const result = await runPiAgent(
+        {
+          kind: "trajectory_activity",
+          repo: "owner/repo",
+          repo_path: repoDir,
+          pr_number: 42,
+          mode: "for-review",
+          title: "Use trajectory state",
+          prompt: "Use the merge-god trajectory state before reporting completion.",
+        },
+        repoDir,
+        {
+          extensionPath: findExtension(),
+          extraEnv: { PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
+          trajectory: runtime.bridgeForPiAgent(started.ids),
+          gitObserver: {
+            onEvent(event) {
+              gitEvents.push(event.event);
+            },
+            onMetric(metric) {
+              gitMetrics.push(metric.name);
+            },
+          },
+          agentObserver(observation) {
+            observations.push(observation.summary);
+          },
+          timeout: 10,
+        },
+      );
+
+      assert.equal(result.returncode, 0, result.stderr || result.stdout);
+      assert.equal(result.result?.["status"], "success");
+      assert.equal(result.result?.["summary"], "fake pi used merge-god coordination trajectory state");
+      assert.match(result.stdout, /"tool":"merge_god_trajectory_state"/);
+      assert.match(result.stdout, /"tool":"merge_god_observe"/);
+      assert.match(result.stdout, /"tool":"merge_god_debug_snapshot"/);
+      assert.match(result.stdout, /"tool":"merge_god_propose_next"/);
+      assert.match(result.stdout, /"tool":"merge_god_create_child_activity"/);
+      assert.ok(gitEvents.includes("git.worktree.created"));
+      assert.ok(gitEvents.includes("git.worktree.removed"));
+      assert.ok(gitMetrics.includes("git.command.duration_ms"));
+      assert.deepEqual(observations, ["fake pi has enough context to continue"]);
+
+      const state = runtime.getRunState(started.ids.run_id);
+      assert.ok(state !== null);
+      assert.ok(state!.events.some((event) => event.event_type === "decision.made"));
+      assert.ok(state!.events.some((event) => event.event_type === "agent.observation"));
+      assert.ok(state!.events.some((event) => event.event_type === "activity.next_action.proposed"));
+      assert.ok(state!.events.some((event) => event.event_type === "activity.child_created"));
+      assert.ok(state!.activities.some((activity) => activity.parent_activity_id === started.ids.activity_id && activity.type === "ci_diagnosis"));
+      const workItem = state!.work_items.find((item) => item.work_item_id === started.ids.work_item_id);
+      assert.equal(workItem?.next_action, "create_child_activity");
+    } finally {
+      store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

@@ -14,6 +14,11 @@ results back.
 | Tool | Description |
 | --- | --- |
 | `merge_god_context` | Fetch the current work item (prompt/context) from the coordination API. Call first. |
+| `merge_god_trajectory_state` | Fetch the current durable run/work/activity trajectory when merge-god exposes one. |
+| `merge_god_trajectory_event` | Append a structured checkpoint, decision, blocker, or evidence event to the trajectory. |
+| `merge_god_heartbeat` | Refresh liveness for long-running trajectory activities. |
+| `merge_god_propose_next` | Propose the next trajectory action, such as context refresh, child activity, blocker, handoff, or completion. |
+| `merge_god_create_child_activity` | Create a validated child activity under the current activity. |
 | `merge_god_complete` | Report completion (`success`/`failure`, summary, commits, merged) back to merge-god. |
 | `merge_god_health` | Diagnose connectivity to the coordination API. |
 
@@ -24,6 +29,10 @@ merge-god (pr-loop)                       pi + this extension
 ─────────────────────                     ────────────────────
  gather PR/issue context
  run coordination server  ──── /work ───▶ merge_god_context   (pulls prompt)
+ durable trajectory state ─ /trajectory ▶ merge_god_trajectory_state
+ append ordered events    ◀─ /trajectory/event
+ propose next action      ◀─ /trajectory/propose-next
+ create child activity    ◀─ /trajectory/child-activity
  (MERGE_GOD_API env)       ◀── /result ── merge_god_complete  (reports back)
 ```
 

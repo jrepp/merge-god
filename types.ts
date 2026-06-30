@@ -138,6 +138,7 @@ export interface PRContextDict {
   diff: string;
   guidelines?: string;
   commit_examples?: string;
+  merge_rules?: string;
 }
 
 // ============================================================================

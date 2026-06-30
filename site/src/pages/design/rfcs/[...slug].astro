@@ -1,0 +1,26 @@
+---
+import { getCollection, render } from "astro:content";
+import DesignDocLayout from "../../../layouts/DesignDocLayout.astro";
+
+export async function getStaticPaths() {
+  const rfcs = await getCollection("rfcs");
+  return rfcs.map((entry) => ({
+    params: { slug: entry.id.replace(/\.md$/, "") },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+---
+
+<DesignDocLayout
+  title={entry.data.title}
+  status={entry.data.status}
+  created={entry.data.created}
+  updated={entry.data.updated}
+  tags={entry.data.tags}
+  editPath={`docs-cms/rfcs/${entry.id.endsWith(".md") ? entry.id : `${entry.id}.md`}`}
+>
+  <Content />
+</DesignDocLayout>

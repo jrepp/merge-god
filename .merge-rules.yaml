@@ -1,0 +1,45 @@
+# merge-god merge rules
+#
+# Keep this file small. Express local policy in plain language and point to
+# Workflow-IR for gate execution details, evidence capture, remediation routing,
+# retries, thresholds, and final decision records.
+
+version: 1
+title: Merge God default merge rules
+
+rules:
+  # Evidence and gate execution
+  - Run as many applicable gates as possible before making a final merge decision.
+  - Continue collecting independent evidence after a non-terminal gate fails, so the final result reports the whole merge picture.
+  - Treat referenced Workflow-IR as the executable gate plan; if a referenced workflow is unsupported, record it as skipped evidence rather than ignoring it.
+  - Compare failing validation against the current base branch before classifying a failure as a PR regression.
+
+  # Remediation thresholds
+  - In observe mode, gather evidence only and do not mutate the branch.
+  - In validate mode, identify likely fixes but report them instead of applying them.
+  - In mechanical mode, apply generated or mechanical fixes only, then rerun affected gates.
+  - In bounded mode, fix conflicts, review comments, or CI failures only when retained scope stays unchanged.
+  - In maintainer-approved mode, allow broader remediation only when an explicit human gate approved the scope.
+
+  # Prompt review takes
+  - Review as a maintainer first: preserve author intent, public APIs, and project conventions.
+  - Review as a test owner: require meaningful coverage for changed behavior and rerun affected checks after remediation.
+  - Review as a security and resilience reviewer: look for input validation, secret exposure, auth boundary, failure-mode, and rollback risks.
+  - Review as a docs and user-impact reviewer: require public docs or release notes when behavior, configuration, or workflows change.
+  - Review as a release manager: prefer small safe landings, identify inherited failures, and escalate when risk exceeds the remediation threshold.
+
+  # Final decision
+  - Remediation must preserve the PR's retained scope and stop before unrelated redesign.
+  - Final decisions must include evidence for skipped, failed, remediated, and passing gates.
+  - If the result is not safe to merge, publish the smallest useful blocker summary and the next required owner action.
+  - Underlying bug-fix PRs may be opened by the pi agent only when concrete signal exists and the change is grounded in project docs, merge rules, or referenced Workflow-IR.
+  - Underlying bug-fix PRs must link back to the PR that exposed the problem and include signal, grounding, and validation evidence.
+
+remediation:
+  threshold: bounded
+
+workflow_ir:
+  - docs-cms/rfcs/rfc-001-workflow-ir-extraction.md#wf.merge-god.pr-merge-gate
+  - docs/workflow-ir/review-workflows/pre-landing-review.workflow-ir.md
+  - docs/workflow-ir/review-workflows/specialist-review.workflow-ir.md
+  - docs/workflow-ir/review-workflows/underlying-remediation-pr.workflow-ir.md

@@ -25,10 +25,31 @@ describe("module imports", () => {
     assert.ok(mod.GitHubForge, "expected GitHubForge export");
   });
 
+  test("@merge-god/workflow-ir-core imports successfully", async () => {
+    const mod = await import("@merge-god/workflow-ir-core");
+    assert.ok(mod.WorkflowRuntime, "expected WorkflowRuntime export");
+    assert.ok(mod.AdapterRegistry, "expected AdapterRegistry export");
+    assert.ok(mod.MemoryWorkflowStore, "expected MemoryWorkflowStore export");
+    assert.ok(mod.createMergeGodValidationLaneAdapter, "expected merge-god validation adapter export");
+    assert.ok(mod.createMergeGodFinalGateAdapter, "expected merge-god final-gate adapter export");
+  });
+
   test("app_store imports successfully", async () => {
     const mod = await import("../app_store");
     assert.ok(mod.AppStore, "expected AppStore export");
     assert.ok(mod.DatabaseError, "expected DatabaseError export");
+  });
+
+  test("trajectory runtime imports successfully", async () => {
+    const mod = await import("../trajectory_runtime");
+    assert.ok(mod.TrajectoryRuntime, "expected TrajectoryRuntime export");
+    assert.ok(mod.ONE_SHOT_PR_AGENT_WORKFLOW, "expected workflow definition export");
+  });
+
+  test("git ops imports successfully", async () => {
+    const mod = await import("../git_ops");
+    assert.equal(typeof mod.GitOps, "function");
+    assert.equal(typeof mod.GitOpsError, "function");
   });
 
   test("pr-loop imports successfully", async () => {

@@ -7,9 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  # TypeScript typecheck (the TS analogue of the former mypy job)
-  typecheck:
-    name: TypeScript Typecheck
+  local-ci:
+    name: Local CI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,8 +22,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tsc --noEmit
-        run: npx tsc --noEmit
+      - name: Run local CI
+        run: npm run ci
 
   # Run general file-check hooks (trailing whitespace, EOF, YAML, JSON, etc.)
   pre-commit-checks:
@@ -51,22 +50,3 @@ jobs:
             pre-commit run "$hook" --all-files
             echo "::endgroup::"
           done
-
-  # Run Markdown linting using the same dependency/version as local checks.
-  markdownlint:
-    name: Markdown Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run markdownlint
-        run: npm run markdownlint -- --ignore node_modules --ignore .venv --ignore site '**/*.md'

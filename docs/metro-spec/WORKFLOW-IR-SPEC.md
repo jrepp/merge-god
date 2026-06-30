@@ -606,6 +606,7 @@ Standard v1 profiles are:
 - `subworkflows`: subworkflow nodes with input/output mapping and propagation rules.
 - `error-handling`: retry, timeout, on-error routing, cancellation, and compensation.
 - `agentic`: agentic action mode, tool contracts, autonomy boundaries, evidence requirements, and escalation behavior.
+- `prompt-runtime`: prompt contract references, runtime prompt inputs, expected model/tool envelopes, and structured output contracts for prompt-driven action nodes.
 
 A backend MAY advertise supported profiles. A projection MUST reject a workflow when any `required_profiles` entry is unsupported.
 

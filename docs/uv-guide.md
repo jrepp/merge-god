@@ -50,7 +50,7 @@ npm run dashboard -- --dry-run   # extra args after --
 ```
 
 | Script | Purpose |
-|--------|---------|
+| ------ | ------- |
 | **dashboard.ts** | TUI dashboard (the main user entrypoint) |
 | **pr-loop.ts** | Per-repo processing loop |
 | **merge-god.ts** | Unified CLI dispatcher (`dashboard\|scan\|agent\|validate\|test\|status`) |
@@ -69,9 +69,9 @@ npm install <pkg>      # add a dependency (also writes it to package.json)
 npm install -D <pkg>   # add a devDependency
 ```
 
-Key runtime deps: `@anthropic-ai/sdk` (Claude Agent SDK),
-`@octokit/rest` (GitHub), `yaml` (config parsing), `chalk` (terminal color),
-`ink` + `react` (the ANSI live-renderer for the dashboard),
+Key runtime deps: `@octokit/rest` (GitHub), `@merge-god/github-sync`
+(forge sync + GitClient), `yaml` (config parsing), `chalk` (terminal color),
+`ink` + `react` (the ANSI live-renderer for the dashboard), and
 `systeminformation`.
 
 ## Checking types

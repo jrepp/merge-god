@@ -167,7 +167,8 @@
         "events-timers",
         "subworkflows",
         "error-handling",
-        "agentic"
+        "agentic",
+        "prompt-runtime"
       ]
     },
     "requiredExtension": {

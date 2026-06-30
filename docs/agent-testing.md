@@ -5,17 +5,19 @@ group: Project
 order: 32
 ---
 
-Detailed guide for testing and evaluating Claude Agent behavior in the merge-god pipeline.
+Detailed guide for testing and evaluating pi-agent behavior in the merge-god pipeline.
 
 ## Understanding the Agent
 
 ### Agent Architecture
 
-The merge-god agent uses the **Claude Agent SDK** for structured PR processing:
+The merge-god PR-processing path uses the **pi agent** through the merge-god
+coordination API:
 
 - **Task decomposition**: Breaks PRs into discrete tasks
-- **Streaming output**: Real-time progress updates
-- **Tool calling**: File editing, git operations, test execution
+- **Coordination tools**: Pulls work from `merge_god_context` and reports via `merge_god_complete`
+- **Isolated worktrees**: Runs every pi invocation inside a temporary git worktree
+- **Tool calling**: File editing, git operations, test execution, and linked remediation PR creation
 - **Error recovery**: Automatic retry with exponential backoff
 - **Session tracking**: Complete audit trail in database
 
@@ -117,9 +119,9 @@ npx tsx merge-god.ts agent \
 
 1. Loads PR context from database
 2. Creates PRContext object with all details
-3. Initializes Claude client (Bedrock or direct API)
-4. Invokes PRAgent with streaming callbacks
-5. Agent processes tasks sequentially
+3. Builds the merge-god work item and prompt
+4. Starts a local coordination API and launches pi with the merge-god extension
+5. Agent processes tasks in an isolated worktree
 6. All actions logged to database
 7. Returns success/failure status
 

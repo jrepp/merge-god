@@ -25,7 +25,7 @@ workflow:
       - Any failed sub-verdict or critical/high finding causes an overall fail verdict.
 
 capabilities:
-  required_profiles: [parallel, typed-dataflow, subworkflows]
+  required_profiles: [gateways, typed-dataflow, subworkflows]
   required_extensions:
     - name: merge-god/adversarial-review-verdict
       version: v1

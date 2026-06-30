@@ -21,18 +21,10 @@ import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import * as readline from "node:readline";
-import { runPiAgent, type WorkItem } from "./coordination";
+import YAML from "yaml";
+import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
+import type { GitOpsObserver } from "./git_ops";
 import { SyncStore } from "@merge-god/github-sync";
-import {
-  PRAgent,
-  type PRContext,
-  createClaudeClient,
-  getModelName,
-  createPRContextFromDict,
-  getFailedTasks,
-  PRProcessingCallbacks,
-} from "./agents/__init__";
-import type Anthropic from "@anthropic-ai/sdk";
 
 // SyncStore persists PR context for offline agent runs.
 const DB_AVAILABLE: boolean = true;
@@ -55,8 +47,39 @@ function toStr(v: unknown, dflt = ""): string {
   return typeof v === "string" ? v : dflt;
 }
 
+function hasGuidanceValue(v: unknown): boolean {
+  if (typeof v === "string") return v.trim().length > 0;
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === "object" && v !== null) return Object.keys(v).length > 0;
+  return v !== undefined && v !== null;
+}
+
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+function conciseFailureText(v: unknown): string {
+  if (typeof v !== "string") return "";
+  return v.trim().replace(/\s+/g, " ");
+}
+
+export function piAgentFailureReason(
+  returncode: number,
+  result: unknown,
+  stderr: string,
+  stdout: string,
+): string {
+  const resultObj = asRecord(result);
+  const candidates = [
+    resultObj["error"],
+    resultObj["summary"],
+    stderr,
+    stdout,
+  ];
+  const detail = candidates.map(conciseFailureText).find(Boolean);
+  if (returncode !== 0 && detail) return `pi exited ${returncode}: ${detail}`;
+  if (returncode !== 0) return `pi exited ${returncode}`;
+  return detail || "pi agent reported failure";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -73,6 +96,27 @@ export function logJson(eventType: string, data: Record<string, unknown>): void 
     data,
   };
   console.log(JSON.stringify(entry));
+}
+
+function createGitOpsObserver(): GitOpsObserver {
+  return {
+    onEvent(event) {
+      logJson("git_ops", event as unknown as Record<string, unknown>);
+    },
+    onMetric(metric) {
+      logJson("metric", {
+        name: metric.name,
+        value: metric.value,
+        tags: metric.tags ?? {},
+      });
+    },
+  };
+}
+
+function createAgentObservationObserver(): (observation: AgentObservation) => void {
+  return (observation) => {
+    logJson("agent_observation", observation as unknown as Record<string, unknown>);
+  };
 }
 
 /**
@@ -253,6 +297,357 @@ export function runCommand(
   }
 }
 
+// --- PR state labels ---------------------------------------------------------
+
+export type PrProcessingState = "ready" | "processing" | "embarked" | "blocked" | "failed" | "complete";
+
+const PR_STATE_LABELS: Record<PrProcessingState, { name: string; color: string; description: string }> = {
+  ready: {
+    name: "merge:ready",
+    color: "0E8A16",
+    description: "merge-god may process or embark this PR",
+  },
+  processing: {
+    name: "merge:processing",
+    color: "1D76DB",
+    description: "merge-god is actively processing this PR",
+  },
+  embarked: {
+    name: "merge:embarked",
+    color: "5319E7",
+    description: "merge-god included this PR in an embark cohort",
+  },
+  blocked: {
+    name: "merge:blocked",
+    color: "D93F0B",
+    description: "merge-god is blocked and needs human input or external state",
+  },
+  failed: {
+    name: "merge:failed",
+    color: "B60205",
+    description: "merge-god processing failed",
+  },
+  complete: {
+    name: "merge:complete",
+    color: "0E8A16",
+    description: "merge-god completed processing for this PR",
+  },
+};
+
+const ensuredPrStateLabels = new Set<string>();
+
+function isAlreadyExistsError(stderr: string): boolean {
+  return /already exists|name already exists/i.test(stderr);
+}
+
+function ensurePrStateLabels(): boolean {
+  let ok = true;
+  for (const state of Object.keys(PR_STATE_LABELS) as PrProcessingState[]) {
+    ok = ensurePrStateLabel(state) && ok;
+  }
+  return ok;
+}
+
+function ensurePrStateLabel(state: PrProcessingState): boolean {
+  const label = PR_STATE_LABELS[state];
+  if (ensuredPrStateLabels.has(label.name)) return true;
+
+  const [returncode, _stdout, stderr] = runCommand(
+    [
+      "gh",
+      "label",
+      "create",
+      label.name,
+      "--color",
+      label.color,
+      "--description",
+      label.description,
+    ],
+    undefined,
+    30,
+  );
+
+  if (returncode !== 0 && !isAlreadyExistsError(stderr)) {
+    logJson("pr_state_label", {
+      action: "ensure_failed",
+      label: label.name,
+      state,
+      stderr,
+    });
+    return false;
+  }
+
+  ensuredPrStateLabels.add(label.name);
+  return true;
+}
+
+export function classifyPrFailureState(
+  reason: string,
+  result: unknown = null,
+): Exclude<PrProcessingState, "ready" | "processing" | "embarked" | "complete"> {
+  const resultObj = asRecord(result);
+  const text = [
+    reason,
+    resultObj["error"],
+    resultObj["summary"],
+    ...asArray(resultObj["needs"]),
+  ]
+    .map((item) => (typeof item === "string" ? item : ""))
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    /\b(blocked|need|needs|needed|requires?|manual|human|approval|permission|permissions|credential|credentials|auth|authentication|authorization|rate limit)\b/.test(
+      text,
+    )
+  ) {
+    return "blocked";
+  }
+
+  return "failed";
+}
+
+export function setPrStateLabel(prNumber: number, state: PrProcessingState, reason = ""): boolean {
+  if (!ensurePrStateLabels()) return false;
+
+  const targetLabel = PR_STATE_LABELS[state].name;
+  const [returncode, _stdout, stderr] = runCommand(
+    [
+      "gh",
+      "issue",
+      "edit",
+      String(prNumber),
+      "--add-label",
+      targetLabel,
+    ],
+    undefined,
+    30,
+  );
+
+  if (returncode !== 0) {
+    logJson("pr_state_label", {
+      action: "update_failed",
+      pr_number: prNumber,
+      state,
+      label: targetLabel,
+      stderr,
+    });
+    return false;
+  }
+
+  const staleLabels = Object.values(PR_STATE_LABELS)
+    .map((label) => label.name)
+    .filter((name) => name !== targetLabel);
+  for (const staleLabel of staleLabels) {
+    const [removeCode, _removeStdout, removeStderr] = runCommand(
+      ["gh", "issue", "edit", String(prNumber), "--remove-label", staleLabel],
+      undefined,
+      30,
+    );
+    if (removeCode !== 0 && !/not found|does not exist|missing/i.test(removeStderr)) {
+      logJson("pr_state_label", {
+        action: "remove_stale_failed",
+        pr_number: prNumber,
+        state,
+        label: staleLabel,
+        stderr: removeStderr,
+      });
+    }
+  }
+
+  logJson("pr_state_label", {
+    action: "updated",
+    pr_number: prNumber,
+    state,
+    label: targetLabel,
+    reason: reason ? reason.slice(0, 240) : undefined,
+  });
+  return true;
+}
+
+// --- Review gate status comment cache ----------------------------------------
+
+export type ReviewGateStatusValue = "pass" | "fail" | "blocked" | "skipped" | "pending" | "unknown";
+
+export interface ReviewGateStatus {
+  rule: string;
+  status: ReviewGateStatusValue | string;
+  explanation: string;
+}
+
+const REVIEW_GATE_CACHE_MARKER = "<!-- merge-god-review-gate-cache:v1 -->";
+const REVIEW_GATE_ALLOWED_STATUSES = new Set<ReviewGateStatusValue>([
+  "pass",
+  "fail",
+  "blocked",
+  "skipped",
+  "pending",
+  "unknown",
+]);
+let currentGhLogin: string | null | undefined;
+
+function normalizeGateStatus(status: unknown): ReviewGateStatusValue {
+  const raw = typeof status === "string" ? status.trim().toLowerCase() : "";
+  if (raw === "passed" || raw === "success" || raw === "ok") return "pass";
+  if (raw === "failed" || raw === "failure" || raw === "error") return "fail";
+  if (REVIEW_GATE_ALLOWED_STATUSES.has(raw as ReviewGateStatusValue)) {
+    return raw as ReviewGateStatusValue;
+  }
+  return "unknown";
+}
+
+function sanitizeGateCell(value: unknown, maxLength: number): string {
+  const raw = typeof value === "string" ? value : String(value ?? "");
+  let clean = raw
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+  if (raw.trim().length > maxLength) clean += "...";
+  return clean
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\|/g, "\\|")
+    .replace(/`/g, "&#96;")
+    .replace(/@/g, "(at)");
+}
+
+export function renderReviewGateStatusComment(
+  gates: ReviewGateStatus[],
+  updatedAt = new Date().toISOString(),
+): string {
+  const rows = gates.length > 0
+    ? gates
+    : [{ rule: "review-gates", status: "unknown", explanation: "No gate status was provided." }];
+  return [
+    REVIEW_GATE_CACHE_MARKER,
+    "## merge-god review gate status",
+    "",
+    "_Non-authoritative cache. Durable source of truth is merge-god trajectory/database state and validation evidence; this comment may be stale or missing._",
+    "",
+    `Updated: ${sanitizeGateCell(updatedAt, 40)}`,
+    "",
+    "| Rule | Status | Explanation |",
+    "| --- | --- | --- |",
+    ...rows.map((gate) => {
+      const status = normalizeGateStatus(gate.status);
+      return `| ${sanitizeGateCell(gate.rule, 80)} | ${status} | ${sanitizeGateCell(gate.explanation, 240)} |`;
+    }),
+  ].join("\n");
+}
+
+function currentGitHubLogin(): string | null {
+  if (currentGhLogin !== undefined) return currentGhLogin;
+  const [returncode, stdout] = runCommand(["gh", "api", "user", "--jq", ".login"], undefined, 30);
+  currentGhLogin = returncode === 0 ? stdout.trim() || null : null;
+  return currentGhLogin;
+}
+
+function findOwnedReviewGateCacheComment(prNumber: number): number | null {
+  const comments = getPrComments(prNumber);
+  const login = currentGitHubLogin();
+  for (const comment of comments) {
+    const body = toStr(comment["body"]);
+    if (!body.includes(REVIEW_GATE_CACHE_MARKER)) continue;
+    const author = toStr(asRecord(comment["user"])["login"]);
+    if (login && author !== login) continue;
+    const id = comment["id"];
+    if (typeof id === "number" && Number.isInteger(id)) return id;
+  }
+  return null;
+}
+
+export function updateReviewGateStatusComment(
+  prNumber: number,
+  gates: ReviewGateStatus[],
+  opts: { updatedAt?: string } = {},
+): boolean {
+  const body = renderReviewGateStatusComment(gates, opts.updatedAt);
+  const existingCommentId = findOwnedReviewGateCacheComment(prNumber);
+  const args = existingCommentId === null
+    ? ["gh", "api", `repos/{owner}/{repo}/issues/${prNumber}/comments`, "-f", `body=${body}`]
+    : [
+        "gh",
+        "api",
+        "-X",
+        "PATCH",
+        `repos/{owner}/{repo}/issues/comments/${existingCommentId}`,
+        "-f",
+        `body=${body}`,
+      ];
+  const [returncode, _stdout, stderr] = runCommand(args, undefined, 30, 1024 * 1024);
+  if (returncode !== 0) {
+    logJson("review_gate_comment", {
+      action: "update_failed",
+      pr_number: prNumber,
+      mode: existingCommentId === null ? "create" : "edit",
+      stderr,
+    });
+    return false;
+  }
+  logJson("review_gate_comment", {
+    action: "updated",
+    pr_number: prNumber,
+    mode: existingCommentId === null ? "create" : "edit",
+    gate_count: gates.length,
+  });
+  return true;
+}
+
+function reviewGateStatusesFromContext(
+  prDetails: Record<string, unknown>,
+  prContext: Record<string, unknown>,
+  mergeRules: string,
+): ReviewGateStatus[] {
+  const conflicts = asRecord(prContext["conflicts"]);
+  const ciStatus = asRecord(prContext["ci_status"]);
+  const reviewDecision = toStr(prDetails["reviewDecision"], "UNKNOWN").toUpperCase();
+  const ciFailed = toNum(ciStatus["failed"]);
+  const ciPending = toNum(ciStatus["pending"]);
+  const ciTotal = toNum(ciStatus["total_checks"]);
+  const hasConflicts = conflicts["has_conflicts"] === true;
+  return [
+    {
+      rule: "context-gathered",
+      status: Object.keys(prDetails).length > 0 ? "pass" : "blocked",
+      explanation: Object.keys(prDetails).length > 0
+        ? "PR metadata, comments, commits, files, diff, conflicts, and CI state were gathered."
+        : "PR details could not be loaded.",
+    },
+    {
+      rule: "merge-conflicts",
+      status: hasConflicts ? "blocked" : "pass",
+      explanation: hasConflicts
+        ? `Merge conflicts detected in ${asArray(conflicts["conflicting_files"]).length} file(s).`
+        : "No merge conflicts were detected against the base branch.",
+    },
+    {
+      rule: "ci-status",
+      status: ciFailed > 0 ? "fail" : (ciPending > 0 ? "pending" : (ciTotal > 0 ? "pass" : "unknown")),
+      explanation: ciTotal > 0
+        ? `${ciFailed} failed, ${ciPending} pending, ${toNum(ciStatus["passed"])} passed out of ${ciTotal} check(s).`
+        : "No CI status checks were reported.",
+    },
+    {
+      rule: "review-decision",
+      status: reviewDecision === "APPROVED" ? "pass" : (reviewDecision === "CHANGES_REQUESTED" ? "blocked" : "pending"),
+      explanation: reviewDecision === "APPROVED"
+        ? "GitHub review decision is approved."
+        : (reviewDecision === "CHANGES_REQUESTED"
+            ? "GitHub review decision has requested changes."
+            : `GitHub review decision is ${reviewDecision || "unknown"}.`),
+    },
+    {
+      rule: "repo-merge-rules",
+      status: mergeRules ? "pending" : "skipped",
+      explanation: mergeRules
+        ? "Repository merge rules were loaded and still require final gate evaluation."
+        : "No repository merge rules were loaded.",
+    },
+  ];
+}
+
 // --- PR / issue discovery ---------------------------------------------------
 
 interface CategorizedPRs {
@@ -313,10 +708,11 @@ export function getOpenPrs(): CategorizedPRs {
     "untagged": [],
   };
 
-  const filteredPrs: { draft: unknown[]; wip: unknown[]; invalid: unknown[] } = {
+  const filteredPrs: { draft: unknown[]; wip: unknown[]; invalid: unknown[]; state: unknown[] } = {
     draft: [],
     wip: [],
     invalid: [],
+    state: [],
   };
 
   for (const prRaw of allPrs) {
@@ -366,6 +762,26 @@ export function getOpenPrs(): CategorizedPRs {
       continue;
     }
 
+    const stateLabelFound = labels.find((label) =>
+      [
+        PR_STATE_LABELS.processing.name,
+        PR_STATE_LABELS.embarked.name,
+        PR_STATE_LABELS.blocked.name,
+        PR_STATE_LABELS.failed.name,
+        PR_STATE_LABELS.complete.name,
+      ].includes(label),
+    );
+    if (stateLabelFound) {
+      filteredPrs["state"].push({ number: prNumber, title: prTitle, label: stateLabelFound });
+      logJson("fetch_prs", {
+        action: "skip_state",
+        pr_number: prNumber,
+        title: prTitle,
+        state_label: stateLabelFound,
+      });
+      continue;
+    }
+
     if (labels.includes("for-review")) {
       categorized["for-review"].push(pr);
       logJson("fetch_prs", {
@@ -405,6 +821,7 @@ export function getOpenPrs(): CategorizedPRs {
     filtered_draft: filteredPrs["draft"].length,
     filtered_wip: filteredPrs["wip"].length,
     filtered_invalid: filteredPrs["invalid"].length,
+    filtered_state: filteredPrs["state"].length,
     filtered_prs: filteredPrs,
   });
 
@@ -957,6 +1374,60 @@ export function getCommitHistoryExamples(defaultBranch = "main"): string {
   return "";
 }
 
+const MERGE_RULE_FILES = [
+  ".merge-rules.yaml",
+  ".merge-rules.yml",
+  ".commandments.yaml",
+  ".commandments.yml",
+];
+
+/** Load repo-local merge rules, if the repository defines them. */
+export function getMergeRules(repoPath = process.cwd()): string {
+  for (const filename of MERGE_RULE_FILES) {
+    const filepath = resolve(repoPath, filename);
+    if (!existsSync(filepath)) continue;
+
+    try {
+      const raw = readFileSync(filepath, "utf8").trim();
+      if (!raw) return "";
+
+      try {
+        const parsed = YAML.parse(raw);
+        if (!hasGuidanceValue(parsed)) {
+          logJson("merge_rules", { action: "empty", file: filename });
+          return "";
+        }
+      } catch (e) {
+        logJson("merge_rules", {
+          action: "parse_warning",
+          file: filename,
+          error: errMsg(e),
+        });
+      }
+
+      logJson("merge_rules", { action: "loaded", file: filename, size: raw.length });
+      return [
+        `Source: \`${filename}\``,
+        "",
+        "This repo-local merge rule specification is authoritative for this repository.",
+        "Gate definitions describe the evidence required before merge, push, or approval.",
+        "Collect all feasible gate evidence before producing a final gate decision.",
+        "Failed gates may trigger bounded remediation when the configured thresholds allow it.",
+        "Workflow-IR references define preferred executable gate workflows; run supported refs and report unsupported refs as skipped evidence.",
+        "",
+        "```yaml",
+        raw,
+        "```",
+      ].join("\n");
+    } catch (e) {
+      logJson("merge_rules", { action: "read_error", file: filename, error: errMsg(e) });
+      return "";
+    }
+  }
+
+  return "";
+}
+
 // --- Prompt building --------------------------------------------------------
 
 /** Build a comprehensive prompt for pi to process the PR with full context. */
@@ -965,6 +1436,7 @@ export function buildPrPrompt(
   prContext: Record<string, unknown>,
   guidelines: string,
   commitExamples: string,
+  mergeRules = "",
 ): string {
   const prNumber = prDetails["number"] ?? "unknown";
   const title = toStr(prDetails["title"]);
@@ -1193,6 +1665,10 @@ export function buildPrPrompt(
     );
   }
 
+  if (mergeRules) {
+    parts.push("## Merge Rules", "", mergeRules, "");
+  }
+
   parts.push(
     "## Critical Rules",
     "",
@@ -1202,6 +1678,9 @@ export function buildPrPrompt(
     "- ✅ Test thoroughly before pushing",
     "- ✅ Respond to review comments on GitHub when appropriate",
     "- ✅ If blocked, clearly document the issue and what's needed",
+    "- ✅ Open a separate remediation PR only when there is concrete signal and project-doc grounding",
+    "- ✅ For remediation PRs, cite signal refs such as CI logs, failing command output, review comments, issue text, stack traces, or repro artifacts",
+    "- ✅ For remediation PRs, cite grounding refs from AGENTS.md, docs/, .merge-rules.yaml, or referenced Workflow-IR",
     "",
     "## Execution",
     "",
@@ -1220,6 +1699,7 @@ export function buildReviewPrompt(
   url: string,
   diff: string,
   changedFiles: Record<string, unknown>[],
+  mergeRules = "",
 ): string {
   const parts: string[] = [
     `# Code Review: PR #${prNumber} - ${title}`,
@@ -1353,6 +1833,10 @@ export function buildReviewPrompt(
     "",
   );
 
+  if (mergeRules) {
+    parts.push("## Merge Rules", "", mergeRules, "");
+  }
+
   return parts.join("\n");
 }
 
@@ -1421,30 +1905,12 @@ export async function gatherPrContext(
 // snake_case alias for cross-module compatibility (sync_pr_context imports this).
 export { gatherPrContext as gather_pr_context };
 
-// --- Agent client -----------------------------------------------------------
-
-let _agentClient: unknown = null;
-let _agentModel: string | null = null;
-
-/** Get or create the global agent client (throws if the SDK is unavailable). */
-export function getAgentClient(): [Anthropic, string] {
-  if (_agentClient === null) {
-    _agentClient = createClaudeClient();
-    _agentModel = getModelName();
-  }
-  return [_agentClient as Anthropic, _agentModel as string];
-}
-
 // --- PR / issue processing --------------------------------------------------
 
 /**
- * Process a single PR using structured tasks and streaming (Agent SDK path).
- *
- * Returns true if processing succeeded, false otherwise. Currently disabled at
- * runtime because the Claude Agent SDK layer (agents/claude_agent) is not yet
- * ported; processPr() short-circuits to false when AGENT_SDK_AVAILABLE is false.
+ * Process a single PR using the pi agent through the coordination API.
  */
-export async function processPrAsync(
+export async function processPr(
   pr: Record<string, unknown>,
   guidelines: string,
   commitExamples: string,
@@ -1453,6 +1919,7 @@ export async function processPrAsync(
   interactive = false,
   db: SyncStore | null = null,
   repoName: string | null = null,
+  mergeRules = "",
 ): Promise<boolean> {
   const prNumber = pr["number"] as number | undefined;
   const headBranch = pr["headRefName"] as string | undefined;
@@ -1467,11 +1934,13 @@ export async function processPrAsync(
 
   if (!headBranch) {
     logJson("process_pr", { action: "validation_error", pr_number: prNumber, error: "Missing head branch" });
+    setPrStateLabel(prNumber, "blocked", "Missing head branch");
     return false;
   }
 
   if (!url) {
     logJson("process_pr", { action: "validation_error", pr_number: prNumber, error: "Missing PR URL" });
+    setPrStateLabel(prNumber, "blocked", "Missing PR URL");
     return false;
   }
 
@@ -1481,6 +1950,7 @@ export async function processPrAsync(
       pr_number: prNumber,
       error: `Invalid head branch name: ${headBranch}`,
     });
+    setPrStateLabel(prNumber, "failed", `Invalid head branch name: ${headBranch}`);
     return false;
   }
 
@@ -1490,6 +1960,7 @@ export async function processPrAsync(
       pr_number: prNumber,
       error: `Invalid base branch name: ${baseBranch}`,
     });
+    setPrStateLabel(prNumber, "failed", `Invalid base branch name: ${baseBranch}`);
     return false;
   }
 
@@ -1504,6 +1975,7 @@ export async function processPrAsync(
 
     if (!approved) {
       logJson("process_pr", { action: "declined_by_user", pr_number: prNumber });
+      setPrStateLabel(prNumber, "blocked", "Declined by user");
       return false;
     }
   }
@@ -1516,6 +1988,7 @@ export async function processPrAsync(
     base_branch: baseBranch,
     mode,
   });
+  setPrStateLabel(prNumber, "processing", `Started ${mode}`);
 
   await sendNotification(
     `Processing PR #${prNumber}: ${title}\nMode: ${mode}`,
@@ -1533,6 +2006,7 @@ export async function processPrAsync(
 
   let prDetails: Record<string, unknown>;
   let prContextDict: Record<string, unknown>;
+  let reviewGateStatuses: ReviewGateStatus[] = [];
   try {
     [prDetails, prContextDict] = await gatherPrContext(prNumber, headBranch, baseBranch, url);
     logJson("process_pr", {
@@ -1542,9 +2016,18 @@ export async function processPrAsync(
       phase_name: "Context Gathering Complete",
     });
   } catch (e) {
-    logJson("process_pr", { action: "context_gather_error", pr_number: prNumber, error: errMsg(e) });
+    const reason = errMsg(e);
+    logJson("process_pr", { action: "context_gather_error", pr_number: prNumber, error: reason });
+    setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
+    updateReviewGateStatusComment(prNumber, [
+      {
+        rule: "context-gathered",
+        status: "blocked",
+        explanation: reason,
+      },
+    ]);
     await sendNotification(
-      `PR #${prNumber} failed: ${title}\nError gathering context: ${errMsg(e).slice(0, 100)}`,
+      `PR #${prNumber} failed: ${title}\nError gathering context: ${reason.slice(0, 100)}`,
       `PR #${prNumber} - Error`,
       "high",
       ["x", "warning"],
@@ -1558,11 +2041,23 @@ export async function processPrAsync(
       pr_number: prNumber,
       error: "Failed to fetch PR details",
     });
+    setPrStateLabel(prNumber, "blocked", "Failed to fetch PR details");
+    updateReviewGateStatusComment(prNumber, [
+      {
+        rule: "context-gathered",
+        status: "blocked",
+        explanation: "Failed to fetch PR details.",
+      },
+    ]);
     return false;
   }
 
+  reviewGateStatuses = reviewGateStatusesFromContext(prDetails, prContextDict, mergeRules);
+  updateReviewGateStatusComment(prNumber, reviewGateStatuses);
+
   prContextDict["guidelines"] = guidelines;
   prContextDict["commit_examples"] = commitExamples;
+  prContextDict["merge_rules"] = mergeRules;
 
   if (db && repoName) {
     try {
@@ -1578,109 +2073,117 @@ export async function processPrAsync(
     }
   }
 
-  logJson("process_pr", {
-    action: "building_context",
-    pr_number: prNumber,
-    phase: "2/4",
-    phase_name: "Building PR Context",
-  });
-
-  let prContext: PRContext;
-  try {
-    prContext = createPRContextFromDict(prDetails, prContextDict);
-    logJson("process_pr", {
-      action: "context_built",
-      pr_number: prNumber,
-      phase: "2/4",
-      phase_name: "PR Context Ready",
-    });
-  } catch (e) {
-    logJson("process_pr", { action: "context_conversion_error", pr_number: prNumber, error: errMsg(e) });
-    return false;
-  }
+  const prompt = buildPrPrompt(prDetails, prContextDict, guidelines, commitExamples, mergeRules);
 
   logJson("process_pr", {
-    action: "initializing_agent",
+    action: "prompt_generated",
     pr_number: prNumber,
-    phase: "3/4",
-    phase_name: "Initializing Agent",
+    prompt_size: prompt.length,
   });
-
-  let client: Anthropic;
-  let model: string;
-  try {
-    [client, model] = getAgentClient();
-    logJson("process_pr", {
-      action: "agent_initialized",
-      pr_number: prNumber,
-      phase: "3/4",
-      model,
-    });
-  } catch (e) {
-    logJson("process_pr", { action: "agent_client_error", pr_number: prNumber, error: errMsg(e) });
-    return false;
-  }
-
-  const agent = new PRAgent(client, { model, repo_path: process.cwd() });
-  const callbacks = new PRProcessingCallbacks(prNumber, logJson, null);
 
   logJson("process_pr", {
     action: "agent_processing",
     pr_number: prNumber,
-    phase: "4/4",
-    phase_name: "Agent Processing PR",
+    phase: "3/3",
+    phase_name: "Pi Agent Processing PR",
     mode,
   });
 
+  const workItem: WorkItem = {
+    kind: "pr",
+    repo: repoName ?? undefined,
+    repo_path: process.cwd(),
+    pr_number: prNumber,
+    mode,
+    title,
+    url,
+    head_branch: headBranch,
+    base_branch: baseBranch,
+    prompt,
+  };
+
   try {
-    const result = await agent.processPrStreaming(prContext, mode, callbacks);
+    const startedAt = Date.now();
+    const piResult = await runPiAgent(workItem, process.cwd(), {
+      timeout: 3600,
+      gitObserver: createGitOpsObserver(),
+      agentObserver: createAgentObservationObserver(),
+    });
+    const duration = (Date.now() - startedAt) / 1000;
+    const resultObj = piResult.result && typeof piResult.result === "object" ? piResult.result : {};
+    const status = typeof resultObj["status"] === "string" ? resultObj["status"] : "";
+    const success = piResult.returncode === 0 && status !== "failure";
+    const failureReason = success
+      ? null
+      : piAgentFailureReason(piResult.returncode, piResult.result, piResult.stderr, piResult.stdout);
+    updateReviewGateStatusComment(prNumber, [
+      ...reviewGateStatuses,
+      {
+        rule: "pi-agent",
+        status: success ? "pass" : classifyPrFailureState(failureReason ?? "", piResult.result),
+        explanation: success
+          ? "Pi agent completed successfully."
+          : (failureReason ?? "Pi agent reported failure."),
+      },
+    ]);
 
     logJson("process_pr", {
       action: "complete",
       pr_number: prNumber,
-      phase: "4/4",
-      success: result.success,
-      duration: result.duration,
-      tasks_total: result.tasks.length,
-      tasks_completed: result.tasks.filter((t) => t.status === "completed").length,
-      tasks_failed: result.tasks.filter((t) => t.status === "failed").length,
-      actions_taken: result.actions.length,
+      phase: "3/3",
+      success,
+      duration,
+      reason: failureReason,
+      returncode: piResult.returncode,
+      stdout: piResult.stdout,
+      stderr: piResult.stderr,
+      result: piResult.result,
       mode,
     });
 
-    if (result.success) {
+    if (success) {
+      setPrStateLabel(prNumber, "complete", "Pi agent completed successfully");
       await sendNotification(
         `PR #${prNumber} completed: ${title}\n` +
           `Mode: ${mode}\n` +
-          `Tasks: ${result.tasks.length}, Actions: ${result.actions.length}\n` +
-          `Duration: ${result.duration.toFixed(1)}s`,
+          `Duration: ${duration.toFixed(1)}s`,
         `PR #${prNumber} - Complete`,
         "default",
         ["white_check_mark", "rocket"],
       );
     } else {
-      const failedTasks = getFailedTasks(result);
+      setPrStateLabel(prNumber, classifyPrFailureState(failureReason ?? "", piResult.result), failureReason ?? "");
       await sendNotification(
         `PR #${prNumber} failed: ${title}\n` +
-          `Failed tasks: ${failedTasks.map((t) => t.id).join(", ")}\n` +
-          `Duration: ${result.duration.toFixed(1)}s`,
+          `Return code: ${piResult.returncode}\n` +
+          `Duration: ${duration.toFixed(1)}s`,
         `PR #${prNumber} - Failed`,
         "high",
         ["x", "warning"],
       );
     }
 
-    return result.success;
+    return success;
   } catch (e) {
+    const reason = errMsg(e);
     logJson("process_pr", {
       action: "exception",
       pr_number: prNumber,
-      error: errMsg(e),
+      error: reason,
       error_type: e instanceof Error ? e.name : typeof e,
     });
+    setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
+    updateReviewGateStatusComment(prNumber, [
+      ...reviewGateStatuses,
+      {
+        rule: "pi-agent",
+        status: classifyPrFailureState(reason),
+        explanation: reason,
+      },
+    ]);
 
     await sendNotification(
-      `PR #${prNumber} exception: ${errMsg(e).slice(0, 100)}`,
+      `PR #${prNumber} exception: ${reason.slice(0, 100)}`,
       `PR #${prNumber} - Error`,
       "urgent",
       ["x", "warning"],
@@ -1688,24 +2191,6 @@ export async function processPrAsync(
 
     return false;
   }
-}
-
-/**
- * Process a single PR using the Claude Agent SDK (bridged to processPrAsync).
- *
- * Returns false immediately when the Agent SDK is unavailable.
- */
-export async function processPr(
-  pr: Record<string, unknown>,
-  guidelines: string,
-  commitExamples: string,
-  defaultBranch = "main",
-  mode = "for-landing",
-  interactive = false,
-  db: SyncStore | null = null,
-  repoName: string | null = null,
-): Promise<boolean> {
-  return processPrAsync(pr, guidelines, commitExamples, defaultBranch, mode, interactive, db, repoName);
 }
 
 /**
@@ -1721,6 +2206,7 @@ export async function processIssue(
   commitExamples: string,
   defaultBranch = "main",
   interactive = false,
+  mergeRules = "",
 ): Promise<boolean> {
   const issueNumber = issue["number"] as number | undefined;
   const title = (issue["title"] as string | undefined) ?? "Unknown";
@@ -1811,6 +2297,7 @@ export async function processIssue(
   const description = body ? body : "No description provided";
   const guidelinesText = guidelines ? guidelines : "No specific guidelines available";
   const examplesText = commitExamples ? commitExamples : "No examples available";
+  const mergeRulesText = mergeRules ? mergeRules : "No repo-local merge rules found";
 
   const prompt = [
     "# Issue Implementation Task",
@@ -1851,6 +2338,10 @@ export async function processIssue(
     "",
     guidelinesText,
     "",
+    "## Merge Rules",
+    "",
+    mergeRulesText,
+    "",
     "## Commit Message Examples",
     "",
     examplesText,
@@ -1861,6 +2352,9 @@ export async function processIssue(
     `- Base branch: \`${defaultBranch}\``,
     `- This implementation should close issue #${issueNumber}`,
     "- Focus on completing the requirements in the issue",
+    "- Open a separate remediation PR only when there is concrete signal and project-doc grounding",
+    "- For remediation PRs, cite signal refs such as CI logs, failing command output, review comments, issue text, stack traces, or repro artifacts",
+    "- For remediation PRs, cite grounding refs from AGENTS.md, docs/, .merge-rules.yaml, or referenced Workflow-IR",
     "- Ask questions if requirements are unclear",
     "- Test thoroughly before creating the PR",
     "",
@@ -1885,7 +2379,11 @@ export async function processIssue(
     repo_path: process.cwd(),
   };
 
-  const piResult = await runPiAgent(workItem, process.cwd(), { timeout: 3600 });
+  const piResult = await runPiAgent(workItem, process.cwd(), {
+    timeout: 3600,
+    gitObserver: createGitOpsObserver(),
+    agentObserver: createAgentObservationObserver(),
+  });
   const { returncode: rc, stdout, stderr: piStderr, result: piResultObj } = piResult;
 
   logJson("process_issue", {
@@ -2051,10 +2549,12 @@ export async function main(): Promise<void> {
   logJson("startup", { default_branch: defaultBranch });
 
   const guidelines = getPrGuidelines();
+  const mergeRules = getMergeRules();
   const commitExamples = !guidelines ? getCommitHistoryExamples(defaultBranch) : "";
 
   logJson("startup", {
     has_guidelines: !!guidelines,
+    has_merge_rules: !!mergeRules,
     has_commit_examples: !!commitExamples,
   });
 
@@ -2094,7 +2594,14 @@ export async function main(): Promise<void> {
           if (issueNumber) processingIssues.add(issueNumber);
 
           try {
-            const success = await processIssue(issue, guidelines, commitExamples, defaultBranch, args.interactive);
+            const success = await processIssue(
+              issue,
+              guidelines,
+              commitExamples,
+              defaultBranch,
+              args.interactive,
+              mergeRules,
+            );
             if (success && issueNumber) processingIssues.delete(issueNumber);
             issuesProcessed++;
           } catch (e) {
@@ -2175,16 +2682,19 @@ export async function main(): Promise<void> {
             args.interactive,
             db,
             repoName,
+            mergeRules,
           );
           if (success && prNumber) processingPrs.delete(prNumber);
           totalProcessed++;
         } catch (e) {
+          const reason = errMsg(e);
           logJson("process_pr", {
             action: "exception",
             pr_number: prNumber,
             mode,
-            error: errMsg(e),
+            error: reason,
           });
+          if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
           if (prNumber) processingPrs.delete(prNumber);
         }
 

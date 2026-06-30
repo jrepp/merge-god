@@ -14,7 +14,7 @@ library-grade package with a clean test surface.
 ## Forges
 
 | Forge | Backend | Status |
-|---|---|---|
+| ----- | ------- | ------ |
 | GitHub | `GitHubForge` — Octokit (GraphQL reads + REST writes, throttling/pagination/retry) | full |
 | Gitea | `GiteaForge` — REST (`/api/v1`) | full |
 | Codeberg | `GiteaForge` (Codeberg runs Gitea) | full |

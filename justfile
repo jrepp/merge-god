@@ -9,18 +9,17 @@ default:
 # === CI and Quality Checks ===
 
 # Run all CI checks locally (emulates GitHub Actions workflow)
-ci: typecheck test markdownlint
+ci:
+    @npm run ci
     @echo "✅ All CI checks passed!"
 
 # TypeScript typecheck (tsc --noEmit)
 typecheck:
-    @echo "🔍 Running TypeScript typecheck..."
-    @npx tsc --noEmit
+    @npm run typecheck
 
 # Run the test suite (Node built-in test runner, tsx loader)
 test:
-    @echo "🧪 Running tests..."
-    @node --import tsx --test tests/*.test.ts
+    @npm test
 
 # Run a single test file
 test-file FILE:
@@ -29,8 +28,7 @@ test-file FILE:
 
 # Markdown linting
 markdownlint:
-    @echo "🔍 Running Markdown linting..."
-    @npx markdownlint --config .markdownlintrc --ignore node_modules --ignore .venv --ignore site '**/*.md'
+    @npm run markdownlint
 
 # Fix Markdown formatting
 markdownlint-fix:
