@@ -68,6 +68,71 @@ doormat:
 Credential refresh is **non-fatal**: if it fails, processing continues and the
 attempt is logged.
 
+## Merge rules
+
+Each repository can define root-level merge policy in `.merge-rules.yaml`.
+Keep this file small: use it for plain-language rules, a remediation threshold,
+and Workflow-IR references. Put detailed gate graphs, evidence requirements,
+check selection, retries, and remediation routing in Workflow-IR.
+
+```yaml
+version: 1
+title: Merge God local merge rules
+
+rules:
+  - Run as many applicable gates as possible before making a final merge decision.
+  - A failed gate should trigger remediation when the fix remains within the configured threshold.
+  - Final decisions must include evidence for skipped, failed, remediated, and passing gates.
+  - Underlying bug-fix PRs must link back to the PR that exposed the problem and cite signal, grounding, and validation evidence.
+
+remediation:
+  threshold: bounded
+
+workflow_ir:
+  - docs-cms/rfcs/rfc-001-workflow-ir-extraction.md#wf.merge-god.pr-merge-gate
+  - docs/workflow-ir/review-workflows/underlying-remediation-pr.workflow-ir.md
+```
+
+`rules` are natural-language policy for prompt-driven judgment.
+`remediation.threshold` names the maximum remediation autonomy allowed before
+the run should stop or escalate. `workflow_ir` points at executable gate
+definitions; merge-god should run supported refs, collect all feasible evidence,
+remediate failed gates within threshold, rerun affected gates, and report
+unsupported refs as skipped evidence.
+
+`.commandments.yaml` is accepted as an optional alias for the same schema, but
+`.merge-rules.yaml` is the documented name.
+
+Supported fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `version` | number | Schema version. Use `1`. |
+| `title` | string | Human-readable name for the rule set. |
+| `rules` | string[] | Natural-language merge requirements. |
+| `remediation.threshold` | string | Maximum autonomy before stopping or escalating. |
+| `workflow_ir` | string[] | Repo-relative Workflow-IR refs that define executable gates. |
+
+Rule examples:
+
+| Rule type | Example |
+| --- | --- |
+| Evidence breadth | `Run as many applicable gates as possible before making a final merge decision.` |
+| Failed-gate remediation | `A failed gate should trigger remediation when the fix remains within the configured threshold.` |
+| Scope control | `Remediation must preserve the PR's retained scope and stop before unrelated redesign.` |
+| Final evidence | `Final decisions must include evidence for skipped, failed, remediated, and passing gates.` |
+| Human escalation | `Escalate when remediation would exceed the configured threshold or require product judgment.` |
+
+Threshold examples:
+
+| Threshold | Meaning |
+| --- | --- |
+| `observe` | Gather evidence only; do not mutate the branch. |
+| `validate` | Run gates and report findings; do not apply fixes. |
+| `mechanical` | Apply generated or mechanical fixes, then rerun affected gates. |
+| `bounded` | Fix conflicts or CI failures when retained scope stays unchanged. |
+| `maintainer-approved` | Allow broader remediation only when a human-approved gate says so. |
+
 ## Validating your config
 
 Always dry-run after editing:

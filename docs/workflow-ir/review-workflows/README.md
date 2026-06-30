@@ -21,6 +21,7 @@ documents while preserving the source structure:
 | --- | --- | --- |
 | Pre-Landing Review | `pre-landing-review.workflow-ir.md` | `review/SKILL.md.tmpl` |
 | Specialist Review Role | `specialist-review.workflow-ir.md` | `review/specialists/*.md` |
+| Underlying Remediation PR | `underlying-remediation-pr.workflow-ir.md` | merge-god remediation policy |
 
 ## Capability Descriptions
 

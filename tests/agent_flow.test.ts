@@ -11,12 +11,14 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { AppStore } from "../app_store";
 import { CoordinationServer, findExtension, runPiAgent, type PiAgentResult } from "../coordination";
+import { classifyPrFailureState, piAgentFailureReason, renderReviewGateStatusComment } from "../pr-loop";
 import { TrajectoryRuntime } from "../trajectory_runtime";
 
 describe("agent flow: coordination round-trip", () => {
@@ -236,6 +238,48 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.equal(noResult.result, null);
   });
 
+  test("piAgentFailureReason prefers completion errors for copyable failure logs", () => {
+    assert.equal(
+      piAgentFailureReason(
+        0,
+        { status: "failure", summary: "could not land", error: "merge conflict remained" },
+        "ignored stderr",
+        "ignored stdout",
+      ),
+      "merge conflict remained",
+    );
+    assert.equal(
+      piAgentFailureReason(1, null, "fatal: missing credential\nretry failed", ""),
+      "pi exited 1: fatal: missing credential retry failed",
+    );
+    assert.equal(piAgentFailureReason(1, null, "", ""), "pi exited 1");
+  });
+
+  test("classifyPrFailureState separates blocked failures from ordinary failures", () => {
+    assert.equal(classifyPrFailureState("needs credentials before continuing"), "blocked");
+    assert.equal(classifyPrFailureState("test suite failed"), "failed");
+    assert.equal(classifyPrFailureState("", { error: "manual approval required" }), "blocked");
+  });
+
+  test("renderReviewGateStatusComment sanitizes non-authoritative gate cache rows", () => {
+    const rendered = renderReviewGateStatusComment(
+      [
+        {
+          rule: "merge | gate <script>",
+          status: "pwned",
+          explanation: "needs @ops `approval` | <img src=x onerror=alert(1)>",
+        },
+      ],
+      "2026-06-30T00:00:00.000Z",
+    );
+    assert.match(rendered, /merge-god-review-gate-cache:v1/);
+    assert.match(rendered, /Non-authoritative cache/);
+    assert.match(rendered, /merge \\| gate &lt;script&gt;/);
+    assert.match(rendered, /\| unknown \|/);
+    assert.match(rendered, /needs \(at\)ops &#96;approval&#96; \\| &lt;img/);
+    assert.doesNotMatch(rendered, /<script>|@ops|`approval`/);
+  });
+
   test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
     const binDir = path.join(tempDir, "bin");
@@ -249,6 +293,17 @@ describe("agent flow: runPiAgent result contract", () => {
     try {
       mkdirSync(binDir);
       mkdirSync(repoDir);
+      writeFileSync(path.join(repoDir, "README.md"), "# fake repo\n");
+      for (const args of [
+        ["init"],
+        ["config", "user.email", "merge-god@example.test"],
+        ["config", "user.name", "merge-god test"],
+        ["add", "README.md"],
+        ["commit", "-m", "Initial commit"],
+      ]) {
+        const result = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+      }
       writeFileSync(
         runnerPath,
         `
@@ -285,6 +340,16 @@ await callTool("merge_god_trajectory_event", {
     context_ok: context.details?.ok === true,
   },
 });
+await callTool("merge_god_observe", {
+  level: "info",
+  category: "context",
+  summary: "fake pi has enough context to continue",
+  signal_refs: ["evidence://fake-pi/context"],
+  grounding_refs: ["AGENTS.md"],
+  confidence: 0.9,
+  suggested_next: "create child activity",
+});
+await callTool("merge_god_debug_snapshot");
 await callTool("merge_god_propose_next", {
   next_action: "create_child_activity",
   rationale: "fake pi verified trajectory state and needs scoped CI diagnosis",
@@ -319,6 +384,9 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
         labels: ["for-review"],
         model: "fake-pi",
       });
+      const gitEvents: string[] = [];
+      const gitMetrics: string[] = [];
+      const observations: string[] = [];
 
       const result = await runPiAgent(
         {
@@ -335,6 +403,17 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
           extensionPath: findExtension(),
           extraEnv: { PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
           trajectory: runtime.bridgeForPiAgent(started.ids),
+          gitObserver: {
+            onEvent(event) {
+              gitEvents.push(event.event);
+            },
+            onMetric(metric) {
+              gitMetrics.push(metric.name);
+            },
+          },
+          agentObserver(observation) {
+            observations.push(observation.summary);
+          },
           timeout: 10,
         },
       );
@@ -343,12 +422,19 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
       assert.equal(result.result?.["status"], "success");
       assert.equal(result.result?.["summary"], "fake pi used merge-god coordination trajectory state");
       assert.match(result.stdout, /"tool":"merge_god_trajectory_state"/);
+      assert.match(result.stdout, /"tool":"merge_god_observe"/);
+      assert.match(result.stdout, /"tool":"merge_god_debug_snapshot"/);
       assert.match(result.stdout, /"tool":"merge_god_propose_next"/);
       assert.match(result.stdout, /"tool":"merge_god_create_child_activity"/);
+      assert.ok(gitEvents.includes("git.worktree.created"));
+      assert.ok(gitEvents.includes("git.worktree.removed"));
+      assert.ok(gitMetrics.includes("git.command.duration_ms"));
+      assert.deepEqual(observations, ["fake pi has enough context to continue"]);
 
       const state = runtime.getRunState(started.ids.run_id);
       assert.ok(state !== null);
       assert.ok(state!.events.some((event) => event.event_type === "decision.made"));
+      assert.ok(state!.events.some((event) => event.event_type === "agent.observation"));
       assert.ok(state!.events.some((event) => event.event_type === "activity.next_action.proposed"));
       assert.ok(state!.events.some((event) => event.event_type === "activity.child_created"));
       assert.ok(state!.activities.some((activity) => activity.parent_activity_id === started.ids.activity_id && activity.type === "ci_diagnosis"));

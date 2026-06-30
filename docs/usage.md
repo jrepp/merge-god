@@ -52,6 +52,33 @@ PRs with no recognized label are left alone. Confirmed processing order:
   reviews code for quality, security, performance, and best practices (SOLID,
   DRY, etc.), committing targeted improvements.
 
+### Merge state labels
+
+merge-god also writes one current-state label in the `merge:*` namespace:
+
+| Label | Meaning |
+| --- | --- |
+| `merge:ready` | The PR may be processed or selected for an embark cohort. |
+| `merge:processing` | merge-god is actively processing this PR. |
+| `merge:embarked` | The PR is part of a multi-PR embark cohort. |
+| `merge:blocked` | External input, credentials, permissions, or another blocker is needed. |
+| `merge:failed` | Processing failed and needs investigation. |
+| `merge:complete` | Processing completed from merge-god's perspective. |
+
+The `for-*` labels are operator intent; `merge:*` labels are merge-god's output.
+Only one `merge:*` state label should be present at a time. Clear a terminal
+state label before asking merge-god to retry a PR.
+
+### Review gate cache comments
+
+merge-god may also maintain one PR comment headed `merge-god review gate status`.
+It caches the latest visible gate summary as rows of rule, status, and
+explanation. This is for operator scanning only.
+
+The comment is **not** a source of truth. Merge decisions must use the durable
+trajectory/database state and validation evidence. If the comment update fails,
+processing continues and the failure is logged.
+
 ## Issue watching
 
 Enable per-repo with `watch_issues: true`. merge-god then watches for issues

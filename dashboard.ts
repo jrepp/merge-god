@@ -6,8 +6,8 @@
  * PR processing status. Runs pr-loop.ts as subprocesses for each configured repo.
  *
  * Rendering strategy: an immediate-mode ANSI renderer that mirrors rich.Live. Each
- * refresh clears the screen, rebuilds a frame (ASCII panels/tables colored via
- * chalk), and writes it to stdout. The refresh loop runs on a setInterval.
+ * refresh rebuilds a frame (ASCII panels/tables colored via chalk) and writes it
+ * only when the visible state changed. Press P to freeze rendering for copying.
  *
  * Usage:
  *   tsx dashboard.ts [config_file] [--log-file PATH] [--db-path PATH]
@@ -67,7 +67,7 @@ import { StateTracker, StateTrackerError } from "./state_tracker";
 const WIP_LABELS = new Set(["wip", "work-in-process", "work in process"]);
 const ERROR_TRUNCATE_LENGTH = 100;
 const DEFAULT_DB_PATH = "merge-god-state.db";
-const REFRESH_INTERVAL_MS = 250;
+const REFRESH_INTERVAL_MS = 1000;
 const NON_TUI_POLL_MS = 500;
 const STATUS_SUMMARY_INTERVAL_S = 300;
 
@@ -92,6 +92,29 @@ function toNum(v: unknown, dflt = 0): number {
 
 function toStr(v: unknown, dflt = ""): string {
   return typeof v === "string" ? v : dflt;
+}
+
+function conciseFailureText(v: unknown): string {
+  if (typeof v !== "string") return "";
+  return v.trim().replace(/\s+/g, " ");
+}
+
+function processFailureReason(data: Record<string, unknown>): string {
+  const result = asRecord(data["result"]);
+  const candidates = [
+    data["reason"],
+    result["error"],
+    result["summary"],
+    data["stderr"],
+    data["stdout"],
+  ];
+  const detail = candidates.map(conciseFailureText).find(Boolean);
+  const returncode = toNum(data["returncode"], 0);
+  if (returncode !== 0 && detail && !detail.startsWith(`pi exited ${returncode}:`)) {
+    return `pi exited ${returncode}: ${detail}`;
+  }
+  if (returncode !== 0) return `pi exited ${returncode}`;
+  return detail || "unknown";
 }
 
 function nowIso(): string {
@@ -168,6 +191,23 @@ function truncate(s: string, len: number): string {
 function termWidth(): number {
   const cols = process.stdout.columns;
   return typeof cols === "number" && cols > 0 ? cols : 80;
+}
+
+/** Terminal height in rows (default 40 when unavailable). */
+function termHeight(): number {
+  const rows = process.stdout.rows;
+  return typeof rows === "number" && rows > 0 ? rows : 40;
+}
+
+type DashboardScreen = "world" | "pr_dashboard" | "agent_dashboard";
+
+function parseDashboardScreen(value: string | undefined): DashboardScreen {
+  if (!value) return "world";
+  const normalized = value.toLowerCase();
+  if (["world", "hud", "overview"].includes(normalized)) return "world";
+  if (["pr", "prs", "pulls", "pr_dashboard"].includes(normalized)) return "pr_dashboard";
+  if (["agent", "agents", "agent_dashboard"].includes(normalized)) return "agent_dashboard";
+  throw new Error(`Unknown dashboard screen: ${value}`);
 }
 
 /**
@@ -261,6 +301,47 @@ function renderTextTable(headers: string[], rows: string[][]): string[] {
   return out;
 }
 
+function padCell(text: string, width: number): string {
+  const clean = text.length > width ? text.slice(0, Math.max(0, width - 1)) + "~" : text;
+  return clean.padEnd(width);
+}
+
+function renderHudTable(headers: string[], widths: number[], rows: string[][]): string[] {
+  const header = headers.map((h, i) => padCell(h, widths[i] ?? h.length)).join("  ");
+  const rule = widths.map((w) => "-".repeat(w)).join("  ");
+  return [
+    applyStyle(header, "bold magenta"),
+    applyStyle(rule, "dim"),
+    ...rows.map((row) => row.map((cell, i) => padCell(cell, widths[i] ?? cell.length)).join("  ")),
+  ];
+}
+
+function asciiBar(value: number, total: number, width: number): string {
+  if (width <= 0) return "";
+  if (total <= 0) return "-".repeat(width);
+  const filled = Math.max(0, Math.min(width, Math.round((value / total) * width)));
+  return "#".repeat(filled) + "-".repeat(width - filled);
+}
+
+function fitPlain(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (text.length <= width) return text.padEnd(width);
+  if (width === 1) return "~";
+  return text.slice(0, width - 1) + "~";
+}
+
+function centerPlain(text: string, width: number): string {
+  if (width <= 0) return "";
+  const fitted = text.length > width ? fitPlain(text, width) : text;
+  const left = Math.floor((width - fitted.length) / 2);
+  return " ".repeat(Math.max(0, left)) + fitted + " ".repeat(Math.max(0, width - fitted.length - left));
+}
+
+function framedPlain(text: string, width: number): string {
+  if (width < 2) return fitPlain(text, width);
+  return `|${fitPlain(text, width - 2)}|`;
+}
+
 // --- Bounded deque ----------------------------------------------------------
 
 /** A bounded array (push + shift when over capacity) mirroring collections.deque. */
@@ -346,6 +427,19 @@ class AgentInvocation {
       success: this.success,
     };
   }
+}
+
+interface AgentObservation {
+  timestamp: Date;
+  level: string;
+  category: string;
+  summary: string;
+  detail: string;
+  needs: string[];
+  signal_refs: string[];
+  grounding_refs: string[];
+  confidence: number | null;
+  suggested_next: string;
 }
 
 // --- LogWriter --------------------------------------------------------------
@@ -487,6 +581,7 @@ class RepoMonitor {
 
   agentHistory = new BoundedArray<AgentInvocation>(50);
   currentAgentInvocation: AgentInvocation | null = null;
+  agentObservations = new BoundedArray<AgentObservation>(30);
   agentRunning = false;
 
   private pendingLines: string[] = [];
@@ -585,8 +680,8 @@ class RepoMonitor {
     }
   }
 
-  /** Refresh data needed for a specific view ("pr_dashboard" | "agent_dashboard"). */
-  refreshDataForView(viewName: string): void {
+  /** Refresh data needed for a specific dashboard view. */
+  refreshDataForView(viewName: DashboardScreen): void {
     if (viewName === "agent_dashboard") {
       if (this.agentHistory.length === 0 && this.db) this.loadAgentHistoryFromDb();
       if (!this.stateLoaded && !this.stateLoading) {
@@ -973,6 +1068,12 @@ class RepoMonitor {
       this.handleProcessPr(data);
     } else if (eventType === "agent_action") {
       this.handleAgentAction(data);
+    } else if (eventType === "agent_observation") {
+      this.handleAgentObservation(data);
+    } else if (eventType === "git_ops") {
+      this.handleGitOpsEvent(data);
+    } else if (eventType === "metric") {
+      this.handleMetricEvent(data);
     } else if (eventType === "agent_progress") {
       const current = toNum(data["current"]);
       const total = toNum(data["total"]);
@@ -1171,8 +1272,10 @@ class RepoMonitor {
         );
       } else {
         this.stats.failures += 1;
-        const reason = toStr(data["reason"], "unknown");
-        this.logs.append(`✗ Failed PR #${prNumber}: ${reason} (after ${duration.toFixed(1)}s)`);
+        const reason = processFailureReason(data);
+        this.logs.append(
+          `✗ Failed PR #${prNumber}: ${truncate(reason, 180)} (after ${duration.toFixed(1)}s)`,
+        );
       }
       this.stats.prs_processed += 1;
       if (this.db && this.currentProcessingId !== null) {
@@ -1180,7 +1283,7 @@ class RepoMonitor {
           this.db.appStore.recordProcessingComplete(
             this.currentProcessingId,
             success,
-            success ? null : toStr(data["reason"]) || null,
+            success ? null : processFailureReason(data),
           );
         } catch (e) {
           if (isDbError(e)) {
@@ -1214,6 +1317,54 @@ class RepoMonitor {
       this.current_action = `Completed: ${actionType} - ${truncate(target, 40)}`;
     } else if (status === "failed") {
       this.logs.append(`  ✗ Action #${actionNumber} failed: ${actionType} - ${truncate(target, 40)}`);
+    }
+  }
+
+  private handleAgentObservation(data: Record<string, unknown>): void {
+    const observation: AgentObservation = {
+      timestamp: toDate(data["timestamp"]),
+      level: toStr(data["level"], "info"),
+      category: toStr(data["category"], "status"),
+      summary: toStr(data["summary"]),
+      detail: toStr(data["detail"]),
+      needs: asArray(data["needs"]).map((item) => toStr(item)).filter(Boolean),
+      signal_refs: asArray(data["signal_refs"]).map((item) => toStr(item)).filter(Boolean),
+      grounding_refs: asArray(data["grounding_refs"]).map((item) => toStr(item)).filter(Boolean),
+      confidence: typeof data["confidence"] === "number" ? data["confidence"] : null,
+      suggested_next: toStr(data["suggested_next"]),
+    };
+    this.agentObservations.append(observation);
+    const prefix =
+      observation.level === "error"
+        ? "Agent error"
+        : observation.level === "warning"
+          ? "Agent warning"
+          : "Agent";
+    this.logs.append(`  ${prefix} [${observation.category}]: ${truncate(observation.summary, 90)}`);
+    this.current_action = `${observation.category}: ${truncate(observation.summary, 70)}`;
+    if (observation.needs.length > 0) {
+      this.logs.append(`    Needs: ${truncate(observation.needs.join(", "), 90)}`);
+    }
+  }
+
+  private handleGitOpsEvent(data: Record<string, unknown>): void {
+    const event = toStr(data["event"]);
+    const pathValue = toStr(data["path"]);
+    if (event === "git.worktree.created") {
+      this.current_action = "Agent worktree created";
+      this.logs.append(`  Worktree: ${pathValue}`);
+    } else if (event === "git.worktree.removed") {
+      this.logs.append("  Worktree cleaned up");
+    } else if (event === "git.worktree.remove_failed") {
+      this.logs.append(`  Worktree cleanup failed: ${truncate(toStr(data["error"]), 80)}`);
+    }
+  }
+
+  private handleMetricEvent(data: Record<string, unknown>): void {
+    const name = toStr(data["name"]);
+    if (name === "git.command.failures" || name === "git.command.errors") {
+      const tags = asRecord(data["tags"]);
+      this.logs.append(`  Git metric ${name}: ${toStr(tags["command"], "git")}`);
     }
   }
 
@@ -1272,8 +1423,8 @@ class Dashboard {
   readonly startTime = new Date();
   readonly hasTty: boolean;
 
-  currentScreen: "pr_dashboard" | "agent_dashboard" = "pr_dashboard";
-  readonly screens = ["pr_dashboard", "agent_dashboard"] as const;
+  currentScreen: DashboardScreen = "world";
+  readonly screens = ["world", "pr_dashboard", "agent_dashboard"] as const;
 
   db: DbStores | null = null;
   private dbPath: string | null = null;
@@ -1285,6 +1436,10 @@ class Dashboard {
   private rawMode = false;
   private lastStatusTime = Date.now();
   private lastLogPositions = new Map<string, number>();
+  private renderFrozen = false;
+  private forceRedraw = true;
+  private lastFrameText = "";
+  private hasWrittenFrame = false;
 
   private readonly keyHandler = (data: Buffer | string): void => {
     if (this.prompting) return;
@@ -1298,11 +1453,13 @@ class Dashboard {
     dryRun?: boolean;
     logWriter?: LogWriter | null;
     dbPath?: string | null;
+    initialScreen?: DashboardScreen;
   }) {
     this.configPath = opts.configPath;
     this.scriptPath = opts.scriptPath;
     this.dryRun = opts.dryRun ?? false;
     this.logWriter = opts.logWriter ?? null;
+    this.currentScreen = opts.initialScreen ?? "world";
     this.hasTty = Boolean(process.stdout.isTTY);
 
     if (!this.dryRun && opts.dbPath) {
@@ -1418,24 +1575,37 @@ class Dashboard {
 
   /** Render the full frame (header + body + footer) as an array of lines. */
   private renderFrame(): string[] {
-    const frame: string[] = [];
-    frame.push(...this.renderHeader());
-    frame.push(...this.renderBody());
-    frame.push(...this.renderFooter());
-    return frame;
+    const header = this.renderHeader();
+    const footer = this.renderFooter();
+    let body = this.renderBody();
+    const maxRows = termHeight();
+    const bodyBudget = maxRows - header.length - footer.length;
+    if (bodyBudget > 1 && body.length > bodyBudget) {
+      const hidden = body.length - bodyBudget + 1;
+      body = [
+        ...body.slice(0, bodyBudget - 1),
+        chalk.dim(`... ${hidden} more lines hidden; use 2/3 for detail screens`),
+      ];
+    }
+    return [...header, ...body, ...footer];
   }
 
   private renderHeader(): string[] {
     const uptimeStr = uptimeString(Date.now() - this.startTime.getTime());
     const enabledCount = this.monitors.filter((m) => m.enabled).length;
     const screenName =
-      this.currentScreen === "pr_dashboard" ? "PR Dashboard" : "Agent Dashboard";
+      this.currentScreen === "world"
+        ? "World HUD"
+        : this.currentScreen === "pr_dashboard"
+          ? "PR Detail"
+          : "Agent Detail";
     const text = new Lines()
       .append("merge-god ", "bold cyan")
       .append("Dashboard", "bold")
       .append(` | Uptime: ${uptimeStr}`, "dim")
       .append(` | Repos: ${enabledCount}`, "dim")
       .append(` | Screen: ${screenName}`, "bold yellow")
+      .append(` | ${this.renderFrozen ? "FROZEN" : "LIVE"}`, this.renderFrozen ? "bold yellow" : "green")
       .render();
     return renderPanel("", text, "cyan");
   }
@@ -1444,11 +1614,15 @@ class Dashboard {
     const text = new Lines()
       .append("Press ", "dim")
       .append("1", "bold")
-      .append(" for PR Dashboard | ", "dim")
+      .append(" World | ", "dim")
       .append("2", "bold")
-      .append(" for Agent Dashboard | ", "dim")
+      .append(" PRs | ", "dim")
+      .append("3", "bold")
+      .append(" Agents | ", "dim")
       .append("R", "bold")
       .append(" to Refresh | ", "dim")
+      .append("P", "bold")
+      .append(this.renderFrozen ? " to Resume | " : " to Freeze/Copy | ", "dim")
       .append("Q", "bold")
       .append(" to quit", "dim")
       .render();
@@ -1460,6 +1634,7 @@ class Dashboard {
     if (enabled.length === 0) {
       return renderPanel("", [chalk.yellow("No enabled repositories")], "white");
     }
+    if (this.currentScreen === "world") return this.renderWorldScreen(enabled);
     const out: string[] = [];
     for (const monitor of enabled) {
       const panel =
@@ -1472,10 +1647,12 @@ class Dashboard {
     return out;
   }
 
-  /** Generate panel for a single repository (PR dashboard view). */
-  private renderRepoPanel(monitor: RepoMonitor): string[] {
-    const statusKey = monitor.status.split(":")[0] ?? monitor.status;
-    const statusStyleMap: Record<string, string> = {
+  private monitorStatusKey(monitor: RepoMonitor): string {
+    return monitor.status.split(":")[0] ?? monitor.status;
+  }
+
+  private statusStyle(statusKey: string): string {
+    const styles: Record<string, string> = {
       running: "green",
       processing: "yellow",
       scanning: "blue",
@@ -1484,8 +1661,347 @@ class Dashboard {
       disabled: "dim",
       stopped: "red",
       crashed: "bold red",
+      error: "bold red",
     };
-    const statusStyleVal = statusStyleMap[statusKey] ?? "white";
+    return styles[statusKey] ?? "white";
+  }
+
+  private isProblemRepo(monitor: RepoMonitor): boolean {
+    const statusKey = this.monitorStatusKey(monitor);
+    return (
+      ["crashed", "error", "stopped"].includes(statusKey) ||
+      monitor.pending_confirmation !== null ||
+      monitor.stateLoadError !== null
+    );
+  }
+
+  private ageString(date: Date | null): string {
+    if (!date) return "--";
+    const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h`;
+  }
+
+  private queueCounts(monitor: RepoMonitor): { review: number; landing: number; skipped: number } {
+    return {
+      review: monitor.prQueue.for_review.length,
+      landing: monitor.prQueue.for_landing.length,
+      skipped: monitor.prQueue.untagged.length,
+    };
+  }
+
+  private renderWorldScreen(enabled: RepoMonitor[]): string[] {
+    const out: string[] = [];
+    out.push(...this.renderWorldOverviewPanel(enabled));
+    out.push("");
+    out.push(...this.renderFleetMapPanel(enabled));
+    out.push("");
+    out.push(...this.renderPriorityPanel(enabled));
+    const signals = this.renderSignalPanel(enabled);
+    if (signals.length > 0 && termHeight() >= 52) {
+      out.push("");
+      out.push(...signals);
+    }
+    return out;
+  }
+
+  private renderWorldOverviewPanel(enabled: RepoMonitor[]): string[] {
+    const total = enabled.length;
+    const statusCounts: Record<string, number> = {};
+    let review = 0;
+    let landing = 0;
+    let skipped = 0;
+    let processed = 0;
+    let successes = 0;
+    let failures = 0;
+    let activeAgents = 0;
+    let confirmations = 0;
+    let problems = 0;
+    let loadedStates = 0;
+    let loadingStates = 0;
+    let failingCi = 0;
+    let needsSync = 0;
+    let branchesWithPrs = 0;
+
+    for (const monitor of enabled) {
+      const statusKey = this.monitorStatusKey(monitor);
+      statusCounts[statusKey] = (statusCounts[statusKey] ?? 0) + 1;
+      const counts = this.queueCounts(monitor);
+      review += counts.review;
+      landing += counts.landing;
+      skipped += counts.skipped;
+      processed += monitor.stats.prs_processed;
+      successes += monitor.stats.successes;
+      failures += monitor.stats.failures;
+      if (monitor.agentRunning) activeAgents += 1;
+      if (monitor.pending_confirmation) confirmations += 1;
+      if (this.isProblemRepo(monitor)) problems += 1;
+      if (monitor.stateLoading) loadingStates += 1;
+      if (monitor.repoState) {
+        loadedStates += 1;
+        const summary = repositoryStateSummary(monitor.repoState);
+        failingCi += toNum(summary["failing_ci"]);
+        needsSync += toNum(summary["branches_needing_sync"]);
+        branchesWithPrs += toNum(summary["branches_with_prs"]);
+      } else {
+        failingCi += monitor.prQueue.for_review
+          .concat(monitor.prQueue.for_landing)
+          .filter((p) => p.ci_failing).length;
+      }
+    }
+
+    const actionable = review + landing;
+    const active =
+      (statusCounts["processing"] ?? 0) +
+      (statusCounts["scanning"] ?? 0) +
+      (statusCounts["starting"] ?? 0);
+    const successRate = processed > 0 ? `${Math.round((successes / processed) * 100)}%` : "--";
+    const riskUnits = problems + confirmations + failingCi + needsSync;
+    const readiness = Math.max(
+      0,
+      Math.min(100, Math.round((1 - Math.min(total, riskUnits) / Math.max(total, 1)) * 100)),
+    );
+    const queueTotal = actionable + skipped;
+    const innerWidth = Math.max(58, Math.min(118, termWidth() - 4));
+    const centerWidth = Math.max(24, Math.min(42, Math.floor(innerWidth * 0.38)));
+    const sideWidth = Math.max(16, Math.floor((innerWidth - centerWidth - 4) / 2));
+    const actualWidth = sideWidth * 2 + centerWidth + 4;
+    const barWidth = Math.max(12, Math.min(28, centerWidth - 10));
+    const readinessBar = asciiBar(readiness, 100, barWidth);
+    const activeBar = asciiBar(active, Math.max(total, 1), barWidth);
+    const queueBar = asciiBar(actionable, Math.max(queueTotal, 1), barWidth);
+
+    const left = [
+      "FLEET",
+      `repos      ${total}`,
+      `active     ${active}`,
+      `agents     ${activeAgents}`,
+      `loaded     ${loadedStates}/${total}`,
+      `loading    ${loadingStates}`,
+      "",
+      "WORK",
+      `review     ${review}`,
+      `landing    ${landing}`,
+      `skipped    ${skipped}`,
+    ];
+    const right = [
+      "RISK",
+      `problems   ${problems}`,
+      `confirm    ${confirmations}`,
+      `failing ci ${failingCi}`,
+      `sync debt  ${needsSync}`,
+      `pr branch  ${branchesWithPrs}`,
+      "",
+      "RUNS",
+      `processed  ${processed}`,
+      `ok/fail    ${successes}/${failures}`,
+      `success    ${successRate}`,
+    ];
+    const center = [
+      "        /\\        ",
+      "     __/MG\\__     ",
+      "    /__|__\\    ",
+      "       |##|       ",
+      "   ___|##|___   ",
+      "  /##########\\  ",
+      " /____________\\ ",
+      `readiness ${String(readiness).padStart(3)}%`,
+      `+${"-".repeat(barWidth + 2)}+`,
+      `| ${readinessBar} |`,
+      `+${"-".repeat(barWidth + 2)}+`,
+      `active [${activeBar}]`,
+      `queue  [${queueBar}]`,
+    ];
+
+    const body: string[] = [
+      applyStyle(centerPlain("MERGE-GOD / WORLD STATE", actualWidth), "bold yellow"),
+      applyStyle(centerPlain("many repositories, one merge ritual", actualWidth), "dim"),
+      applyStyle("-".repeat(actualWidth), "dim"),
+    ];
+    const rowCount = Math.max(left.length, center.length, right.length);
+    for (let i = 0; i < rowCount; i++) {
+      const l = left[i] ?? "";
+      const c = center[i] ?? "";
+      const r = right[i] ?? "";
+      const line =
+        fitPlain(l, sideWidth) + "  " + centerPlain(c, centerWidth) + "  " + fitPlain(r, sideWidth);
+      if (l === "FLEET" || l === "WORK" || r === "RISK" || r === "RUNS") {
+        body.push(applyStyle(line, "bold cyan"));
+      } else if (c.includes(readinessBar) && readiness < 80) {
+        body.push(applyStyle(line, "bold yellow"));
+      } else if (c.includes(readinessBar)) {
+        body.push(applyStyle(line, "bold green"));
+      } else {
+        body.push(line);
+      }
+    }
+    const border = problems > 0 ? "red" : active > 0 ? "yellow" : "cyan";
+    return renderPanel("Sanctum", body, border);
+  }
+
+  private renderFleetMapPanel(enabled: RepoMonitor[]): string[] {
+    const columns = Math.max(10, Math.min(50, termWidth() - 16));
+    const body: string[] = [];
+    for (let i = 0; i < enabled.length; i += columns) {
+      const slice = enabled.slice(i, i + columns);
+      let sectorActive = 0;
+      let sectorQueued = 0;
+      let sectorRisk = 0;
+      const cells = slice
+        .map((monitor) => {
+          const statusKey = this.monitorStatusKey(monitor);
+          const counts = this.queueCounts(monitor);
+          if (["processing", "scanning", "starting"].includes(statusKey) || monitor.agentRunning) {
+            sectorActive += 1;
+          }
+          if (counts.review + counts.landing > 0) sectorQueued += 1;
+          if (this.isProblemRepo(monitor)) sectorRisk += 1;
+          let marker = ".";
+          let style = "dim";
+          if (monitor.pending_confirmation) {
+            marker = "?";
+            style = "bold yellow";
+          } else if (this.isProblemRepo(monitor)) {
+            marker = "!";
+            style = "bold red";
+          } else if (monitor.agentRunning) {
+            marker = "A";
+            style = "magenta";
+          } else if (statusKey === "processing") {
+            marker = "P";
+            style = "yellow";
+          } else if (statusKey === "scanning") {
+            marker = "S";
+            style = "blue";
+          } else if (statusKey === "running") {
+            marker = "R";
+            style = "green";
+          } else if (statusKey === "starting") {
+            marker = ">";
+            style = "cyan";
+          } else if (statusKey === "idle") {
+            marker = "I";
+            style = "dim";
+          }
+          return applyStyle(marker, style);
+        })
+        .join("");
+      const start = String(i + 1).padStart(3, "0");
+      const end = String(i + slice.length).padStart(3, "0");
+      const sector = `sector ${start}-${end}`;
+      const rollup = `active ${sectorActive} | queued ${sectorQueued} | risk ${sectorRisk}`;
+      body.push(`${fitPlain(sector, 14)} ${cells}  ${chalk.dim(rollup)}`);
+    }
+    body.push("");
+    body.push(
+      chalk.dim(
+        "Legend: ! problem  ? confirm  A agent  P processing  S scanning  R running  > starting  I idle  . other",
+      ),
+    );
+    return renderPanel("Repository Sectors", body, "cyan");
+  }
+
+  private renderPriorityPanel(enabled: RepoMonitor[]): string[] {
+    const ranked = enabled
+      .map((monitor) => {
+        const statusKey = this.monitorStatusKey(monitor);
+        const counts = this.queueCounts(monitor);
+        const queued = counts.review + counts.landing;
+        const score =
+          (monitor.pending_confirmation ? 1000 : 0) +
+          (this.isProblemRepo(monitor) ? 900 : 0) +
+          (statusKey === "processing" ? 800 : 0) +
+          (monitor.agentRunning ? 700 : 0) +
+          (statusKey === "scanning" ? 500 : 0) +
+          (statusKey === "starting" ? 300 : 0) +
+          queued * 10 +
+          monitor.stats.failures * 5;
+        return { monitor, statusKey, counts, queued, score };
+      })
+      .filter((item) => item.score > 0 || item.queued > 0)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.queued - a.queued ||
+          a.monitor.name.localeCompare(b.monitor.name),
+      );
+
+    if (ranked.length === 0) {
+      return renderPanel("Priority Work", [chalk.dim("No active or queued work yet.")], "dim");
+    }
+
+    const width = termWidth();
+    const repoWidth = Math.max(12, Math.min(24, Math.floor(width * 0.18)));
+    const actionWidth = Math.max(20, Math.min(48, width - repoWidth - 48));
+    const maxRows = this.currentScreen === "world" ? 8 : 14;
+    const rows = ranked.slice(0, maxRows).map(({ monitor, statusKey, counts, queued }) => {
+      const work =
+        monitor.pending_confirmation
+          ? "confirm"
+          : this.isProblemRepo(monitor)
+            ? "problem"
+          : monitor.agentRunning
+            ? "agent"
+            : queued > 0
+              ? `r${counts.review}/l${counts.landing}`
+              : statusKey;
+      const pr = monitor.processingPR
+        ? `#${monitor.processingPR.number}`
+        : monitor.current_pr ?? (queued > 0 ? `${queued} queued` : "--");
+      const signal = monitor.stateLoadError ?? monitor.current_action ?? monitor.logs.sliceLast(1)[0] ?? "";
+      return [
+        statusKey,
+        monitor.name,
+        work,
+        pr,
+        this.ageString(monitor.last_update),
+        signal,
+      ];
+    });
+    const body = renderHudTable(
+      ["STATE", "REPO", "WORK", "PR", "AGE", "SIGNAL"],
+      [10, repoWidth, 10, 10, 5, actionWidth],
+      rows,
+    );
+    if (ranked.length > rows.length) {
+      body.push(chalk.dim(`... ${ranked.length - rows.length} more repos with signal`));
+    }
+    const border = ranked.some((r) => this.isProblemRepo(r.monitor)) ? "red" : "yellow";
+    return renderPanel("Priority Work", body, border);
+  }
+
+  private renderSignalPanel(enabled: RepoMonitor[]): string[] {
+    const candidates = enabled
+      .filter((monitor) => monitor.logs.length > 0)
+      .sort((a, b) => {
+        const aProblem = this.isProblemRepo(a) ? 1 : 0;
+        const bProblem = this.isProblemRepo(b) ? 1 : 0;
+        if (aProblem !== bProblem) return bProblem - aProblem;
+        return (b.last_update?.getTime() ?? 0) - (a.last_update?.getTime() ?? 0);
+      })
+      .slice(0, 5);
+    if (candidates.length === 0) return [];
+
+    const repoWidth = Math.max(12, Math.min(24, Math.floor(termWidth() * 0.2)));
+    const signalWidth = Math.max(30, termWidth() - repoWidth - 18);
+    const rows = candidates.map((monitor) => [
+      monitor.name,
+      this.ageString(monitor.last_update),
+      monitor.logs.sliceLast(1)[0] ?? "",
+    ]);
+    return renderPanel(
+      "Recent Signal",
+      renderHudTable(["REPO", "AGE", "LAST LOG"], [repoWidth, 5, signalWidth], rows),
+      "magenta",
+    );
+  }
+
+  /** Generate panel for a single repository (PR dashboard view). */
+  private renderRepoPanel(monitor: RepoMonitor): string[] {
+    const statusKey = this.monitorStatusKey(monitor);
+    const statusStyleVal = this.statusStyle(statusKey);
 
     const rows: GridRow[] = [];
     rows.push({
@@ -1734,6 +2250,32 @@ class Dashboard {
       content.append(`   Prompt size: ${inv.prompt_size} chars\n`, "dim");
       content.append(`   Started: ${formatTime(inv.timestamp)}\n`, "dim");
       content.append(`   Elapsed: ${Math.floor(elapsed)}s\n`, "yellow");
+      content.append("\n", "");
+    }
+
+    if (monitor.agentObservations.length > 0) {
+      content.append("Live Observations:\n", "bold cyan");
+      const recentObservations = monitor.agentObservations.sliceLast(8).reverse();
+      for (const observation of recentObservations) {
+        const style =
+          observation.level === "error"
+            ? "red"
+            : observation.level === "warning"
+              ? "yellow"
+              : observation.level === "debug"
+                ? "dim"
+                : "white";
+        content.append(`  [${observation.category}] `, "cyan");
+        content.append(`${truncate(observation.summary, 90)}\n`, style);
+        if (observation.signal_refs.length > 0 || observation.grounding_refs.length > 0) {
+          const signals = observation.signal_refs.length;
+          const grounding = observation.grounding_refs.length;
+          content.append(`     signal ${signals} | grounding ${grounding}\n`, "dim");
+        }
+        if (observation.needs.length > 0) {
+          content.append(`     needs: ${truncate(observation.needs.join(", "), 90)}\n`, "yellow dim");
+        }
+      }
       content.append("\n", "");
     }
 
@@ -2066,20 +2608,35 @@ class Dashboard {
     for (const key of keys) {
       if (key === "1") {
         const oldScreen = this.currentScreen;
+        this.currentScreen = "world";
+        if (oldScreen !== this.currentScreen) {
+          for (const m of this.monitors) if (m.enabled) m.refreshDataForView(this.currentScreen);
+        }
+        this.forceRedraw = true;
+        handled = true;
+      } else if (key === "2") {
+        const oldScreen = this.currentScreen;
         this.currentScreen = "pr_dashboard";
         if (oldScreen !== this.currentScreen) {
           for (const m of this.monitors) if (m.enabled) m.refreshDataForView(this.currentScreen);
         }
+        this.forceRedraw = true;
         handled = true;
-      } else if (key === "2") {
+      } else if (key === "3") {
         const oldScreen = this.currentScreen;
         this.currentScreen = "agent_dashboard";
         if (oldScreen !== this.currentScreen) {
           for (const m of this.monitors) if (m.enabled) m.refreshDataForView(this.currentScreen);
         }
+        this.forceRedraw = true;
         handled = true;
       } else if (key === "r" || key === "R") {
         for (const m of this.monitors) if (m.enabled) this.triggerManualRefresh(m);
+        this.forceRedraw = true;
+        handled = true;
+      } else if (key === "p" || key === "P") {
+        this.renderFrozen = !this.renderFrozen;
+        this.forceRedraw = true;
         handled = true;
       } else if (key === "q" || key === "Q" || key === "\x03") {
         void this.shutdown();
@@ -2163,8 +2720,13 @@ class Dashboard {
   }
 
   /** Write a frame to stdout (clear screen + cursor home + frame lines). */
-  private writeFrame(frame: string[]): void {
-    process.stdout.write("\x1b[2J\x1b[H" + frame.join("\n") + "\n");
+  private writeFrame(frame: string[], force = false): void {
+    const frameText = frame.join("\n") + "\n";
+    if (!force && frameText === this.lastFrameText) return;
+    this.lastFrameText = frameText;
+    const clear = this.hasWrittenFrame ? "\x1b[2J\x1b[H" : "\x1b[3J\x1b[2J\x1b[H";
+    this.hasWrittenFrame = true;
+    process.stdout.write(clear + frameText);
   }
 
   /** Single refresh tick: update, handle keys/confirmations, render. */
@@ -2179,7 +2741,10 @@ class Dashboard {
       void this.checkPendingConfirmations();
       return;
     }
-    this.writeFrame(this.renderFrame());
+    if (this.renderFrozen && !this.forceRedraw) return;
+    const force = this.forceRedraw;
+    this.forceRedraw = false;
+    this.writeFrame(this.renderFrame(), force);
   }
 
   /** Shut the dashboard down cleanly. */
@@ -2214,7 +2779,7 @@ class Dashboard {
     });
 
     this.running = true;
-    this.writeFrame(this.renderFrame());
+    this.writeFrame(this.renderFrame(), true);
     this.intervalHandle = setInterval(() => this.tick(), REFRESH_INTERVAL_MS);
     return true;
   }
@@ -2407,6 +2972,7 @@ interface CliArgs {
   dryRun: boolean;
   logFile: string;
   dbPath: string;
+  screen: DashboardScreen;
 }
 
 /** Parse command line arguments (mirrors the Python argparse interface). */
@@ -2417,6 +2983,8 @@ function parseCliArgs(): CliArgs {
       "dry-run": { type: "boolean", default: false },
       "log-file": { type: "string" },
       "db-path": { type: "string" },
+      "non-interactive": { type: "boolean", default: false },
+      screen: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -2425,6 +2993,7 @@ function parseCliArgs(): CliArgs {
     dryRun: values["dry-run"] ?? false,
     logFile: values["log-file"] ?? "merge-god-dashboard.log",
     dbPath: values["db-path"] ?? DEFAULT_DB_PATH,
+    screen: parseDashboardScreen(values.screen),
   };
 }
 
@@ -2461,6 +3030,7 @@ async function main(): Promise<void> {
     dryRun: args.dryRun,
     logWriter,
     dbPath: args.dbPath,
+    initialScreen: args.screen,
   });
 
   await dashboard.initDb();

@@ -155,6 +155,7 @@ export interface PRContext {
 
   guidelines: string;
   commit_examples: string;
+  merge_rules: string;
 
   labels: string[];
   ci_checks: Record<string, unknown>;
@@ -195,6 +196,7 @@ export function createPRContextFromDict(
     commits: arrVal<Record<string, unknown>>(prContext["commits"]),
     guidelines: strVal(prContext["guidelines"]),
     commit_examples: strVal(prContext["commit_examples"]),
+    merge_rules: strVal(prContext["merge_rules"]),
     labels: arrVal<string>(prDetails["labels"]),
     ci_checks: ciStatus,
     review_decision: optStrVal(prDetails["reviewDecision"]),
@@ -669,6 +671,12 @@ pre-commit run --all-files
 - **Author**: ${prContext.author}
 - **URL**: ${prContext.url}
 `;
+    const mergeRules = prContext.merge_rules
+      ? `
+## Merge Rules
+${prContext.merge_rules}
+`
+      : "";
 
     if (task.id === "analyze") {
       return (
@@ -744,6 +752,7 @@ Begin by reading the conflicting files to understand the conflicts.
 
       return (
         baseContext +
+        mergeRules +
         `
 ## Your Task
 Address the following code review comments:
@@ -793,6 +802,7 @@ Work through the comments systematically.
 
       return (
         baseContext +
+        mergeRules +
         `
 ## Your Task
 Fix the following failing CI checks:
@@ -842,6 +852,7 @@ Start by analyzing the failing checks.
 
       return (
         baseContext +
+        mergeRules +
         `
 ## Your Task
 Conduct a comprehensive code review of the changes in this PR.
@@ -860,7 +871,7 @@ ${changedFilesStr}
 
 ## Quality Checks to Run
 
-Before finalizing any changes, run these quality tools:
+Before finalizing any changes, follow the merge rules when present, including referenced Workflow-IR gates and remediation thresholds, then run these general quality tools:
 
 \`\`\`bash
 # Type check and test
@@ -889,18 +900,22 @@ Review the code systematically and make targeted improvements.
     if (task.id === "validate") {
       return (
         baseContext +
+        mergeRules +
         `
 ## Your Task
 Final validation before marking PR ready:
 
-1. Run all quality checks:
+1. Follow the merge rules when present, including referenced Workflow-IR gates and remediation thresholds.
+2. Collect as much validation evidence as feasible before making a final gate decision.
+3. If a gate fails, attempt remediation only within the configured threshold and then rerun affected validation.
+4. Run all general quality checks:
    - \`npm run typecheck\` - TypeScript checks
    - \`npm test\` - All tests
    - \`npm run ci\` - Full CI check
-2. Verify all conflicts resolved
-3. Check that all review comments addressed
-4. Ensure CI checks will pass
-5. Validate docs/site builds if documentation or site files changed
+5. Verify all conflicts resolved
+6. Check that all review comments addressed
+7. Ensure CI checks will pass
+8. Validate docs/site builds if documentation or site files changed
 
 ## Pre-merge Checklist
 

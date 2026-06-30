@@ -8,13 +8,16 @@
 
 import { randomUUID } from "node:crypto";
 import type { AppStore } from "./app_store";
-import { runPiAgent, type CoordinationTrajectoryBridge, type PiAgentResult, type WorkItem } from "./coordination";
+import { runPiAgent, type AgentObservation, type CoordinationTrajectoryBridge, type PiAgentResult, type WorkItem } from "./coordination";
+import type { GitOpsObserver } from "./git_ops";
 import type {
   ActivityClaim,
   ActivityType,
   ChildActivityInput,
   CompatibilityTrajectoryIds,
   CompatibilityTrajectoryInput,
+  EmbarkCohortTrajectoryIds,
+  EmbarkCohortTrajectoryInput,
   JsonObject,
   PrQueueTrajectoryIds,
   PrQueueTrajectoryInput,
@@ -49,6 +52,15 @@ export const PR_QUEUE_WORKFLOW: RuntimeWorkflowDefinition = {
   activity_type: "queued_pr_activity",
 };
 
+export const EMBARK_COHORT_WORKFLOW: RuntimeWorkflowDefinition = {
+  id: "workflow://merge-god/embark-cohort",
+  version: "v1",
+  kind: "embark_cohort",
+  description: "Durable multi-PR embark cohort for grouped merge-commit validation.",
+  initial_phase: "embark_cohort_ready",
+  activity_type: "cohort_merge_gate",
+};
+
 export interface RuntimeStartResult {
   workflow: RuntimeWorkflowDefinition;
   ids: CompatibilityTrajectoryIds;
@@ -58,6 +70,12 @@ export interface RuntimeStartResult {
 export interface QueueStartResult {
   workflow: RuntimeWorkflowDefinition;
   ids: PrQueueTrajectoryIds;
+  state: TrajectoryState;
+}
+
+export interface EmbarkStartResult {
+  workflow: RuntimeWorkflowDefinition;
+  ids: EmbarkCohortTrajectoryIds;
   state: TrajectoryState;
 }
 
@@ -80,6 +98,8 @@ export interface RunNextActivityOptions {
   repo_path: string;
   timeout?: number;
   model?: string | null;
+  git_observer?: GitOpsObserver;
+  agent_observer?: (observation: AgentObservation) => void;
   build_prompt?: (claim: ActivityClaim, state: TrajectoryState) => string;
 }
 
@@ -159,6 +179,31 @@ export class TrajectoryRuntime {
       throw new Error(`Trajectory state was not persisted for run ${ids.run_id}`);
     }
     return { workflow: PR_QUEUE_WORKFLOW, ids, state };
+  }
+
+  startEmbarkCohortWorkflow(input: EmbarkCohortTrajectoryInput): EmbarkStartResult {
+    const ids = this.store.createEmbarkCohortTrajectory(input);
+    this.store.appendTrajectoryEvent(
+      ids.run_id,
+      "runtime.workflow.started",
+      "merge-god-runtime",
+      {
+        workflow_id: EMBARK_COHORT_WORKFLOW.id,
+        workflow_version: EMBARK_COHORT_WORKFLOW.version,
+        item_count: ids.work_item_ids.length,
+        group_activity_id: ids.group_activity_id,
+      },
+      {
+        workset_id: ids.workset_id,
+        activity_id: ids.group_activity_id,
+      },
+    );
+
+    const state = this.store.getTrajectoryState(ids.run_id);
+    if (!state) {
+      throw new Error(`Trajectory state was not persisted for run ${ids.run_id}`);
+    }
+    return { workflow: EMBARK_COHORT_WORKFLOW, ids, state };
   }
 
   claimNextActivity(runId: string): ActivityClaim | null {
@@ -358,6 +403,8 @@ export class TrajectoryRuntime {
     const piResult = await runPiAgent(workItem, options.repo_path, {
       timeout: options.timeout,
       trajectory: this.bridgeForPiAgent(started.ids),
+      gitObserver: options.git_observer,
+      agentObserver: options.agent_observer,
     });
     const resultStatus = typeof piResult.result?.["status"] === "string" ? piResult.result["status"] : null;
     const success = piResult.returncode === 0 && resultStatus !== "failure";

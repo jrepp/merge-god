@@ -33,10 +33,12 @@ export type SourceKind = "pull_request" | "issue";
 
 export type WorkItemStatus =
   | "queued"
+  | "ready"
   | "syncing"
   | "conflicted"
   | "validating"
   | "validated"
+  | "embarked"
   | "running"
   | "pushed"
   | "merged"
@@ -233,6 +235,26 @@ export interface PrQueueTrajectoryIds {
   workset_id: string;
   work_item_ids: string[];
   activity_ids: string[];
+}
+
+export interface EmbarkCohortTrajectoryInput {
+  repo_name: string;
+  repo_path?: string | null;
+  base_branch?: string | null;
+  objective?: string | null;
+  cohort_id?: string | null;
+  integration_branch?: string | null;
+  output_pr_number?: number | null;
+  output_pr_url?: string | null;
+  validation_commands?: string[];
+  items: TrajectoryWorkItemInput[];
+}
+
+export interface EmbarkCohortTrajectoryIds {
+  run_id: string;
+  workset_id: string;
+  work_item_ids: string[];
+  group_activity_id: string;
 }
 
 export interface ActivityClaim {

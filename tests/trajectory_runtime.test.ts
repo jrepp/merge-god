@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { AppStore } from "../app_store";
-import { ONE_SHOT_PR_AGENT_WORKFLOW, TrajectoryRuntime } from "../trajectory_runtime";
+import { EMBARK_COHORT_WORKFLOW, ONE_SHOT_PR_AGENT_WORKFLOW, TrajectoryRuntime } from "../trajectory_runtime";
 
 describe("TrajectoryRuntime", () => {
   test("starts and completes the one-shot PR agent workflow", () => {
@@ -165,6 +165,67 @@ describe("TrajectoryRuntime", () => {
       assert.ok(finalState!.events.some((event) => event.event_type === "activity.next_action.proposed"));
       assert.ok(finalState!.events.some((event) => event.event_type === "activity.child_created"));
       assert.ok(finalState!.events.some((event) => event.event_type === "activity.child_rejected"));
+    } finally {
+      store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("captures an embark cohort for grouped merge-commit validation", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-runtime-"));
+    const dbPath = path.join(tempDir, "runtime.db");
+    const store = new AppStore(dbPath);
+    try {
+      const runtime = new TrajectoryRuntime(store);
+      const started = runtime.startEmbarkCohortWorkflow({
+        repo_name: "test-repo",
+        repo_path: "/repo",
+        base_branch: "main",
+        cohort_id: "cohort-1",
+        integration_branch: "merge-god/embark/cohort-1",
+        output_pr_number: 99,
+        output_pr_url: "https://example.test/pull/99",
+        validation_commands: ["npm run ci"],
+        items: [
+          {
+            repo_name: "test-repo",
+            number: 10,
+            title: "Ready dependency PR A",
+            labels: ["for-landing", "merge:ready"],
+            head_ref: "renovate/a",
+            priority: 1,
+          },
+          {
+            repo_name: "test-repo",
+            number: 11,
+            title: "Ready dependency PR B",
+            labels: ["for-landing", "merge:ready"],
+            head_ref: "renovate/b",
+            priority: 2,
+          },
+        ],
+      });
+
+      assert.equal(started.workflow.id, EMBARK_COHORT_WORKFLOW.id);
+      assert.equal(started.state.run.current_phase, "embark_cohort_ready");
+      assert.equal(started.state.worksets[0]!.kind, "embark_cohort");
+      assert.equal(started.state.worksets[0]!.approval_state, "pending");
+      assert.equal(started.state.worksets[0]!.metadata["cohort_id"], "cohort-1");
+      assert.deepEqual(
+        started.state.work_items.map((item) => [item.number, item.status, item.metadata["merge_order"]]),
+        [
+          [10, "embarked", 1],
+          [11, "embarked", 2],
+        ],
+      );
+      assert.equal(started.state.activities.length, 1);
+      assert.equal(started.state.activities[0]!.type, "merge_gate");
+      assert.equal(started.state.activities[0]!.work_item_id, null);
+      assert.deepEqual(started.state.activities[0]!.metadata["validation_commands"], ["npm run ci"]);
+      assert.deepEqual(
+        started.state.events.map((event) => event.event_type),
+        ["runtime.embark_cohort.created", "runtime.workflow.started"],
+      );
     } finally {
       store.close();
       rmSync(tempDir, { recursive: true, force: true });

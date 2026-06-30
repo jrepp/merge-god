@@ -16,10 +16,11 @@ merge-god/
 ├── state_tracker.ts    # Branch/PR state correlation
 ├── models.ts           # Shared data models
 ├── app_store.ts        # Merge-god-specific SQLite store
+├── git_ops.ts          # GitOps helper around @merge-god/github-sync GitClient
 ├── config.example.yaml # Sample configuration
 ├── merge_god/          # Packaged refactor (CLI: dashboard, scan, agent, …)
 │   └── agents/         # Agent prompt/guideline assets
-├── agents/             # Claude Agent SDK integration (claude_agent.ts, callbacks.ts)
+├── agents/             # Legacy Claude SDK support modules for replay/evaluation paths
 ├── packages/github-sync/  # @merge-god/github-sync: multi-forge async sync library (TS)
 ├── tests/              # node:test suite (.test.ts)
 ├── site/               # This documentation site (Astro)

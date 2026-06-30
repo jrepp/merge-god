@@ -105,22 +105,19 @@ function parseGlobal(argv: string[]): GlobalArgs {
 function cmdDashboard(g: GlobalArgs): number {
   logText("Starting merge-god dashboard...");
   const configPath = resolvePath(g.config, "config.yaml");
-  if (!existsSync(configPath)) {
-    logText(`Config file not found: ${configPath}`, "error");
-    logText("Run: cp config.example.yaml config.yaml", "info");
-    return 1;
-  }
   const args = ["dashboard.ts", configPath];
   const parsed = parseArgs({
     args: g.rest,
     options: {
       "non-interactive": { type: "boolean", default: false },
       "log-file": { type: "string" },
+      screen: { type: "string" },
     },
     allowPositionals: true,
   });
   if (parsed.values["non-interactive"]) args.push("--non-interactive");
   if (parsed.values["log-file"]) args.push("--log-file", parsed.values["log-file"]);
+  if (parsed.values.screen) args.push("--screen", parsed.values.screen);
   try {
     return runChild(args[0]!, args.slice(1));
   } catch (e) {
@@ -337,6 +334,7 @@ OVERVIEW:
     Process 3: Agent invocation and PR processing
 
 COMMANDS:
+  (default)   Run the World HUD TUI dashboard.
   dashboard   Run the full TUI dashboard with all processes.
   scan        Scan PRs and sync their context to the database.
   agent       Run agent on cached PR data (Process 3 isolation).
@@ -345,6 +343,7 @@ COMMANDS:
   status      Show system status and statistics.
   help        Show this help message.
 
+Dashboard screens: --screen world|prs|agents (default: world).
 Run 'tsx merge-god.ts help' for details.
 `;
 
@@ -366,8 +365,8 @@ function main(): number {
   const g = parseGlobal(argv);
 
   if (!g.command) {
-    console.log(HELP_TEXT);
-    return 0;
+    if (argv.includes("--help") || argv.includes("-h")) return cmdHelp();
+    return cmdDashboard(g);
   }
 
   const handlers: Record<string, () => number> = {

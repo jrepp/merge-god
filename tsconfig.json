@@ -24,7 +24,9 @@
     "agents/**/*.ts",
     "tests/**/*.ts",
     "packages/github-sync/src/**/*.ts",
-    "packages/github-sync/tests/**/*.ts"
+    "packages/github-sync/tests/**/*.ts",
+    "packages/workflow-ir-core/src/**/*.ts",
+    "packages/workflow-ir-core/tests/**/*.ts"
   ],
   "exclude": ["node_modules", ".venv", "site", "pi/extensions", "packages/*/node_modules"]
 }

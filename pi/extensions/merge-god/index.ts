@@ -56,6 +56,32 @@ interface ChildActivityInput {
   metadata?: Record<string, unknown>;
 }
 
+interface FollowUpPrInput {
+  title?: string;
+  body?: string;
+  branch?: string;
+  base?: string;
+  linked_pr_number?: number;
+  commit_message?: string;
+  draft?: boolean;
+  labels?: string[];
+  signal_refs?: string[];
+  grounding_refs?: string[];
+  validation_refs?: string[];
+}
+
+interface ObservationInput {
+  level?: "debug" | "info" | "warning" | "error";
+  category?: string;
+  summary?: string;
+  detail?: string;
+  needs?: string[];
+  signal_refs?: string[];
+  grounding_refs?: string[];
+  confidence?: number;
+  suggested_next?: string;
+}
+
 interface ApiResponse {
   ok: boolean;
   status: number;
@@ -117,7 +143,8 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
     promptSnippet: "Load the current merge-god work item.",
     promptGuidelines: [
       "Call merge_god_context first to load the prompt/context for the work merge-god has assigned.",
-      "Do the work in the repository with your file and shell tools, then report back with merge_god_complete.",
+      "Do the work in the isolated worktree named by repo_path with your file and shell tools, then report back with merge_god_complete.",
+      "Only open autonomous remediation PRs when you have concrete signal refs and project-doc grounding refs.",
     ],
     parameters: {
       type: "object",
@@ -445,6 +472,219 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
         return {
           content: [
             { type: "text", text: `Failed to reach the merge-god trajectory API: ${(err as Error).message}` },
+          ],
+          details: { ok: false, error: String(err) },
+        };
+      }
+    },
+  } as any);
+
+  pi.registerTool({
+    name: "merge_god_observe",
+    label: "merge-god observe",
+    description:
+      "Send a structured live observation back to merge-god so the coordinator and TUI can show what pi knows, what signal it has, what it needs, and what it plans next.",
+    promptSnippet: "Send a merge-god live observation.",
+    promptGuidelines: [
+      "Use this at major checkpoints: after loading context, before/after risky commands, when blocked, when signal is weak, or before opening a remediation PR.",
+      "Keep summary short enough for a dashboard row.",
+      "Use signal_refs for concrete evidence and grounding_refs for docs/rules/workflow refs.",
+      "Use needs to name missing context, credentials, logs, or user decisions.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        level: {
+          type: "string",
+          enum: ["debug", "info", "warning", "error"],
+          description: "Observation severity.",
+        },
+        category: {
+          type: "string",
+          description: "Short category such as context, signal, validation, remediation, blocked, or next.",
+        },
+        summary: {
+          type: "string",
+          description: "Short dashboard-safe summary.",
+        },
+        detail: {
+          type: "string",
+          description: "Optional longer detail.",
+        },
+        needs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Missing information or action needed from merge-god/user.",
+        },
+        signal_refs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Evidence refs observed so far.",
+        },
+        grounding_refs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Project docs/rules/workflow refs used for grounding.",
+        },
+        confidence: {
+          type: "number",
+          description: "Optional confidence from 0 to 1.",
+        },
+        suggested_next: {
+          type: "string",
+          description: "Suggested next action.",
+        },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    } as any,
+    async execute(_toolCallId, params) {
+      const input = (params ?? {}) as ObservationInput;
+      try {
+        const { ok, status, data } = await callApi("/observation", {
+          method: "POST",
+          body: JSON.stringify(input),
+        });
+        const text = ok
+          ? `Observation recorded: ${input.summary}`
+          : `Failed to record observation (HTTP ${status}): ${data?.error ?? "unknown error"}`;
+        return {
+          content: [{ type: "text", text }],
+          details: { ok, status, data },
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `Failed to reach the merge-god coordination API: ${(err as Error).message}` },
+          ],
+          details: { ok: false, error: String(err) },
+        };
+      }
+    },
+  } as any);
+
+  pi.registerTool({
+    name: "merge_god_debug_snapshot",
+    label: "merge-god debug snapshot",
+    description:
+      "Fetch the current coordination debug snapshot: work item, observations already sent, available merge-god tools, and worktree path.",
+    promptSnippet: "Fetch merge-god coordination debug snapshot.",
+    promptGuidelines: [
+      "Use this when unsure whether you have enough context or when diagnosing why merge-god coordination tools are not behaving as expected.",
+      "Do not use this as a substitute for merge_god_context; use it for diagnostics.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    } as any,
+    async execute() {
+      try {
+        const { ok, status, data } = await callApi("/debug");
+        const text = ok
+          ? JSON.stringify(data, null, 2)
+          : `No merge-god debug snapshot available (HTTP ${status}).`;
+        return {
+          content: [{ type: "text", text }],
+          details: { ok, status, data },
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `Failed to reach the merge-god coordination API: ${(err as Error).message}` },
+          ],
+          details: { ok: false, error: String(err) },
+        };
+      }
+    },
+  } as any);
+
+  pi.registerTool({
+    name: "merge_god_open_follow_up_pr",
+    label: "merge-god follow-up PR",
+    description:
+      "Open an autonomous remediation pull request from the current isolated worktree. Requires concrete signal refs and project-doc grounding refs before merge-god will create the PR.",
+    promptSnippet: "Open a merge-god follow-up remediation PR.",
+    promptGuidelines: [
+      "Use this only for a separate bug fix or remediation discovered while doing assigned merge-god work.",
+      "Provide signal_refs such as failing command output, CI check URLs, review comments, issue URLs, stack traces, or repro artifacts.",
+      "Provide grounding_refs from project docs, AGENTS.md, .merge-rules.yaml, or Workflow-IR docs that justify the remediation scope.",
+      "Keep the change narrowly scoped and include validation_refs when you ran checks.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Pull request title.",
+        },
+        body: {
+          type: "string",
+          description: "Pull request body. Include a short signal/grounding/validation summary.",
+        },
+        branch: {
+          type: "string",
+          description: "Optional branch name. Defaults to a merge-god generated branch.",
+        },
+        base: {
+          type: "string",
+          description: "Optional base branch. Defaults to the current work item base branch or main.",
+        },
+        linked_pr_number: {
+          type: "number",
+          description: "Optional PR number this underlying remediation PR should link back to. Defaults to the current work item PR.",
+        },
+        commit_message: {
+          type: "string",
+          description: "Optional commit message. Defaults to the PR title.",
+        },
+        draft: {
+          type: "boolean",
+          description: "Create the PR as a draft.",
+        },
+        labels: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional labels to apply.",
+        },
+        signal_refs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Required concrete signals that justify remediation.",
+        },
+        grounding_refs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Required project docs/rules/workflow refs grounding the remediation.",
+        },
+        validation_refs: {
+          type: "array",
+          items: { type: "string" },
+          description: "Validation command refs or artifact refs.",
+        },
+      },
+      required: ["title", "signal_refs", "grounding_refs"],
+      additionalProperties: false,
+    } as any,
+    async execute(_toolCallId, params) {
+      const input = (params ?? {}) as FollowUpPrInput;
+      try {
+        const { ok, status, data } = await callApi("/follow-up-pr", {
+          method: "POST",
+          body: JSON.stringify(input),
+        });
+        const url = data?.follow_up_pr?.url;
+        const text = ok
+          ? `Follow-up remediation PR opened: ${url || input.title}`
+          : `Failed to open follow-up remediation PR (HTTP ${status}): ${data?.error ?? "unknown error"}`;
+        return {
+          content: [{ type: "text", text }],
+          details: { ok, status, data },
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `Failed to reach the merge-god coordination API: ${(err as Error).message}` },
           ],
           details: { ok: false, error: String(err) },
         };

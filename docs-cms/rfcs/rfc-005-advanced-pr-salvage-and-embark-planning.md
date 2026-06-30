@@ -307,7 +307,7 @@ This likely affects:
 - merge-gate subworkflow contracts
 - queue-state persistence
 - prompt generation and prompt refs
-- dashboard display and `mg:*` state transitions
+- dashboard display and `merge:*` state transitions
 - evaluation tooling for agent sessions
 
 ## Operational Guardrails
@@ -326,7 +326,7 @@ Advanced strategies raise risk. Guardrails should be explicit.
 - Prefer dry-run planning or a no-push mode for early rollout.
 - If the agent rewrites instead of replaying, require a more detailed summary of
   preserved versus discarded retained scope.
-- Reconcile `mg:*` state labels with advanced execution so operators can see
+- Reconcile `merge:*` state labels with advanced execution so operators can see
   whether PRs are validating, embarked, blocked, or waiting for review.
 
 ## Rollout Plan
@@ -443,7 +443,7 @@ Adoption should be incremental and explicit.
   profile and often fit `mechanical` or tightly bounded remediation.
 - Document operator expectations for supersession, partial landing, and salvage
   summaries.
-- Extend dashboard, queue-state views, and `mg:*` labels so operators can see
+- Extend dashboard, queue-state views, and `merge:*` labels so operators can see
   why Merge God chose salvage or embark work.
 
 Documentation updates will be needed in:

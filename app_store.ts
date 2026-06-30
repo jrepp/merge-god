@@ -20,6 +20,8 @@ import type {
   ChildActivityInput,
   CompatibilityTrajectoryIds,
   CompatibilityTrajectoryInput,
+  EmbarkCohortTrajectoryIds,
+  EmbarkCohortTrajectoryInput,
   JsonObject,
   OrchestrationRunRecord,
   PrQueueTrajectoryIds,
@@ -1137,6 +1139,210 @@ export class AppStore {
         // ignore rollback failures; surface the original error below
       }
       throw new DatabaseError(`Failed to create PR queue trajectory: ${String(e)}`);
+    }
+  }
+
+  /** Create a durable embark cohort run for grouped validation of ready PRs. */
+  createEmbarkCohortTrajectory(input: EmbarkCohortTrajectoryInput): EmbarkCohortTrajectoryIds {
+    if (!input.repo_name) throw new DatabaseError("repo_name is required");
+    if (input.items.length < 2) throw new DatabaseError("an embark cohort requires at least two PRs");
+
+    const runId = randomUUID();
+    const worksetId = randomUUID();
+    const groupActivityId = randomUUID();
+    const cohortId = input.cohort_id ?? randomUUID();
+    const workItemIds: string[] = [];
+    const now = nowIso();
+    const mergePlan = input.items.map((item, index) => ({
+      order: index + 1,
+      pr_number: item.number,
+      head_ref: item.head_ref ?? null,
+      expected_merge_commit: null,
+    }));
+
+    try {
+      this.db.exec("BEGIN");
+      this.db
+        .prepare(
+          `
+          INSERT INTO orchestration_runs (
+              run_id, repo_name, repo_path, base_branch, strategy_version,
+              workflow_ir_refs, status, current_phase, started_at, heartbeat_at,
+              objective, operator_policy, model_policy, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          runId,
+          input.repo_name,
+          input.repo_path ?? null,
+          input.base_branch ?? null,
+          "embark-runtime-v1",
+          stringifyJson([]),
+          "planning",
+          "embark_cohort_ready",
+          now,
+          now,
+          input.objective ?? `Validate ${input.items.length} ready PR(s) as one embark PR`,
+          stringifyJson({
+            labels_required: ["merge:ready"],
+            advanced_strategy: "multi_pr_embark",
+          }),
+          stringifyJson({}),
+          stringifyJson({
+            runtime_path: "embark_cohort",
+            strategy_family: "multi_pr_embark",
+            cohort_id: cohortId,
+            integration_branch: input.integration_branch ?? null,
+            output_pr_number: input.output_pr_number ?? null,
+            output_pr_url: input.output_pr_url ?? null,
+            validation_commands: input.validation_commands ?? [],
+          }),
+        );
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO worksets (
+              workset_id, run_id, kind, selection_reason, status,
+              approval_state, strategy, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          worksetId,
+          runId,
+          "embark_cohort",
+          "Ready PRs selected for grouped merge-commit validation",
+          "ready",
+          "pending",
+          "multi-pr-merge-commit-validation",
+          now,
+          now,
+          stringifyJson({
+            cohort_id: cohortId,
+            item_count: input.items.length,
+            merge_plan: mergePlan,
+            integration_branch: input.integration_branch ?? null,
+            output_pr_number: input.output_pr_number ?? null,
+            output_pr_url: input.output_pr_url ?? null,
+          }),
+        );
+
+      for (let i = 0; i < input.items.length; i++) {
+        const item = input.items[i]!;
+        if (!Number.isInteger(item.number) || item.number <= 0) {
+          throw new DatabaseError(`invalid PR number at embark index ${i}`);
+        }
+        const workItemId = randomUUID();
+        workItemIds.push(workItemId);
+        this.db
+          .prepare(
+            `
+            INSERT INTO work_items (
+                work_item_id, workset_id, source_kind, repo_name, number, title,
+                url, mode, labels, base_ref, head_ref, start_sha, current_sha,
+                status, disposition_setting, priority, model_tier, next_action,
+                blockers, risk_signals, context_pack_refs, created_at, updated_at, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+          )
+          .run(
+            workItemId,
+            worksetId,
+            "pull_request",
+            item.repo_name,
+            item.number,
+            item.title,
+            item.url ?? null,
+            item.mode ?? null,
+            stringifyJson(item.labels ?? []),
+            item.base_ref ?? input.base_branch ?? null,
+            item.head_ref ?? null,
+            item.current_sha ?? null,
+            item.current_sha ?? null,
+            "embarked",
+            item.disposition_setting ?? null,
+            item.priority ?? i,
+            item.model_tier ?? null,
+            "validate_cohort",
+            stringifyJson([]),
+            stringifyJson({ embark_ready: true }),
+            stringifyJson([]),
+            now,
+            now,
+            stringifyJson({
+              cohort_id: cohortId,
+              merge_order: i + 1,
+              expected_merge_commit: null,
+              source_state: "ready",
+            }),
+          );
+      }
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO activities (
+              activity_id, run_id, workset_id, work_item_id, type, status,
+              model_profile, tool_policy, prompt_runtime_ref,
+              context_pack_refs, evidence_refs, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          groupActivityId,
+          runId,
+          worksetId,
+          null,
+          "merge_gate",
+          "ready",
+          stringifyJson({}),
+          stringifyJson({
+            mutating_allowed: false,
+            grouped_validation: true,
+          }),
+          null,
+          stringifyJson([]),
+          stringifyJson([]),
+          now,
+          now,
+          stringifyJson({
+            cohort_id: cohortId,
+            merge_plan: mergePlan,
+            validation_commands: input.validation_commands ?? [],
+            integration_branch: input.integration_branch ?? null,
+            output_pr_number: input.output_pr_number ?? null,
+            output_pr_url: input.output_pr_url ?? null,
+          }),
+        );
+
+      this.insertTrajectoryEvent({
+        run_id: runId,
+        workset_id: worksetId,
+        activity_id: groupActivityId,
+        event_type: "runtime.embark_cohort.created",
+        actor: "merge-god",
+        payload: {
+          cohort_id: cohortId,
+          item_count: input.items.length,
+          merge_plan: mergePlan,
+          integration_branch: input.integration_branch ?? null,
+          output_pr_number: input.output_pr_number ?? null,
+          output_pr_url: input.output_pr_url ?? null,
+          validation_commands: input.validation_commands ?? [],
+        },
+      });
+
+      this.db.exec("COMMIT");
+      return { run_id: runId, workset_id: worksetId, work_item_ids: workItemIds, group_activity_id: groupActivityId };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to create embark cohort trajectory: ${String(e)}`);
     }
   }
 

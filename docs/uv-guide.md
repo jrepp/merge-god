@@ -69,9 +69,9 @@ npm install <pkg>      # add a dependency (also writes it to package.json)
 npm install -D <pkg>   # add a devDependency
 ```
 
-Key runtime deps: `@anthropic-ai/sdk` (Claude Agent SDK),
-`@octokit/rest` (GitHub), `yaml` (config parsing), `chalk` (terminal color),
-`ink` + `react` (the ANSI live-renderer for the dashboard),
+Key runtime deps: `@octokit/rest` (GitHub), `@merge-god/github-sync`
+(forge sync + GitClient), `yaml` (config parsing), `chalk` (terminal color),
+`ink` + `react` (the ANSI live-renderer for the dashboard), and
 `systeminformation`.
 
 ## Checking types

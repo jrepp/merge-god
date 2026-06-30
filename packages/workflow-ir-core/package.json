@@ -1,0 +1,26 @@
+{
+  "name": "@merge-god/workflow-ir-core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Reusable Workflow-IR runtime core with durable events, policy limits, pause/resume, tracing, and debug support.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src", "README.md"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

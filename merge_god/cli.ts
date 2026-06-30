@@ -166,11 +166,13 @@ function cmdDashboard(g: GlobalArgs): number {
     options: {
       "non-interactive": { type: "boolean", default: false },
       "log-file": { type: "string" },
+      screen: { type: "string" },
     },
     allowPositionals: true,
   });
   if (parsed.values["non-interactive"]) args.push("--non-interactive");
   if (parsed.values["log-file"]) args.push("--log-file", parsed.values["log-file"]);
+  if (parsed.values.screen) args.push("--screen", parsed.values.screen);
   try {
     return runChild(args[0]!, args.slice(1));
   } catch (e) {
@@ -513,6 +515,9 @@ OVERVIEW:
 
   COMMANDS:
 
+  (default)
+    Run the World HUD TUI dashboard.
+
   init
     Create config.yaml in the current directory.
     Options:
@@ -528,6 +533,7 @@ OVERVIEW:
       --config PATH          Config file (default: config.yaml)
       --non-interactive      Run without prompts
       --log-file PATH        Write logs to file
+      --screen SCREEN        world, prs, or agents (default: world)
 
   scan
     Scan PRs and sync their context to the database.
@@ -614,8 +620,8 @@ export function main(): number {
   const g = parseGlobal(argv);
 
   if (!g.command) {
-    console.log(HELP_TEXT);
-    return 0;
+    if (argv.includes("--help") || argv.includes("-h")) return cmdHelp();
+    return cmdDashboard(g);
   }
 
   const handlers: Record<string, () => number> = {

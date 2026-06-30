@@ -10,6 +10,9 @@
 #   npx tsx dashboard.ts /path/to/my-config.yaml
 
 # List of repositories to monitor and process
+# For repo-local merge policy, add .merge-rules.yaml at the root of each target
+# repository. Keep it small: plain-language rules, a remediation threshold, and
+# Workflow-IR refs for gate execution details.
 repos:
   # Example repository 1
   - path: /Users/jrepp/dev/my-project
