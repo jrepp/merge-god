@@ -52,6 +52,11 @@ PRs with no recognized label are left alone. Confirmed processing order:
   reviews code for quality, security, performance, and best practices (SOLID,
   DRY, etc.), committing targeted improvements.
 
+Aggregate merge-queue PRs still use these labels today. merge-god detects
+queue-like PRs during context gathering and records constituent PRs, merge
+commits, validation evidence, and blockers. See
+[Agent-managed merge queues](./merge-queues/).
+
 ### Merge state labels
 
 merge-god also writes one current-state label in the `merge:*` namespace:
@@ -73,7 +78,10 @@ state label before asking merge-god to retry a PR.
 
 merge-god may also maintain one PR comment headed `merge-god review gate status`.
 It caches the latest visible gate summary as rows of rule, status, and
-explanation. This is for operator scanning only.
+explanation. When PR details and context are available, the comment also
+summarizes the evidence behind supplemental modeled blockers such as draft
+state, blocking labels, manual gate comments, merge-state blockers, and diff
+availability. This is for operator scanning only.
 
 The comment is **not** a source of truth. Merge decisions must use the durable
 trajectory/database state and validation evidence. If the comment update fails,
