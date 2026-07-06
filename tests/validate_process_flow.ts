@@ -20,6 +20,8 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { SyncStore } from "@merge-god/github-sync";
+import { prAgentContextFromDict } from "../pr_agent_context_model";
+import { validateAgentReplayContext } from "../pr_context_validation_model";
 
 /** Per-process validation result (mirrors types.ts ValidationResult). */
 interface ValidationResult {
@@ -36,88 +38,9 @@ interface ProcessValidationResults {
   process_3: ValidationResult;
 }
 
-/**
- * PR context consumed by the agent.
- *
- * Mirrors `PRContext` in agents/claude_agent.ts; defined locally so this script
- * compiles standalone (matching the Python original, which defined its own
- * checks against `PRContext.from_dict`).
- */
-interface PRContext {
-  pr_number: number;
-  title: string;
-  body: string | null;
-  head_branch: string;
-  base_branch: string;
-  author: string;
-  url: string;
-  has_conflicts: boolean;
-  conflicting_files: unknown[];
-  has_failing_ci: boolean;
-  failing_checks: unknown[];
-  review_comments: unknown[];
-  general_comments: unknown[];
-  changed_files: unknown[];
-  diff: string;
-  commits: unknown[];
-  guidelines: string;
-  commit_examples: string;
-}
-
-/** Coerce an unknown value into a plain object record (dict-like), or {}. */
-function asObject(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 /** Render an unknown caught value as a message string. */
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-/** Construct a PRContext from scanner data structures (mirrors from_dict). */
-function createPRContextFromDict(
-  prDetails: Record<string, unknown>,
-  prContext: Record<string, unknown>,
-): PRContext {
-  const author = asObject(prDetails["author"]);
-  const conflicts = asObject(prContext["conflicts"]);
-  const ciStatus = asObject(prContext["ci_status"]);
-  const failed = typeof ciStatus["failed"] === "number" ? ciStatus["failed"] : 0;
-  const prNumber = prDetails["number"];
-  if (typeof prNumber !== "number") {
-    throw new Error(`PR number must be a number, got ${typeof prNumber}`);
-  }
-  return {
-    pr_number: prNumber,
-    title: typeof prDetails["title"] === "string" ? prDetails["title"] : "",
-    body: typeof prDetails["body"] === "string" ? prDetails["body"] : null,
-    head_branch:
-      typeof prDetails["headRefName"] === "string" ? prDetails["headRefName"] : "",
-    base_branch:
-      typeof prDetails["baseRefName"] === "string" ? prDetails["baseRefName"] : "main",
-    author: typeof author["login"] === "string" ? author["login"] : "unknown",
-    url: typeof prContext["url"] === "string" ? prContext["url"] : "",
-    has_conflicts: conflicts["has_conflicts"] === true,
-    conflicting_files: Array.isArray(conflicts["conflicting_files"])
-      ? conflicts["conflicting_files"]
-      : [],
-    has_failing_ci: failed > 0,
-    failing_checks: Array.isArray(ciStatus["failed_checks"])
-      ? ciStatus["failed_checks"]
-      : [],
-    review_comments: Array.isArray(prContext["review_comments"])
-      ? prContext["review_comments"]
-      : [],
-    general_comments: Array.isArray(prContext["comments"]) ? prContext["comments"] : [],
-    changed_files: Array.isArray(prContext["files"]) ? prContext["files"] : [],
-    diff: typeof prContext["diff"] === "string" ? prContext["diff"] : "",
-    commits: Array.isArray(prContext["commits"]) ? prContext["commits"] : [],
-    guidelines: typeof prContext["guidelines"] === "string" ? prContext["guidelines"] : "",
-    commit_examples:
-      typeof prContext["commit_examples"] === "string" ? prContext["commit_examples"] : "",
-  };
 }
 
 /**
@@ -185,62 +108,11 @@ export async function validatePrContextCompleteness(
 
     const [prDetails, prContext] = result;
 
-    const requiredPrDetails = ["number", "title", "headRefName", "baseRefName", "author"];
-    for (const field of requiredPrDetails) {
-      if (!(field in prDetails)) {
-        errors.push(`Missing required field in pr_details: ${field}`);
-      }
-    }
-
-    const requiredPrContext = [
-      "url",
-      "diff",
-      "comments",
-      "review_comments",
-      "commits",
-      "files",
-      "conflicts",
-      "ci_status",
-      "guidelines",
-      "commit_examples",
-    ];
-    for (const field of requiredPrContext) {
-      if (!(field in prContext)) {
-        errors.push(`Missing required field in pr_context: ${field}`);
-      }
-    }
-
-    if (!Array.isArray(prContext["comments"])) {
-      errors.push("pr_context['comments'] must be a list");
-    }
-    if (!Array.isArray(prContext["review_comments"])) {
-      errors.push("pr_context['review_comments'] must be a list");
-    }
-    const conflicts = prContext["conflicts"];
-    if (typeof conflicts !== "object" || conflicts === null || Array.isArray(conflicts)) {
-      errors.push("pr_context['conflicts'] must be a dict");
-    }
-    const ciStatus = prContext["ci_status"];
-    if (typeof ciStatus !== "object" || ciStatus === null || Array.isArray(ciStatus)) {
-      errors.push("pr_context['ci_status'] must be a dict");
-    }
-
-    if ("author" in prDetails) {
-      const author = prDetails["author"];
-      if (typeof author !== "object" || author === null || Array.isArray(author)) {
-        errors.push("pr_details['author'] must be a dict");
-      } else if (!("login" in author)) {
-        errors.push("pr_details['author'] must have 'login' field");
-      }
-    }
-
-    if ("labels" in prDetails && !Array.isArray(prDetails["labels"])) {
-      errors.push("pr_details['labels'] must be a list");
-    }
+    errors.push(...validateAgentReplayContext(prDetails, prContext));
 
     // PROCESS 2 -> PROCESS 3 boundary check
     try {
-      const prContextObj = createPRContextFromDict(prDetails, prContext);
+      const prContextObj = prAgentContextFromDict(prDetails, prContext);
       const requiredAttrs = [
         "pr_number",
         "title",
@@ -337,7 +209,7 @@ export async function validateProcessOutputs(
       const result = await db.getPrContextForAgent(repoName, prNumber);
       if (result) {
         const [prDetails, prContext] = result;
-        const prContextObj = createPRContextFromDict(prDetails, prContext);
+        const prContextObj = prAgentContextFromDict(prDetails, prContext);
         if ("pr_number" in prContextObj && "diff" in prContextObj) {
           results.process_3.valid = true;
           results.process_3.note =

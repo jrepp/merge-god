@@ -40,6 +40,8 @@ import YAML from "yaml";
 import { AppStore, DatabaseError as AppDatabaseError } from "./app_store";
 import { SyncStore, DatabaseError as SyncDatabaseError } from "@merge-god/github-sync";
 import type { TrajectoryState } from "./trajectory";
+import { dashboardContextSummaryFromEvent } from "./dashboard_event_model";
+import { prQueueInfoFromPullRequest, prQueueInfoFromRecord, type PrQueueDisplayInfo } from "./pr_queue_display_model";
 
 /** Combined DB-store holder: SyncStore (async, PR/repo) + AppStore (sync, processing/dashboard). */
 interface DbStores {
@@ -52,12 +54,10 @@ function isDbError(e: unknown): boolean {
   return e instanceof AppDatabaseError || e instanceof SyncDatabaseError;
 }
 import {
-  CIStatus,
   PRState,
   getBranchesNeedingSync,
   getBranchesWithPRs,
   getFailingCI,
-  getPRCiStatus,
   getProcessingMode,
   repositoryStateSummary,
 } from "./models";
@@ -71,6 +71,7 @@ const DEFAULT_DB_PATH = "merge-god-state.db";
 const REFRESH_INTERVAL_MS = 1000;
 const NON_TUI_POLL_MS = 500;
 const STATUS_SUMMARY_INTERVAL_S = 300;
+const MEGALITH_FRAMES = 6;
 
 // --- Small helpers ----------------------------------------------------------
 
@@ -343,6 +344,50 @@ function framedPlain(text: string, width: number): string {
   return `|${fitPlain(text, width - 2)}|`;
 }
 
+function renderMegalithLines(frame: number, width: number, active: boolean): string[] {
+  const phase = ((frame % MEGALITH_FRAMES) + MEGALITH_FRAMES) % MEGALITH_FRAMES;
+  if (width < 32) {
+    const pulse = active ? ["*", "+", ".", "+", "*", "+"][phase]! : ".";
+    return [
+      `   ${pulse}    `,
+      "  /#\\   ",
+      " /###\\  ",
+      "/##MG#\\ ",
+      "|#####| ",
+      "|#| |#| ",
+      "/_/ \\_\\ ",
+    ];
+  }
+
+  const halo = active
+    ? [
+        "   .             .   ",
+        "    .     +     .    ",
+        "     +    *    +     ",
+        "    .     +     .    ",
+        "   .             .   ",
+        "    .     +     .    ",
+      ][phase]!
+    : "         .           ";
+  const seam = active ? ["|", "/", "-", "\\", "|", "/"][phase]! : "|";
+  const eye = active ? ["..", "::", "**", "OO", "**", "::"][phase]! : "..";
+  const glow = active ? ["  ", ". ", "+ ", "* ", "+ ", ". "][phase]! : "  ";
+  return [
+    halo,
+    "       /\\          ",
+    "      /##\\         ",
+    "     /####\\        ",
+    `    /##${eye}##\\       `,
+    `   /###${seam}${seam}###\\      `,
+    "  /########\\     ",
+    ` /###${glow}MG${glow}###\\    `,
+    "/############\\   ",
+    "    ||||||       ",
+    "    ||||||       ",
+    "   /______\\      ",
+  ];
+}
+
 // --- Bounded deque ----------------------------------------------------------
 
 /** A bounded array (push + shift when over capacity) mirroring collections.deque. */
@@ -490,14 +535,7 @@ class LogWriter {
 
 // --- PR queue / processing info ---------------------------------------------
 
-interface PRQueueInfo {
-  number: number;
-  title: string;
-  head_branch: string;
-  base_branch: string;
-  ci_status: string;
-  ci_failing: boolean;
-}
+type PRQueueInfo = PrQueueDisplayInfo;
 
 interface PRQueue {
   for_review: PRQueueInfo[];
@@ -553,18 +591,6 @@ const ACTIVE_WORK_ITEM_STATUSES = new Set([
   "running",
 ]);
 const ACTIVE_ACTIVITY_STATUSES = new Set(["ready", "claimed", "running"]);
-
-/** Convert a raw pr_details record into a PRQueueInfo. */
-function toQueueInfo(pr: Record<string, unknown>): PRQueueInfo {
-  return {
-    number: toNum(pr["number"]),
-    title: toStr(pr["title"]),
-    head_branch: toStr(pr["head_branch"]),
-    base_branch: toStr(pr["base_branch"]),
-    ci_status: toStr(pr["ci_status"]),
-    ci_failing: Boolean(pr["ci_failing"]),
-  };
-}
 
 /** Return true if the two sets share any element. */
 function setsIntersect<T>(a: Set<T>, b: Set<T>): boolean {
@@ -926,15 +952,7 @@ class RepoMonitor {
       const labelsLower = new Set(pr.labels.map((l) => l.toLowerCase()));
       if (setsIntersect(labelsLower, WIP_LABELS)) continue;
 
-      const ciStatus = getPRCiStatus(pr);
-      const prInfo: PRQueueInfo = {
-        number: pr.number,
-        title: pr.title,
-        head_branch: pr.head_branch,
-        base_branch: pr.base_branch,
-        ci_status: ciStatus,
-        ci_failing: ciStatus === CIStatus.FAILURE,
-      };
+      const prInfo = prQueueInfoFromPullRequest(pr);
 
       const mode = getProcessingMode(pr);
       if (mode === "for-review") forReview.push(prInfo);
@@ -1231,22 +1249,22 @@ class RepoMonitor {
       );
       const prDetails = asRecord(data["pr_details"]);
       if (Object.keys(prDetails).length > 0) {
-        const reviewPrs = asArray(prDetails["for_review"]).map(asRecord);
-        const landingPrs = asArray(prDetails["for_landing"]).map(asRecord);
-        const untaggedPrs = asArray(prDetails["untagged"]).map(asRecord);
+        const reviewPrs = asArray(prDetails["for_review"]).map((pr) => prQueueInfoFromRecord(pr));
+        const landingPrs = asArray(prDetails["for_landing"]).map((pr) => prQueueInfoFromRecord(pr));
+        const untaggedPrs = asArray(prDetails["untagged"]).map((pr) => prQueueInfoFromRecord(pr));
         this.prQueue = {
-          for_review: reviewPrs.map(toQueueInfo),
-          for_landing: landingPrs.map(toQueueInfo),
-          untagged: untaggedPrs.map(toQueueInfo),
+          for_review: reviewPrs,
+          for_landing: landingPrs,
+          untagged: untaggedPrs,
         };
         for (const pr of reviewPrs) {
-          this.logs.append(`  ✓ for-review: PR #${pr["number"]} - ${toStr(pr["title"])}`);
+          this.logs.append(`  ✓ for-review: PR #${pr.number} - ${pr.title}`);
         }
         for (const pr of landingPrs) {
-          this.logs.append(`  ✓ for-landing: PR #${pr["number"]} - ${toStr(pr["title"])}`);
+          this.logs.append(`  ✓ for-landing: PR #${pr.number} - ${pr.title}`);
         }
         for (const pr of untaggedPrs.slice(0, 5)) {
-          this.logs.append(`  ⊗ untagged: PR #${pr["number"]} - ${toStr(pr["title"])}`);
+          this.logs.append(`  ⊗ untagged: PR #${pr.number} - ${pr.title}`);
         }
         if (untaggedPrs.length > 5) {
           this.logs.append(`  ⊗ ... and ${untaggedPrs.length - 5} more untagged`);
@@ -1498,18 +1516,12 @@ class RepoMonitor {
       this.current_action = `Gathering context for PR #${prNumber}...`;
       this.logs.append("  📋 Gathering PR context...");
     } else if (action === "complete") {
-      const summary = asRecord(data["context_summary"]);
-      const comments = toNum(summary["comments"]);
-      const reviewComments = toNum(summary["review_comments"]);
-      const commits = toNum(summary["commits"]);
-      const files = toNum(summary["files"]);
-      const hasConflicts = Boolean(summary["has_conflicts"]);
-      const ciFailed = toNum(summary["ci_failed"]);
+      const summary = dashboardContextSummaryFromEvent(data);
       this.logs.append(
-        `  ✓ Context: ${comments} comments, ${reviewComments} reviews, ${commits} commits, ${files} files`,
+        `  ✓ Context: ${summary.comments} comments, ${summary.reviewComments} reviews, ${summary.commits} commits, ${summary.files} files`,
       );
-      if (hasConflicts) this.logs.append("  ⚠ Merge conflicts detected");
-      if (ciFailed > 0) this.logs.append(`  ✗ ${ciFailed} CI checks failing`);
+      if (summary.hasConflicts) this.logs.append("  ⚠ Merge conflicts detected");
+      if (summary.ciFailed > 0) this.logs.append(`  ✗ ${summary.ciFailed} CI checks failing`);
     }
   }
 }
@@ -1897,6 +1909,8 @@ class Dashboard {
     const readinessBar = asciiBar(readiness, 100, barWidth);
     const activeBar = asciiBar(active, Math.max(total, 1), barWidth);
     const queueBar = asciiBar(actionable, Math.max(queueTotal, 1), barWidth);
+    const animationFrame = Math.floor((Date.now() - this.startTime.getTime()) / 1000);
+    const megalith = renderMegalithLines(animationFrame, centerWidth, active > 0 || workflowActive > 0);
 
     const left = [
       "FLEET",
@@ -1929,13 +1943,7 @@ class Dashboard {
       `success    ${successRate}`,
     ];
     const center = [
-      "        /\\        ",
-      "     __/MG\\__     ",
-      "    /__|__\\    ",
-      "       |##|       ",
-      "   ___|##|___   ",
-      "  /##########\\  ",
-      " /____________\\ ",
+      ...megalith,
       `readiness ${String(readiness).padStart(3)}%`,
       `+${"-".repeat(barWidth + 2)}+`,
       `| ${readinessBar} |`,
