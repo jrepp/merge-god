@@ -171,6 +171,8 @@ function cmdAgent(g: GlobalArgs): number {
       repo: { type: "string" },
       pr: { type: "string" },
       mode: { type: "string" },
+      runtime: { type: "string" },
+      timeout: { type: "string" },
       db: { type: "string" },
       "repo-path": { type: "string" },
     },
@@ -184,6 +186,8 @@ function cmdAgent(g: GlobalArgs): number {
   }
   logText(`Running agent for ${repo} PR #${pr}...`);
   const args = ["run_agent_from_db.ts", repo, pr, "--mode", parsed.values.mode ?? "for-landing"];
+  if (parsed.values.runtime) args.push("--runtime", parsed.values.runtime);
+  if (parsed.values.timeout) args.push("--timeout", parsed.values.timeout);
   const db = parsed.values.db ?? g.db;
   if (db) args.push("--db", db);
   if (parsed.values["repo-path"]) args.push("--repo-path", parsed.values["repo-path"]);

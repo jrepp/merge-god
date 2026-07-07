@@ -32,6 +32,8 @@ import {
 } from "./agents/__init__";
 import { SyncStore } from "@merge-god/github-sync";
 import { AppStore } from "./app_store";
+import { runPiAgent, type WorkItem } from "./coordination";
+import { buildPrPrompt } from "./pr-loop";
 import { TrajectoryRuntime } from "./trajectory_runtime";
 import type { CompatibilityTrajectoryIds } from "./trajectory";
 
@@ -113,12 +115,19 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function conciseOutput(value: string, maxLength = 8000): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.floor(maxLength / 2))}\n...[truncated ${value.length - maxLength} chars]...\n${value.slice(-Math.ceil(maxLength / 2))}`;
+}
+
 export async function runAgentFromDb(
   dbPath: string,
   repoName: string,
   prNumber: number,
   mode: string = "for-landing",
   repoPath: string | null = null,
+  runtime: "pi" | "claude" = "pi",
+  timeoutSeconds = 3600,
 ): Promise<boolean> {
   if (!repoName || typeof repoName !== "string") {
     logJson("agent_from_db", {
@@ -150,6 +159,8 @@ export async function runAgentFromDb(
     pr_number: prNumber,
     mode,
     db_path: dbPath,
+    runtime,
+    timeout_seconds: timeoutSeconds,
   });
 
   const syncStore = new SyncStore(dbPath);
@@ -246,6 +257,117 @@ export async function runAgentFromDb(
       hint: "PR data in database may be incomplete or corrupted",
     });
     return false;
+  }
+
+  if (runtime === "pi") {
+    const model = "pi";
+    let trajectoryIds: CompatibilityTrajectoryIds | null = null;
+    try {
+      const workflow = trajectoryRuntime.startPrAgentWorkflow({
+        repo_name: repoName,
+        repo_path: repoPath ?? process.cwd(),
+        pr_number: prNumber,
+        mode,
+        title: stringValue(prDetails["title"]),
+        url: stringValue(prContextDict["url"]),
+        labels: stringArray(prDetails["labels"]),
+        base_ref: stringValue(prDetails["baseRefName"]) ?? stringValue(prDetails["base_branch"]),
+        head_ref: stringValue(prDetails["headRefName"]) ?? stringValue(prDetails["head_branch"]),
+        current_sha: stringValue(prDetails["head_sha"]),
+        model,
+      });
+      trajectoryIds = workflow.ids;
+      logJson("agent_from_db", {
+        action: "trajectory_created",
+        run_id: trajectoryIds.run_id,
+        workflow_id: workflow.workflow.id,
+        work_item_id: trajectoryIds.work_item_id,
+        activity_id: trajectoryIds.activity_id,
+      });
+    } catch (e) {
+      logJson("agent_from_db", {
+        action: "warning",
+        warning: `Failed to create trajectory record: ${String(e)}`,
+        hint: "pi processing will continue without durable RFC-006 trajectory state",
+      });
+    }
+
+    const prompt = buildPrPrompt(
+      prDetails,
+      prContextDict,
+      stringValue(prContextDict["guidelines"]) ?? "",
+      stringValue(prContextDict["commit_examples"]) ?? "",
+      stringValue(prContextDict["merge_rules"]) ?? "",
+    );
+    const workItem: WorkItem = {
+      kind: "pr",
+      repo: repoName,
+      repo_path: repoPath ?? process.cwd(),
+      pr_number: prNumber,
+      mode,
+      title: stringValue(prDetails["title"]) ?? undefined,
+      url: stringValue(prContextDict["url"]) ?? undefined,
+      head_branch: stringValue(prDetails["headRefName"]) ?? undefined,
+      base_branch: stringValue(prDetails["baseRefName"]) ?? undefined,
+      prompt,
+    };
+
+    logJson("agent_from_db", {
+      action: "pi_processing",
+      pr_number: prNumber,
+      mode,
+      prompt_size: prompt.length,
+      timeout_seconds: timeoutSeconds,
+    });
+
+    const startedAt = Date.now();
+    const piResult = await runPiAgent(workItem, repoPath ?? process.cwd(), {
+      timeout: timeoutSeconds,
+      trajectory: trajectoryIds ? trajectoryRuntime.bridgeForPiAgent(trajectoryIds) : undefined,
+    });
+    const resultStatus = typeof piResult.result?.["status"] === "string" ? piResult.result["status"] : null;
+    const success = piResult.returncode === 0 && resultStatus !== "failure";
+    const summary = typeof piResult.result?.["summary"] === "string"
+      ? piResult.result["summary"]
+      : `pi exited with code ${piResult.returncode}`;
+    const errorMessage = success
+      ? null
+      : (typeof piResult.result?.["error"] === "string" ? piResult.result["error"] : piResult.stderr);
+
+    if (trajectoryIds) {
+      try {
+        trajectoryRuntime.completePrAgentWorkflow(
+          trajectoryIds,
+          {
+            success,
+            summary,
+            error_message: errorMessage,
+          },
+        );
+      } catch (e) {
+        logJson("agent_from_db", {
+          action: "warning",
+          warning: `Failed to complete trajectory record: ${String(e)}`,
+        });
+      }
+    }
+
+    logJson("agent_from_db", {
+      action: "complete",
+      pr_number: prNumber,
+      success,
+      duration: (Date.now() - startedAt) / 1000,
+      returncode: piResult.returncode,
+      stdout: conciseOutput(piResult.stdout),
+      stderr: conciseOutput(piResult.stderr, 2000),
+      stdout_bytes: Buffer.byteLength(piResult.stdout),
+      stderr_bytes: Buffer.byteLength(piResult.stderr),
+      result: piResult.result,
+      mode,
+      runtime,
+    });
+
+    return success;
   }
 
   logJson("agent_from_db", {
@@ -437,7 +559,7 @@ export async function runAgentFromDb(
 }
 
 const USAGE =
-  "Usage: run_agent_from_db <repo_name> <pr_number> [--mode for-review|for-landing] [--db PATH] [--repo-path PATH]";
+  "Usage: run_agent_from_db <repo_name> <pr_number> [--mode for-review|for-landing] [--runtime pi|claude] [--timeout SECONDS] [--db PATH] [--repo-path PATH]";
 
 export async function main(): Promise<boolean> {
   const parsed = parseArgs({
@@ -445,6 +567,8 @@ export async function main(): Promise<boolean> {
     allowPositionals: true,
     options: {
       mode: { type: "string", default: "for-landing" },
+      runtime: { type: "string", default: "pi" },
+      timeout: { type: "string", default: "3600" },
       db: { type: "string", default: "merge-god-state.db" },
       "repo-path": { type: "string" },
     },
@@ -466,6 +590,8 @@ export async function main(): Promise<boolean> {
   }
 
   const mode = parsed.values.mode ?? "for-landing";
+  const runtimeRaw = parsed.values.runtime ?? "pi";
+  const timeoutRaw = parsed.values.timeout ?? "3600";
   const dbPath = parsed.values.db ?? "merge-god-state.db";
   const repoPath = parsed.values["repo-path"] ?? null;
 
@@ -473,6 +599,21 @@ export async function main(): Promise<boolean> {
     logJson("error", {
       error: `Invalid mode: ${mode}`,
       hint: "Mode must be 'for-review' or 'for-landing'",
+    });
+    process.exit(2);
+  }
+  if (runtimeRaw !== "pi" && runtimeRaw !== "claude") {
+    logJson("error", {
+      error: `Invalid runtime: ${runtimeRaw}`,
+      hint: "Runtime must be 'pi' or 'claude'",
+    });
+    process.exit(2);
+  }
+  const timeoutSeconds = Number.parseInt(timeoutRaw, 10);
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) {
+    logJson("error", {
+      error: `Invalid timeout: ${timeoutRaw}`,
+      hint: "Timeout must be a positive number of seconds",
     });
     process.exit(2);
   }
@@ -522,7 +663,7 @@ export async function main(): Promise<boolean> {
     process.exit(1);
   }
 
-  return runAgentFromDb(dbPath, repoName, prNumber, mode, repoPath);
+  return runAgentFromDb(dbPath, repoName, prNumber, mode, repoPath, runtimeRaw, timeoutSeconds);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
