@@ -18,7 +18,7 @@ import path from "node:path";
 
 import { AppStore } from "../app_store";
 import { CoordinationServer, findExtension, runPiAgent, type PiAgentResult } from "../coordination";
-import { classifyPrFailureState, piAgentFailureReason, renderReviewGateStatusComment } from "../pr-loop";
+import { agentTokenUsageFromResult, classifyPrFailureState, piAgentFailureReason, renderReviewGateStatusComment } from "../pr-loop";
 import { TrajectoryRuntime } from "../trajectory_runtime";
 
 describe("agent flow: coordination round-trip", () => {
@@ -280,6 +280,62 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.doesNotMatch(rendered, /<script>|@ops|`approval`/);
   });
 
+  test("renderReviewGateStatusComment includes exact agent token usage when reported", () => {
+    const usage = agentTokenUsageFromResult({
+      status: "success",
+      telemetry: {
+        model: "claude-sonnet-4-5-20250929",
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 345,
+          cache_read_input_tokens: 55,
+          total_tokens: 1545,
+          source: "pi-provider-usage",
+        },
+      },
+    });
+
+    assert.deepEqual(usage, {
+      model: "claude-sonnet-4-5-20250929",
+      input_tokens: 1200,
+      output_tokens: 345,
+      cache_creation_input_tokens: undefined,
+      cache_read_input_tokens: 55,
+      total_tokens: 1545,
+      source: "pi-provider-usage",
+    });
+
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "pi-agent", status: "pass", explanation: "completed" }],
+      "2026-06-30T00:00:00.000Z",
+      usage,
+    );
+
+    assert.match(rendered, /### Agent telemetry/);
+    assert.match(rendered, /\| Model \| claude-sonnet-4-5-20250929 \|/);
+    assert.match(rendered, /\| Input tokens \| 1,200 \|/);
+    assert.match(rendered, /\| Output tokens \| 345 \|/);
+    assert.match(rendered, /\| Cache read input tokens \| 55 \|/);
+    assert.match(rendered, /\| Total tokens \| 1,545 \|/);
+    assert.match(rendered, /Source: pi-provider-usage/);
+  });
+
+  test("renderReviewGateStatusComment includes merge-god runtime identity", () => {
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "pi-agent", status: "pass", explanation: "completed" }],
+      "2026-06-30T00:00:00.000Z",
+      {
+        model: "pi-model",
+        merge_god_commit: "abc123def456",
+        merge_god_release: "v0.1.0",
+      },
+    );
+
+    assert.match(rendered, /\| Model \| pi-model \|/);
+    assert.match(rendered, /\| merge-god commit \| abc123def456 \|/);
+    assert.match(rendered, /\| merge-god release \| v0.1.0 \|/);
+  });
+
   test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
     const binDir = path.join(tempDir, "bin");
@@ -363,6 +419,15 @@ await callTool("merge_god_create_child_activity", {
 await callTool("merge_god_complete", {
   status: "success",
   summary: "fake pi used merge-god coordination trajectory state",
+  telemetry: {
+    model: "fake-pi-model",
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+      source: "fake-pi-provider",
+    },
+  },
 });
 `,
       );
@@ -421,6 +486,15 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
       assert.equal(result.returncode, 0, result.stderr || result.stdout);
       assert.equal(result.result?.["status"], "success");
       assert.equal(result.result?.["summary"], "fake pi used merge-god coordination trajectory state");
+      assert.deepEqual(result.result?.["telemetry"], {
+        model: "fake-pi-model",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          source: "fake-pi-provider",
+        },
+      });
       assert.match(result.stdout, /"tool":"merge_god_trajectory_state"/);
       assert.match(result.stdout, /"tool":"merge_god_observe"/);
       assert.match(result.stdout, /"tool":"merge_god_debug_snapshot"/);

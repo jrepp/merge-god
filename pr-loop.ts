@@ -475,6 +475,18 @@ export interface ReviewGateStatus {
   explanation: string;
 }
 
+export interface AgentTokenUsage {
+  model?: string;
+  merge_god_commit?: string;
+  merge_god_release?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  total_tokens?: number;
+  source?: string;
+}
+
 const REVIEW_GATE_CACHE_MARKER = "<!-- merge-god-review-gate-cache:v1 -->";
 const REVIEW_GATE_ALLOWED_STATUSES = new Set<ReviewGateStatusValue>([
   "pass",
@@ -513,14 +525,96 @@ function sanitizeGateCell(value: unknown, maxLength: number): string {
     .replace(/@/g, "(at)");
 }
 
+function nonNegativeInteger(value: unknown): number | undefined {
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
+}
+
+export function agentTokenUsageFromResult(result: unknown): AgentTokenUsage | null {
+  const resultObj = asRecord(result);
+  const telemetryObj = asRecord(resultObj["telemetry"]);
+  const usageObj = asRecord(telemetryObj["usage"]);
+  const legacyUsageObj = asRecord(resultObj["usage"]);
+  const usage = Object.keys(usageObj).length > 0
+    ? usageObj
+    : Object.keys(legacyUsageObj).length > 0
+      ? legacyUsageObj
+      : resultObj;
+  const inputTokens = nonNegativeInteger(usage["input_tokens"]);
+  const outputTokens = nonNegativeInteger(usage["output_tokens"]);
+  const cacheCreationInputTokens = nonNegativeInteger(usage["cache_creation_input_tokens"]);
+  const cacheReadInputTokens = nonNegativeInteger(usage["cache_read_input_tokens"]);
+  const explicitTotal = nonNegativeInteger(usage["total_tokens"]);
+  const summedTotal =
+    inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined;
+  const totalTokens = explicitTotal ?? summedTotal;
+
+  if (
+    modelValue(resultObj, telemetryObj, usage) === undefined &&
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheCreationInputTokens === undefined &&
+    cacheReadInputTokens === undefined &&
+    totalTokens === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    model: modelValue(resultObj, telemetryObj, usage),
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: cacheCreationInputTokens,
+    cache_read_input_tokens: cacheReadInputTokens,
+    total_tokens: totalTokens,
+    source:
+      typeof usage["source"] === "string" && usage["source"].trim()
+        ? usage["source"].trim()
+        : "merge_god_complete",
+  };
+}
+
+function modelValue(
+  resultObj: Record<string, unknown>,
+  telemetry: Record<string, unknown>,
+  usage: Record<string, unknown>,
+): string | undefined {
+  if (typeof usage["model"] === "string" && usage["model"].trim()) return usage["model"].trim();
+  if (typeof telemetry["model"] === "string" && telemetry["model"].trim()) return telemetry["model"].trim();
+  if (typeof resultObj["model"] === "string" && resultObj["model"].trim()) return resultObj["model"].trim();
+  return undefined;
+}
+
+function packageVersionRelease(): string {
+  try {
+    const raw = readFileSync(resolve("package.json"), "utf8");
+    const pkg = JSON.parse(raw) as Record<string, unknown>;
+    const version = typeof pkg["version"] === "string" ? pkg["version"].trim() : "";
+    return version ? `v${version}` : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function mergeGodRuntimeTelemetry(): Pick<AgentTokenUsage, "merge_god_commit" | "merge_god_release"> {
+  const [commitCode, commitStdout] = runCommand(["git", "rev-parse", "--short=12", "HEAD"], undefined, 10);
+  const [tagCode, tagStdout] = runCommand(["git", "describe", "--tags", "--exact-match", "HEAD"], undefined, 10);
+  return {
+    merge_god_commit: commitCode === 0 && commitStdout.trim() ? commitStdout.trim() : "unknown",
+    merge_god_release: tagCode === 0 && tagStdout.trim() ? tagStdout.trim() : packageVersionRelease(),
+  };
+}
+
 export function renderReviewGateStatusComment(
   gates: ReviewGateStatus[],
   updatedAt = new Date().toISOString(),
+  agentUsage: AgentTokenUsage | null = null,
 ): string {
   const rows = gates.length > 0
     ? gates
     : [{ rule: "review-gates", status: "unknown", explanation: "No gate status was provided." }];
-  return [
+  const lines = [
     REVIEW_GATE_CACHE_MARKER,
     "## merge-god review gate status",
     "",
@@ -534,7 +628,35 @@ export function renderReviewGateStatusComment(
       const status = normalizeGateStatus(gate.status);
       return `| ${sanitizeGateCell(gate.rule, 80)} | ${status} | ${sanitizeGateCell(gate.explanation, 240)} |`;
     }),
-  ].join("\n");
+  ];
+  if (agentUsage) {
+    const usageRows = [
+      ["Model", agentUsage.model],
+      ["merge-god commit", agentUsage.merge_god_commit],
+      ["merge-god release", agentUsage.merge_god_release],
+      ["Input tokens", agentUsage.input_tokens],
+      ["Output tokens", agentUsage.output_tokens],
+      ["Cache creation input tokens", agentUsage.cache_creation_input_tokens],
+      ["Cache read input tokens", agentUsage.cache_read_input_tokens],
+      ["Total tokens", agentUsage.total_tokens],
+    ].filter((row): row is [string, string | number] => typeof row[1] === "string" || typeof row[1] === "number");
+    if (usageRows.length > 0) {
+      lines.push(
+        "",
+        "### Agent telemetry",
+        "",
+        "| Metric | Value |",
+        "| --- | --- |",
+        ...usageRows.map(([metric, value]) => {
+          const rendered = typeof value === "number" ? value.toLocaleString("en-US") : value;
+          return `| ${sanitizeGateCell(metric, 60)} | ${sanitizeGateCell(rendered, 80)} |`;
+        }),
+        "",
+        `Source: ${sanitizeGateCell(agentUsage.source ?? "merge_god_complete", 80)}`,
+      );
+    }
+  }
+  return lines.join("\n");
 }
 
 function currentGitHubLogin(): string | null {
@@ -561,9 +683,9 @@ function findOwnedReviewGateCacheComment(prNumber: number): number | null {
 export function updateReviewGateStatusComment(
   prNumber: number,
   gates: ReviewGateStatus[],
-  opts: { updatedAt?: string } = {},
+  opts: { updatedAt?: string; agentUsage?: AgentTokenUsage | null } = {},
 ): boolean {
-  const body = renderReviewGateStatusComment(gates, opts.updatedAt);
+  const body = renderReviewGateStatusComment(gates, opts.updatedAt, opts.agentUsage ?? null);
   const existingCommentId = findOwnedReviewGateCacheComment(prNumber);
   const args = existingCommentId === null
     ? ["gh", "api", `repos/{owner}/{repo}/issues/${prNumber}/comments`, "-f", `body=${body}`]
@@ -666,10 +788,33 @@ export interface PlannedPr {
   stack_dependent_numbers: number[];
 }
 
+export interface StackPlanEntry {
+  pr_number: number;
+  mode: ProcessingMode | null;
+  head_ref: string | null;
+  base_ref: string | null;
+  depends_on: number[];
+  dependents: number[];
+}
+
+export interface StackPlanBlockedItem {
+  pr_number: number;
+  reason: "stack_parent_without_processing_label" | "stack_dependency_cycle";
+  depends_on_pr_number?: number;
+  depends_on_head_ref?: string;
+  cycle_pr_numbers?: number[];
+}
+
 export interface StackMergeOrderPlan {
   ordered: PlannedPr[];
-  stacks: Record<string, unknown>[];
-  blocked: Record<string, unknown>[];
+  stacks: StackPlanEntry[];
+  blocked: StackPlanBlockedItem[];
+}
+
+interface ProcessablePr {
+  pr: Record<string, unknown>;
+  mode: ProcessingMode;
+  sourceIndex: number;
 }
 
 function prNumberValue(pr: Record<string, unknown>): number | null {
@@ -681,8 +826,8 @@ function plannedModeRank(mode: ProcessingMode): number {
   return mode === "for-review" ? 0 : 1;
 }
 
-function orderedProcessablePrs(categorized: CategorizedPRs): { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }[] {
-  const items: { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }[] = [];
+function orderedProcessablePrs(categorized: CategorizedPRs): ProcessablePr[] {
+  const items: ProcessablePr[] = [];
   let sourceIndex = 0;
   for (const mode of ["for-review", "for-landing"] as const) {
     for (const pr of categorized[mode]) {
@@ -691,6 +836,19 @@ function orderedProcessablePrs(categorized: CategorizedPRs): { pr: Record<string
     }
   }
   return items;
+}
+
+function ensureNumberSet(map: Map<number, Set<number>>, key: number): Set<number> {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set<number>();
+    map.set(key, set);
+  }
+  return set;
+}
+
+function sortedNumbers(values: Iterable<number>): number[] {
+  return [...values].sort((a, b) => a - b);
 }
 
 /**
@@ -706,7 +864,7 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
   const processable = orderedProcessablePrs(categorized);
   const allOpen = [...processable.map((item) => item.pr), ...categorized["untagged"]];
   const byHeadRef = new Map<string, Record<string, unknown>>();
-  const processableNumber = new Map<number, { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }>();
+  const processableNumber = new Map<number, ProcessablePr>();
 
   for (const pr of allOpen) {
     const headRef = toStr(pr["headRefName"]);
@@ -720,13 +878,13 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
 
   const dependencies = new Map<number, Set<number>>();
   const dependents = new Map<number, Set<number>>();
-  const blocked: Record<string, unknown>[] = [];
+  const blocked: StackPlanBlockedItem[] = [];
 
   for (const item of processable) {
     const childNumber = prNumberValue(item.pr);
     if (childNumber === null) continue;
-    dependencies.set(childNumber, dependencies.get(childNumber) ?? new Set<number>());
-    dependents.set(childNumber, dependents.get(childNumber) ?? new Set<number>());
+    ensureNumberSet(dependencies, childNumber);
+    ensureNumberSet(dependents, childNumber);
 
     const baseRef = toStr(item.pr["baseRefName"]);
     const parent = baseRef ? byHeadRef.get(baseRef) : undefined;
@@ -734,9 +892,8 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
     if (!parent || parentNumber === null || parentNumber === childNumber) continue;
 
     if (processableNumber.has(parentNumber)) {
-      dependencies.get(childNumber)!.add(parentNumber);
-      dependents.set(parentNumber, dependents.get(parentNumber) ?? new Set<number>());
-      dependents.get(parentNumber)!.add(childNumber);
+      ensureNumberSet(dependencies, childNumber).add(parentNumber);
+      ensureNumberSet(dependents, parentNumber).add(childNumber);
     } else {
       blocked.push({
         pr_number: childNumber,
@@ -749,6 +906,7 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
 
   const ordered: PlannedPr[] = [];
   const remaining = new Set(processable.map((item) => prNumberValue(item.pr)).filter((n): n is number => n !== null));
+  const cycleReportedFor = new Set<number>();
   const itemPriority = (number: number): [number, number, number] => {
     const item = processableNumber.get(number);
     if (!item) return [1, Number.MAX_SAFE_INTEGER, number];
@@ -764,7 +922,17 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
     const ready = [...remaining]
       .filter((number) => [...(dependencies.get(number) ?? [])].every((dependency) => !remaining.has(dependency)))
       .sort(compareNumbers);
+    const hasCycle = ready.length === 0;
     const next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
+    if (hasCycle && !cycleReportedFor.has(next)) {
+      const cyclePrNumbers = sortedNumbers(remaining);
+      for (const number of cyclePrNumbers) cycleReportedFor.add(number);
+      blocked.push({
+        pr_number: next,
+        reason: "stack_dependency_cycle",
+        cycle_pr_numbers: cyclePrNumbers,
+      });
+    }
     remaining.delete(next);
     const item = processableNumber.get(next);
     if (!item) continue;
@@ -772,8 +940,8 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
       pr: item.pr,
       mode: item.mode,
       priority: ordered.length,
-      stack_dependency_numbers: [...(dependencies.get(next) ?? [])].sort((a, b) => a - b),
-      stack_dependent_numbers: [...(dependents.get(next) ?? [])].sort((a, b) => a - b),
+      stack_dependency_numbers: sortedNumbers(dependencies.get(next) ?? []),
+      stack_dependent_numbers: sortedNumbers(dependents.get(next) ?? []),
     });
   }
 
@@ -793,8 +961,8 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
         mode: item?.mode ?? null,
         head_ref: item ? toStr(item.pr["headRefName"]) : null,
         base_ref: item ? toStr(item.pr["baseRefName"]) : null,
-        depends_on: [...(dependencies.get(number) ?? [])].sort((a, b) => a - b),
-        dependents: [...(dependents.get(number) ?? [])].sort((a, b) => a - b),
+        depends_on: sortedNumbers(dependencies.get(number) ?? []),
+        dependents: sortedNumbers(dependents.get(number) ?? []),
       };
     });
 
@@ -2257,20 +2425,28 @@ export async function processPr(
     const duration = (Date.now() - startedAt) / 1000;
     const resultObj = piResult.result && typeof piResult.result === "object" ? piResult.result : {};
     const status = typeof resultObj["status"] === "string" ? resultObj["status"] : "";
+    const agentUsage = {
+      ...(agentTokenUsageFromResult(piResult.result) ?? {}),
+      ...mergeGodRuntimeTelemetry(),
+    };
     const success = piResult.returncode === 0 && status !== "failure";
     const failureReason = success
       ? null
       : piAgentFailureReason(piResult.returncode, piResult.result, piResult.stderr, piResult.stdout);
-    updateReviewGateStatusComment(prNumber, [
-      ...reviewGateStatuses,
-      {
-        rule: "pi-agent",
-        status: success ? "pass" : classifyPrFailureState(failureReason ?? "", piResult.result),
-        explanation: success
-          ? "Pi agent completed successfully."
-          : (failureReason ?? "Pi agent reported failure."),
-      },
-    ]);
+    updateReviewGateStatusComment(
+      prNumber,
+      [
+        ...reviewGateStatuses,
+        {
+          rule: "pi-agent",
+          status: success ? "pass" : classifyPrFailureState(failureReason ?? "", piResult.result),
+          explanation: success
+            ? "Pi agent completed successfully."
+            : (failureReason ?? "Pi agent reported failure."),
+        },
+      ],
+      { agentUsage },
+    );
 
     logJson("process_pr", {
       action: "complete",
@@ -2283,6 +2459,7 @@ export async function processPr(
       stdout: piResult.stdout,
       stderr: piResult.stderr,
       result: piResult.result,
+      token_usage: agentUsage,
       mode,
     });
 

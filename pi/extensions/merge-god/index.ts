@@ -28,9 +28,29 @@ interface WorkItem {
 interface CompleteInput {
   status?: string;
   summary?: string;
+  model?: string;
   merged?: boolean;
   commits?: string[];
   error?: string;
+  telemetry?: {
+    model?: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      total_tokens?: number;
+      source?: string;
+    };
+  };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    total_tokens?: number;
+    source?: string;
+  };
 }
 
 interface TrajectoryEventInput {
@@ -701,6 +721,9 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Call merge_god_complete exactly once when done, with status 'success' or 'failure' and a concise summary.",
       "Include commit SHAs and whether the PR was merged when known.",
+      "Include a telemetry object with the exact model identifier and provider usage when available.",
+      "When provider usage is available, include exact token counts in telemetry.usage: input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens, and source.",
+      "Do not estimate token usage; omit telemetry.usage when exact counts are unavailable.",
     ],
     parameters: {
       type: "object",
@@ -714,6 +737,10 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
           type: "string",
           description: "A concise summary of what was done.",
         },
+        model: {
+          type: "string",
+          description: "Exact model identifier used for this run, when known.",
+        },
         merged: {
           type: "boolean",
           description: "Whether the PR was merged (if applicable).",
@@ -726,6 +753,79 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
         error: {
           type: "string",
           description: "Error details, when status is 'failure'.",
+        },
+        telemetry: {
+          type: "object",
+          description: "Exact completion telemetry for this merge-god run.",
+          properties: {
+            model: {
+              type: "string",
+              description: "Exact model identifier used for this run, when known.",
+            },
+            usage: {
+              type: "object",
+              description: "Exact provider token usage for this merge-god run. Omit when unavailable; do not estimate.",
+              properties: {
+                input_tokens: {
+                  type: "number",
+                  description: "Exact input tokens consumed.",
+                },
+                output_tokens: {
+                  type: "number",
+                  description: "Exact output tokens consumed.",
+                },
+                cache_creation_input_tokens: {
+                  type: "number",
+                  description: "Exact cache creation input tokens, when reported by the provider.",
+                },
+                cache_read_input_tokens: {
+                  type: "number",
+                  description: "Exact cache read input tokens, when reported by the provider.",
+                },
+                total_tokens: {
+                  type: "number",
+                  description: "Exact total tokens consumed, when reported by the provider.",
+                },
+                source: {
+                  type: "string",
+                  description: "Usage source, for example pi usage metadata or provider response usage.",
+                },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
+        usage: {
+          type: "object",
+          description: "Deprecated compatibility alias for telemetry.usage.",
+          properties: {
+            input_tokens: {
+              type: "number",
+              description: "Exact input tokens consumed.",
+            },
+            output_tokens: {
+              type: "number",
+              description: "Exact output tokens consumed.",
+            },
+            cache_creation_input_tokens: {
+              type: "number",
+              description: "Exact cache creation input tokens, when reported by the provider.",
+            },
+            cache_read_input_tokens: {
+              type: "number",
+              description: "Exact cache read input tokens, when reported by the provider.",
+            },
+            total_tokens: {
+              type: "number",
+              description: "Exact total tokens consumed, when reported by the provider.",
+            },
+            source: {
+              type: "string",
+              description: "Usage source, for example pi usage metadata or provider response usage.",
+            },
+          },
+          additionalProperties: false,
         },
       },
       required: ["status", "summary"],

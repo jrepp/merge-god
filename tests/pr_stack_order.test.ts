@@ -69,4 +69,21 @@ describe("planStackedPrMergeOrder", () => {
       ],
     );
   });
+
+  test("reports branch-ref dependency cycles without dropping PRs", () => {
+    const categorized = emptyCategorized();
+    categorized["for-landing"].push(pr(7, "feature/a", "feature/b"));
+    categorized["for-landing"].push(pr(8, "feature/b", "feature/a"));
+
+    const plan = planStackedPrMergeOrder(categorized);
+
+    assert.deepEqual(plan.ordered.map((item) => item.pr["number"]), [7, 8]);
+    assert.deepEqual(plan.blocked, [
+      {
+        pr_number: 7,
+        reason: "stack_dependency_cycle",
+        cycle_pr_numbers: [7, 8],
+      },
+    ]);
+  });
 });
