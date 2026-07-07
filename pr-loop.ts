@@ -650,10 +650,155 @@ function reviewGateStatusesFromContext(
 
 // --- PR / issue discovery ---------------------------------------------------
 
-interface CategorizedPRs {
+export interface CategorizedPRs {
   "for-review": Record<string, unknown>[];
   "for-landing": Record<string, unknown>[];
   "untagged": Record<string, unknown>[];
+}
+
+export type ProcessingMode = "for-review" | "for-landing";
+
+export interface PlannedPr {
+  pr: Record<string, unknown>;
+  mode: ProcessingMode;
+  priority: number;
+  stack_dependency_numbers: number[];
+  stack_dependent_numbers: number[];
+}
+
+export interface StackMergeOrderPlan {
+  ordered: PlannedPr[];
+  stacks: Record<string, unknown>[];
+  blocked: Record<string, unknown>[];
+}
+
+function prNumberValue(pr: Record<string, unknown>): number | null {
+  const value = pr["number"];
+  return Number.isInteger(value) && (value as number) > 0 ? (value as number) : null;
+}
+
+function plannedModeRank(mode: ProcessingMode): number {
+  return mode === "for-review" ? 0 : 1;
+}
+
+function orderedProcessablePrs(categorized: CategorizedPRs): { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }[] {
+  const items: { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }[] = [];
+  let sourceIndex = 0;
+  for (const mode of ["for-review", "for-landing"] as const) {
+    for (const pr of categorized[mode]) {
+      items.push({ pr, mode, sourceIndex });
+      sourceIndex++;
+    }
+  }
+  return items;
+}
+
+/**
+ * Plan processing order for labeled PRs, honoring stacked-PR branch dependencies.
+ *
+ * A PR whose base ref is another open PR's head ref depends on that parent PR.
+ * Processable parents are ordered before children, even across for-review /
+ * for-landing mode buckets. If the parent is untagged, the child stays
+ * processable but the plan reports the missing underlying set so operators can
+ * create labels/cohorts before relying on the final merge order.
+ */
+export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMergeOrderPlan {
+  const processable = orderedProcessablePrs(categorized);
+  const allOpen = [...processable.map((item) => item.pr), ...categorized["untagged"]];
+  const byHeadRef = new Map<string, Record<string, unknown>>();
+  const processableNumber = new Map<number, { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }>();
+
+  for (const pr of allOpen) {
+    const headRef = toStr(pr["headRefName"]);
+    if (headRef && !byHeadRef.has(headRef)) byHeadRef.set(headRef, pr);
+  }
+
+  for (const item of processable) {
+    const number = prNumberValue(item.pr);
+    if (number !== null) processableNumber.set(number, item);
+  }
+
+  const dependencies = new Map<number, Set<number>>();
+  const dependents = new Map<number, Set<number>>();
+  const blocked: Record<string, unknown>[] = [];
+
+  for (const item of processable) {
+    const childNumber = prNumberValue(item.pr);
+    if (childNumber === null) continue;
+    dependencies.set(childNumber, dependencies.get(childNumber) ?? new Set<number>());
+    dependents.set(childNumber, dependents.get(childNumber) ?? new Set<number>());
+
+    const baseRef = toStr(item.pr["baseRefName"]);
+    const parent = baseRef ? byHeadRef.get(baseRef) : undefined;
+    const parentNumber = parent ? prNumberValue(parent) : null;
+    if (!parent || parentNumber === null || parentNumber === childNumber) continue;
+
+    if (processableNumber.has(parentNumber)) {
+      dependencies.get(childNumber)!.add(parentNumber);
+      dependents.set(parentNumber, dependents.get(parentNumber) ?? new Set<number>());
+      dependents.get(parentNumber)!.add(childNumber);
+    } else {
+      blocked.push({
+        pr_number: childNumber,
+        depends_on_pr_number: parentNumber,
+        depends_on_head_ref: baseRef,
+        reason: "stack_parent_without_processing_label",
+      });
+    }
+  }
+
+  const ordered: PlannedPr[] = [];
+  const remaining = new Set(processable.map((item) => prNumberValue(item.pr)).filter((n): n is number => n !== null));
+  const itemPriority = (number: number): [number, number, number] => {
+    const item = processableNumber.get(number);
+    if (!item) return [1, Number.MAX_SAFE_INTEGER, number];
+    return [plannedModeRank(item.mode), item.sourceIndex, number];
+  };
+  const compareNumbers = (a: number, b: number): number => {
+    const ap = itemPriority(a);
+    const bp = itemPriority(b);
+    return ap[0] - bp[0] || ap[1] - bp[1] || ap[2] - bp[2];
+  };
+
+  while (remaining.size > 0) {
+    const ready = [...remaining]
+      .filter((number) => [...(dependencies.get(number) ?? [])].every((dependency) => !remaining.has(dependency)))
+      .sort(compareNumbers);
+    const next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
+    remaining.delete(next);
+    const item = processableNumber.get(next);
+    if (!item) continue;
+    ordered.push({
+      pr: item.pr,
+      mode: item.mode,
+      priority: ordered.length,
+      stack_dependency_numbers: [...(dependencies.get(next) ?? [])].sort((a, b) => a - b),
+      stack_dependent_numbers: [...(dependents.get(next) ?? [])].sort((a, b) => a - b),
+    });
+  }
+
+  const stackedNumbers = new Set<number>();
+  for (const [child, parents] of dependencies) {
+    if (parents.size === 0) continue;
+    stackedNumbers.add(child);
+    for (const parent of parents) stackedNumbers.add(parent);
+  }
+  const orderIndex = new Map(ordered.map((item, index) => [prNumberValue(item.pr), index] as const));
+  const stacks = [...stackedNumbers]
+    .sort((a, b) => (orderIndex.get(a) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(b) ?? Number.MAX_SAFE_INTEGER) || compareNumbers(a, b))
+    .map((number) => {
+      const item = processableNumber.get(number);
+      return {
+        pr_number: number,
+        mode: item?.mode ?? null,
+        head_ref: item ? toStr(item.pr["headRefName"]) : null,
+        base_ref: item ? toStr(item.pr["baseRefName"]) : null,
+        depends_on: [...(dependencies.get(number) ?? [])].sort((a, b) => a - b),
+        dependents: [...(dependents.get(number) ?? [])].sort((a, b) => a - b),
+      };
+    });
+
+  return { ordered, stacks, blocked };
 }
 
 /**
@@ -2636,6 +2781,7 @@ export async function main(): Promise<void> {
       continue;
     }
 
+    const stackMergeOrderPlan = planStackedPrMergeOrder(categorizedPrs);
     const prDetails = {
       for_review: categorizedPrs["for-review"].map((pr) => ({
         number: pr["number"],
@@ -2649,6 +2795,13 @@ export async function main(): Promise<void> {
         number: pr["number"],
         title: toStr(pr["title"]).slice(0, 50),
       })),
+      processing_order: stackMergeOrderPlan.ordered.map((item) => ({
+        number: item.pr["number"],
+        title: toStr(item.pr["title"]).slice(0, 50),
+        mode: item.mode,
+        stack_dependencies: item.stack_dependency_numbers,
+        stack_dependents: item.stack_dependent_numbers,
+      })),
     };
 
     logJson("iteration", {
@@ -2658,48 +2811,53 @@ export async function main(): Promise<void> {
       for_landing: categorizedPrs["for-landing"].length,
       untagged: categorizedPrs["untagged"].length,
       pr_details: prDetails,
+      stack_merge_order: {
+        strategy: "branch-ref-topological-order",
+        stacks: stackMergeOrderPlan.stacks,
+        blocked: stackMergeOrderPlan.blocked,
+      },
     });
 
     let totalProcessed = 0;
-    for (const mode of ["for-review", "for-landing"] as const) {
-      for (const pr of categorizedPrs[mode]) {
-        const prNumber = pr["number"] as number | undefined;
+    for (const planned of stackMergeOrderPlan.ordered) {
+      const pr = planned.pr;
+      const mode = planned.mode;
+      const prNumber = pr["number"] as number | undefined;
 
-        if (prNumber && processingPrs.has(prNumber)) {
-          logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
-          continue;
-        }
-
-        if (prNumber) processingPrs.add(prNumber);
-
-        try {
-          const success = await processPr(
-            pr,
-            guidelines,
-            commitExamples,
-            defaultBranch,
-            mode,
-            args.interactive,
-            db,
-            repoName,
-            mergeRules,
-          );
-          if (success && prNumber) processingPrs.delete(prNumber);
-          totalProcessed++;
-        } catch (e) {
-          const reason = errMsg(e);
-          logJson("process_pr", {
-            action: "exception",
-            pr_number: prNumber,
-            mode,
-            error: reason,
-          });
-          if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
-          if (prNumber) processingPrs.delete(prNumber);
-        }
-
-        await sleep(10_000);
+      if (prNumber && processingPrs.has(prNumber)) {
+        logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
+        continue;
       }
+
+      if (prNumber) processingPrs.add(prNumber);
+
+      try {
+        const success = await processPr(
+          pr,
+          guidelines,
+          commitExamples,
+          defaultBranch,
+          mode,
+          args.interactive,
+          db,
+          repoName,
+          mergeRules,
+        );
+        if (success && prNumber) processingPrs.delete(prNumber);
+        totalProcessed++;
+      } catch (e) {
+        const reason = errMsg(e);
+        logJson("process_pr", {
+          action: "exception",
+          pr_number: prNumber,
+          mode,
+          error: reason,
+        });
+        if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
+        if (prNumber) processingPrs.delete(prNumber);
+      }
+
+      await sleep(10_000);
     }
 
     logJson("iteration", {
