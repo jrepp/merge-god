@@ -19,7 +19,13 @@ import { pathToFileURL } from "node:url";
 import YAML from "yaml";
 
 import { SyncStore, GitClient, createPullRequest, PRState } from "@merge-god/github-sync";
-import { gather_pr_context, getOpenPrs, getPrDetails, planStackedPrMergeOrder } from "./pr-loop";
+import {
+  gather_pr_context,
+  getOpenPrs,
+  getPrDetails,
+  planStackedPrMergeOrder,
+  suggestProcessingLabel,
+} from "./pr-loop";
 
 interface RepoConfig {
   path?: string;
@@ -254,6 +260,9 @@ async function syncRepo(
         untagged_pr_numbers: categorized["untagged"]
           .map((pr) => pr["number"])
           .filter((number): number is number => typeof number === "number"),
+        label_suggestions: categorized["untagged"]
+          .map((pr) => suggestProcessingLabel(pr))
+          .filter((suggestion) => suggestion !== null),
         stack_merge_order: {
           strategy: "branch-ref-topological-order",
           processing_order: plan.ordered.map((item) => ({

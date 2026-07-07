@@ -18,7 +18,13 @@ import path from "node:path";
 
 import { AppStore } from "../app_store";
 import { CoordinationServer, findExtension, runPiAgent, type PiAgentResult } from "../coordination";
-import { agentTokenUsageFromResult, classifyPrFailureState, piAgentFailureReason, renderReviewGateStatusComment } from "../pr-loop";
+import {
+  agentAnnotationLabelsFromResult,
+  agentTokenUsageFromResult,
+  classifyPrFailureState,
+  piAgentFailureReason,
+  renderReviewGateStatusComment,
+} from "../pr-loop";
 import { TrajectoryRuntime } from "../trajectory_runtime";
 
 describe("agent flow: coordination round-trip", () => {
@@ -336,6 +342,18 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.match(rendered, /\| merge-god release \| v0.1.0 \|/);
   });
 
+  test("agentAnnotationLabelsFromResult filters to allowlisted semantic labels", () => {
+    assert.deepEqual(
+      agentAnnotationLabelsFromResult({
+        annotations: {
+          labels: ["Large", "too large", "please-run-my-label", "unaligned"],
+        },
+        annotation_labels: ["docs-only", "not-allowed"],
+      }),
+      ["docs-only", "large", "too-large", "unaligned"],
+    );
+  });
+
   test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
     const binDir = path.join(tempDir, "bin");
@@ -419,6 +437,9 @@ await callTool("merge_god_create_child_activity", {
 await callTool("merge_god_complete", {
   status: "success",
   summary: "fake pi used merge-god coordination trajectory state",
+  annotations: {
+    labels: ["large", "embark-candidate"],
+  },
   telemetry: {
     model: "fake-pi-model",
     usage: {
@@ -486,6 +507,9 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
       assert.equal(result.returncode, 0, result.stderr || result.stdout);
       assert.equal(result.result?.["status"], "success");
       assert.equal(result.result?.["summary"], "fake pi used merge-god coordination trajectory state");
+      assert.deepEqual(result.result?.["annotations"], {
+        labels: ["large", "embark-candidate"],
+      });
       assert.deepEqual(result.result?.["telemetry"], {
         model: "fake-pi-model",
         usage: {

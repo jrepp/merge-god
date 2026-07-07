@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { type CategorizedPRs, planStackedPrMergeOrder } from "../pr-loop";
+import { type CategorizedPRs, planStackedPrMergeOrder, suggestProcessingLabel } from "../pr-loop";
 
 function pr(number: number, headRefName: string, baseRefName = "main", title = `PR ${number}`): Record<string, unknown> {
   return {
@@ -85,5 +85,35 @@ describe("planStackedPrMergeOrder", () => {
         cycle_pr_numbers: [7, 8],
       },
     ]);
+  });
+});
+
+describe("suggestProcessingLabel", () => {
+  test("suggests for-review when title or labels indicate review work", () => {
+    assert.deepEqual(suggestProcessingLabel(pr(9, "docs/review", "main", "docs(review): new review")), {
+      pr_number: 9,
+      suggested_label: "for-review",
+      reason: "PR appears review-oriented and has no merge-god processing label.",
+      command: "gh pr edit 9 --add-label for-review",
+    });
+  });
+
+  test("suggests for-landing as the default processing label", () => {
+    assert.deepEqual(suggestProcessingLabel(pr(10, "feature/ship-it")), {
+      pr_number: 10,
+      suggested_label: "for-landing",
+      reason: "PR has no merge-god processing label; for-landing is the default landing workflow.",
+      command: "gh pr edit 10 --add-label for-landing",
+    });
+  });
+
+  test("does not suggest labels for already processable PRs", () => {
+    assert.equal(
+      suggestProcessingLabel({
+        ...pr(11, "feature/labeled"),
+        labels: [{ name: "for-landing" }],
+      }),
+      null,
+    );
   });
 });

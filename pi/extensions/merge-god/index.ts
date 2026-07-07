@@ -32,6 +32,9 @@ interface CompleteInput {
   merged?: boolean;
   commits?: string[];
   error?: string;
+  annotations?: {
+    labels?: string[];
+  };
   telemetry?: {
     model?: string;
     usage?: {
@@ -721,6 +724,8 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Call merge_god_complete exactly once when done, with status 'success' or 'failure' and a concise summary.",
       "Include commit SHAs and whether the PR was merged when known.",
+      "When useful, include annotations.labels with semantic PR labels from the allowed set: large, too-large, unaligned, needs-split, needs-design, high-risk, low-risk, docs-only, test-only, embark-candidate, underlying-needed.",
+      "Use annotation labels sparingly and only when the observed PR context makes the label obvious.",
       "Include a telemetry object with the exact model identifier and provider usage when available.",
       "When provider usage is available, include exact token counts in telemetry.usage: input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, total_tokens, and source.",
       "Do not estimate token usage; omit telemetry.usage when exact counts are unavailable.",
@@ -753,6 +758,33 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
         error: {
           type: "string",
           description: "Error details, when status is 'failure'.",
+        },
+        annotations: {
+          type: "object",
+          description: "Optional semantic PR annotations requested by the agent.",
+          properties: {
+            labels: {
+              type: "array",
+              items: {
+                type: "string",
+                enum: [
+                  "large",
+                  "too-large",
+                  "unaligned",
+                  "needs-split",
+                  "needs-design",
+                  "high-risk",
+                  "low-risk",
+                  "docs-only",
+                  "test-only",
+                  "embark-candidate",
+                  "underlying-needed",
+                ],
+              },
+              description: "Allowlisted semantic labels to add to the PR when clearly supported by the context.",
+            },
+          },
+          additionalProperties: false,
         },
         telemetry: {
           type: "object",

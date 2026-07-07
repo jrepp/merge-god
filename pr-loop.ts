@@ -465,6 +465,63 @@ export function setPrStateLabel(prNumber: number, state: PrProcessingState, reas
   return true;
 }
 
+function ensureAgentAnnotationLabel(name: string): boolean {
+  const spec = AGENT_ANNOTATION_LABELS[name];
+  if (!spec) return false;
+  const [viewCode] = runCommand(["gh", "label", "view", name], undefined, 30);
+  if (viewCode === 0) return true;
+  const [createCode, _stdout, stderr] = runCommand(
+    [
+      "gh",
+      "label",
+      "create",
+      name,
+      "--color",
+      spec.color,
+      "--description",
+      spec.description,
+    ],
+    undefined,
+    30,
+  );
+  if (createCode !== 0 && !isAlreadyExistsError(stderr)) {
+    logJson("agent_annotation_label", {
+      action: "ensure_failed",
+      label: name,
+      stderr,
+    });
+    return false;
+  }
+  return true;
+}
+
+function applyAgentAnnotationLabels(prNumber: number, labels: string[]): boolean {
+  const allowedLabels = [...new Set(labels)].filter((label) => label in AGENT_ANNOTATION_LABELS);
+  if (allowedLabels.length === 0) return true;
+  const ensuredLabels = allowedLabels.filter((label) => ensureAgentAnnotationLabel(label));
+  if (ensuredLabels.length === 0) return false;
+  const [returncode, _stdout, stderr] = runCommand(
+    ["gh", "pr", "edit", String(prNumber), "--add-label", ensuredLabels.join(",")],
+    undefined,
+    30,
+  );
+  if (returncode !== 0) {
+    logJson("agent_annotation_label", {
+      action: "apply_failed",
+      pr_number: prNumber,
+      labels: ensuredLabels,
+      stderr,
+    });
+    return false;
+  }
+  logJson("agent_annotation_label", {
+    action: "applied",
+    pr_number: prNumber,
+    labels: ensuredLabels,
+  });
+  return true;
+}
+
 // --- Review gate status comment cache ----------------------------------------
 
 export type ReviewGateStatusValue = "pass" | "fail" | "blocked" | "skipped" | "pending" | "unknown";
@@ -485,6 +542,68 @@ export interface AgentTokenUsage {
   cache_read_input_tokens?: number;
   total_tokens?: number;
   source?: string;
+}
+
+export const AGENT_ANNOTATION_LABELS: Record<string, { description: string; color: string }> = {
+  large: {
+    description: "Agent annotation: broad PR with many files or substantial review surface",
+    color: "d4c5f9",
+  },
+  "too-large": {
+    description: "Agent annotation: PR is too large to safely process as one landing unit",
+    color: "b60205",
+  },
+  unaligned: {
+    description: "Agent annotation: implementation appears unaligned with design, requirements, or merge rules",
+    color: "fbca04",
+  },
+  "needs-split": {
+    description: "Agent annotation: PR should be split into smaller or underlying PRs",
+    color: "d93f0b",
+  },
+  "needs-design": {
+    description: "Agent annotation: design or requirements clarification is needed before landing",
+    color: "fbca04",
+  },
+  "high-risk": {
+    description: "Agent annotation: higher merge risk due to scope, architecture, or validation uncertainty",
+    color: "b60205",
+  },
+  "low-risk": {
+    description: "Agent annotation: low-risk change with narrow scope",
+    color: "0e8a16",
+  },
+  "docs-only": {
+    description: "Agent annotation: documentation-only change",
+    color: "0075ca",
+  },
+  "test-only": {
+    description: "Agent annotation: test-only change",
+    color: "1d76db",
+  },
+  "embark-candidate": {
+    description: "Agent annotation: candidate for grouped embark validation",
+    color: "5319e7",
+  },
+  "underlying-needed": {
+    description: "Agent annotation: needs an underlying remediation PR or set before landing",
+    color: "d93f0b",
+  },
+};
+
+export function agentAnnotationLabelsFromResult(result: unknown): string[] {
+  const resultObj = asRecord(result);
+  const annotations = asRecord(resultObj["annotations"]);
+  const candidates = [
+    ...asArray(resultObj["annotation_labels"]),
+    ...asArray(annotations["labels"]),
+  ];
+  const labels = new Set<string>();
+  for (const candidate of candidates) {
+    const label = toStr(candidate).trim().toLowerCase().replace(/\s+/g, "-");
+    if (label in AGENT_ANNOTATION_LABELS) labels.add(label);
+  }
+  return [...labels];
 }
 
 const REVIEW_GATE_CACHE_MARKER = "<!-- merge-god-review-gate-cache:v1 -->";
@@ -811,6 +930,13 @@ export interface StackMergeOrderPlan {
   blocked: StackPlanBlockedItem[];
 }
 
+export interface ProcessingLabelSuggestion {
+  pr_number: number;
+  suggested_label: ProcessingMode;
+  reason: string;
+  command: string;
+}
+
 interface ProcessablePr {
   pr: Record<string, unknown>;
   mode: ProcessingMode;
@@ -849,6 +975,37 @@ function ensureNumberSet(map: Map<number, Set<number>>, key: number): Set<number
 
 function sortedNumbers(values: Iterable<number>): number[] {
   return [...values].sort((a, b) => a - b);
+}
+
+function processingLabelsFromPr(pr: Record<string, unknown>): string[] {
+  return asArray(pr["labels"])
+    .map((labelRaw) => {
+      if (typeof labelRaw === "string") return labelRaw.toLowerCase();
+      const label = asRecord(labelRaw);
+      return toStr(label["name"]).toLowerCase();
+    })
+    .filter(Boolean);
+}
+
+export function suggestProcessingLabel(pr: Record<string, unknown>): ProcessingLabelSuggestion | null {
+  const prNumber = prNumberValue(pr);
+  if (prNumber === null) return null;
+  const labels = processingLabelsFromPr(pr);
+  if (labels.includes("for-review") || labels.includes("for-landing")) return null;
+  const title = toStr(pr["title"]).toLowerCase();
+  const suggestedLabel: ProcessingMode =
+    labels.some((label) => label.includes("review")) || /\breview\b/.test(title)
+      ? "for-review"
+      : "for-landing";
+  return {
+    pr_number: prNumber,
+    suggested_label: suggestedLabel,
+    reason:
+      suggestedLabel === "for-review"
+        ? "PR appears review-oriented and has no merge-god processing label."
+        : "PR has no merge-god processing label; for-landing is the default landing workflow.",
+    command: `gh pr edit ${prNumber} --add-label ${suggestedLabel}`,
+  };
 }
 
 /**
@@ -1047,11 +1204,7 @@ export function getOpenPrs(): CategorizedPRs {
       continue;
     }
 
-    const labels: string[] = [];
-    for (const labelRaw of asArray(pr["labels"])) {
-      const label = asRecord(labelRaw);
-      if (label["name"] !== undefined) labels.push(toStr(label["name"]).toLowerCase());
-    }
+    const labels = processingLabelsFromPr(pr);
 
     let wipLabelFound: string | null = null;
     for (const label of labels) {
@@ -1114,6 +1267,7 @@ export function getOpenPrs(): CategorizedPRs {
         labels,
       });
     } else {
+      const labelSuggestion = suggestProcessingLabel(pr);
       categorized["untagged"].push(pr);
       logJson("fetch_prs", {
         action: "categorized",
@@ -1121,6 +1275,7 @@ export function getOpenPrs(): CategorizedPRs {
         title: prTitle,
         category: "untagged",
         labels,
+        label_suggestion: labelSuggestion,
       });
     }
   }
@@ -2454,6 +2609,7 @@ export async function processPr(
       ...(agentTokenUsageFromResult(piResult.result) ?? {}),
       ...mergeGodRuntimeTelemetry(),
     };
+    const annotationLabels = agentAnnotationLabelsFromResult(piResult.result);
     const success = piResult.returncode === 0 && status !== "failure";
     const failureReason = success
       ? null
@@ -2472,6 +2628,7 @@ export async function processPr(
       ],
       { agentUsage },
     );
+    const annotationLabelsApplied = applyAgentAnnotationLabels(prNumber, annotationLabels);
 
     logJson("process_pr", {
       action: "complete",
@@ -2485,6 +2642,8 @@ export async function processPr(
       stderr: piResult.stderr,
       result: piResult.result,
       token_usage: agentUsage,
+      annotation_labels: annotationLabels,
+      annotation_labels_applied: annotationLabelsApplied,
       mode,
     });
 
