@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -596,6 +596,51 @@ export interface PiAgentResult {
   result: JsonResult;
 }
 
+const PI_DOTENV_KEYS = new Set(["ZAI_API_KEY"]);
+
+function parseDotEnvLine(line: string): [string, string] | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+  const withoutExport = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trimStart() : trimmed;
+  const equalsIndex = withoutExport.indexOf("=");
+  if (equalsIndex <= 0) return null;
+
+  const key = withoutExport.slice(0, equalsIndex).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null;
+  let value = withoutExport.slice(equalsIndex + 1).trim();
+  const quote = value[0];
+  if ((quote === "\"" || quote === "'") && value.endsWith(quote)) {
+    value = value.slice(1, -1);
+    if (quote === "\"") {
+      value = value
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, "\"")
+        .replace(/\\\\/g, "\\");
+    }
+  } else {
+    const commentIndex = value.search(/\s#/);
+    if (commentIndex !== -1) value = value.slice(0, commentIndex).trimEnd();
+  }
+  return [key, value];
+}
+
+export function loadPiDotEnv(repoPath: string): Record<string, string> {
+  const envPath = path.join(repoPath, ".env");
+  if (!existsSync(envPath)) return {};
+
+  const parsed: Record<string, string> = {};
+  const contents = readFileSync(envPath, "utf8");
+  for (const line of contents.split(/\r?\n/)) {
+    const entry = parseDotEnvLine(line);
+    if (!entry) continue;
+    const [key, value] = entry;
+    if (PI_DOTENV_KEYS.has(key)) parsed[key] = value;
+  }
+  return parsed;
+}
+
 /**
  * Run the pi agent with the merge-god extension against a work item.
  *
@@ -651,7 +696,8 @@ export async function runPiAgent(
     agentObserver ?? null,
   );
   await server.start();
-  const env: NodeJS.ProcessEnv = { ...process.env, MERGE_GOD_API: server.baseUrl };
+  const dotenvEnv = loadPiDotEnv(repoPath);
+  const env: NodeJS.ProcessEnv = { ...dotenvEnv, ...process.env, MERGE_GOD_API: server.baseUrl };
   if (extraEnv) Object.assign(env, extraEnv);
   const startedAt = Date.now();
   recordPromptRendered("pi_work_item", workItem.prompt, {
