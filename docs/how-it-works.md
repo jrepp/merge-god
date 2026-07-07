@@ -22,7 +22,11 @@ Before touching anything, `pr-loop.ts` builds a complete picture of each PR:
 - **CI/CD status** — every check (passed / failed / pending) with failure
   details and links
 - **Review decision** — approved, changes requested, or pending
-- **Full diff** — the complete code change
+- **Diff availability** — the full diff when the forge provides it, or an
+  explicit unavailable/truncated record when the diff is too large
+- **Merge blockers** — review, CI, conflict, diff, and merge-state blockers
+- **Queue lineage** — for aggregate queue PRs, constituent PRs, merge commits,
+  and validation evidence
 
 It also **syncs with `origin/main`** first, so the agent works against the
 latest state.
@@ -35,7 +39,8 @@ All of that is assembled into one comprehensive markdown prompt with a
 1. Resolve merge conflicts (if any)
 2. Address code reviews
 3. Fix failing CI
-4. _(optional, for `for-review`)_ Improve quality, security, and best practices
+4. Preserve queue lineage and validation evidence for aggregate merge queues
+5. _(optional, for `for-review`)_ Improve quality, security, and best practices
 
 The prompt also includes project contribution guidelines (or style learned from
 commit history) and critical rules — e.g. focused commits, professional
@@ -59,6 +64,14 @@ PRs labeled `for-review` get an extra pass after the landing pass:
   best practices, producing targeted improvement commits.
 
 This keeps landing fast while still giving important PRs a thorough review.
+
+## Merge queues
+
+Aggregate queue PRs need extra context because the final branch represents
+multiple source PRs. merge-god records queue lineage, merge commits, validation
+evidence, and unresolved blockers as structured context instead of relying only
+on PR comments. See [Agent-managed merge queues](./merge-queues/) for the queue
+domain model and current implementation boundary.
 
 ## Why an agent, not rules?
 

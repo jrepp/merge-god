@@ -21,6 +21,14 @@ typecheck:
 test:
     @npm test
 
+# Run the test suite with native Node coverage reporting
+coverage:
+    @npm run test:coverage
+
+# Run coverage with enforced aggregate thresholds
+coverage-check:
+    @npm run test:coverage:check
+
 # Run a single test file
 test-file FILE:
     @echo "🧪 Running test file: {{FILE}}"

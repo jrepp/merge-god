@@ -115,16 +115,33 @@ describe("TrajectoryRuntime", () => {
         evidence_refs: ["evidence://ci/failure"],
       });
       assert.equal(proposal.accepted, true);
-      const child = runtime.createChildActivity(firstStarted.ids, {
+      const rejectedMissingModelTier = runtime.createChildActivity(firstStarted.ids, {
         type: "ci_diagnosis",
         summary: "Diagnose failing CI before merge gate.",
         evidence_refs: ["evidence://ci/failure"],
       });
+      assert.equal(rejectedMissingModelTier.accepted, false);
+      assert.match(rejectedMissingModelTier.reason ?? "", /model_tier/);
+      const child = runtime.createChildActivity(firstStarted.ids, {
+        type: "ci_diagnosis",
+        summary: "Diagnose failing CI before merge gate.",
+        model_tier: "standard",
+        model_reason: "CI diagnosis needs enough reasoning to interpret failing checks.",
+        evidence_refs: ["evidence://ci/failure"],
+      });
       assert.equal(child.accepted, true);
       assert.ok(child.child_activity_id);
+      const stateAfterChild = runtime.getRunState(queued.ids.run_id);
+      const childActivity = stateAfterChild?.activities.find((activity) => activity.activity_id === child.child_activity_id);
+      assert.deepEqual(childActivity?.model_profile, {
+        model_tier: "standard",
+        model_reason: "CI diagnosis needs enough reasoning to interpret failing checks.",
+      });
       const rejectedChild = runtime.createChildActivity(firstStarted.ids, {
         type: "embark_planning",
         summary: "Invalid child for review workflow.",
+        model_tier: "high",
+        model_reason: "Would coordinate a cohort, but this parent cannot create that activity type.",
       });
       assert.equal(rejectedChild.accepted, false);
       runtime.completeActivity(firstStarted, { success: true, summary: "first done" });

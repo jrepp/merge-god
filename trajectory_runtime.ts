@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import type { AppStore } from "./app_store";
 import { runPiAgent, type AgentObservation, type CoordinationTrajectoryBridge, type PiAgentResult, type WorkItem } from "./coordination";
 import type { GitOpsObserver } from "./git_ops";
+import { recordPromptRendered } from "./telemetry";
 import type {
   ActivityClaim,
   ActivityType,
@@ -19,6 +20,7 @@ import type {
   EmbarkCohortTrajectoryIds,
   EmbarkCohortTrajectoryInput,
   JsonObject,
+  ModelTier,
   PrQueueTrajectoryIds,
   PrQueueTrajectoryInput,
   ProposedNextActionInput,
@@ -120,6 +122,8 @@ export interface ModelControlResult {
 interface ModelChildActivityInput {
   type: string;
   summary: string;
+  model_tier?: string;
+  model_reason?: string;
   prompt_runtime_ref?: string | null;
   context_pack_refs?: string[];
   evidence_refs?: string[];
@@ -358,8 +362,24 @@ export class TrajectoryRuntime {
     if (!input.summary.trim()) {
       return this.rejectModelControl(ids, "activity.child_rejected", "summary is required");
     }
+    if (!this.isModelTier(input.model_tier)) {
+      return this.rejectModelControl(
+        ids,
+        "activity.child_rejected",
+        "model_tier is required and must be one of: fast, standard, high",
+      );
+    }
+    if (!input.model_reason?.trim()) {
+      return this.rejectModelControl(ids, "activity.child_rejected", "model_reason is required");
+    }
 
-    const childActivityId = this.store.createChildActivity(ids, { ...input, type: input.type });
+    const childInput: ChildActivityInput = {
+      ...input,
+      type: input.type,
+      model_tier: input.model_tier,
+      model_reason: input.model_reason,
+    };
+    const childActivityId = this.store.createChildActivity(ids, childInput);
     return { accepted: true, child_activity_id: childActivityId };
   }
 
@@ -389,6 +409,14 @@ export class TrajectoryRuntime {
     const prompt = options.build_prompt
       ? options.build_prompt(started, state)
       : this.defaultActivityPrompt(started, state);
+    recordPromptRendered("trajectory_activity", prompt, {
+      "merge_god.run_id": runId,
+      "merge_god.activity_id": started.ids.activity_id,
+      "merge_god.activity_type": started.activity.type,
+      "merge_god.pr_number": started.work_item?.number,
+    });
+    const modelTier = this.activityModelProfileValue(started.activity, "model_tier");
+    const modelReason = this.activityModelProfileValue(started.activity, "model_reason");
     const workItem: WorkItem = {
       kind: "trajectory_activity",
       repo: state.run.repo_name,
@@ -397,6 +425,8 @@ export class TrajectoryRuntime {
       mode: started.work_item?.mode ?? undefined,
       title: started.work_item?.title,
       prompt,
+      model_tier: modelTier ?? undefined,
+      model_reason: modelReason ?? undefined,
       trajectory_refs: started.ids,
     };
 
@@ -407,7 +437,7 @@ export class TrajectoryRuntime {
       agentObserver: options.agent_observer,
     });
     const resultStatus = typeof piResult.result?.["status"] === "string" ? piResult.result["status"] : null;
-    const success = piResult.returncode === 0 && resultStatus !== "failure";
+    const success = piResult.returncode === 0 && resultStatus === "success";
     const summary = typeof piResult.result?.["summary"] === "string"
       ? piResult.result["summary"]
       : `pi exited with code ${piResult.returncode}`;
@@ -470,6 +500,12 @@ export class TrajectoryRuntime {
       `Activity: ${claim.activity.activity_id} (${claim.activity.type})`,
       item ? `PR: #${item.number} ${item.title}` : "PR: unknown",
       item?.mode ? `Mode: ${item.mode}` : null,
+      this.activityModelProfileValue(claim.activity, "model_tier")
+        ? `Model tier: ${this.activityModelProfileValue(claim.activity, "model_tier")}`
+        : null,
+      this.activityModelProfileValue(claim.activity, "model_reason")
+        ? `Model reason: ${this.activityModelProfileValue(claim.activity, "model_reason")}`
+        : null,
       "",
       "Use merge_god_trajectory_state to inspect durable state.",
       "Use merge_god_trajectory_event for checkpoints, decisions, blockers, and evidence.",
@@ -542,6 +578,15 @@ export class TrajectoryRuntime {
       "semantic_summary",
       "operator_handoff",
     ].includes(type);
+  }
+
+  private isModelTier(tier: unknown): tier is ModelTier {
+    return tier === "fast" || tier === "standard" || tier === "high";
+  }
+
+  private activityModelProfileValue(activity: ActivityClaim["activity"], key: string): string | null {
+    const value = activity.model_profile[key];
+    return typeof value === "string" && value.trim() ? value : null;
   }
 
   private rejectModelControl(

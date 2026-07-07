@@ -44,6 +44,30 @@ repos:
 #   enabled: true
 #   topic: "merge-god-sez"
 
+# Telemetry / Opik observability (optional)
+# merge-god emits OpenTelemetry traces and metrics when telemetry is configured.
+# For Opik Cloud, the OPIK_* variables are enough; for any OTLP collector, use
+# OTEL_*.
+#
+# Opik Cloud:
+#   export OPIK_API_KEY="your-opik-api-key"
+#   export OPIK_WORKSPACE_NAME="default"
+#   export OPIK_PROJECT_NAME="merge-god"
+#
+# Generic OTLP HTTP collector:
+#   export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+#   export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20token"
+#
+# Self-hosted Opik:
+#   export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:5173/api/v1/private/otel"
+#   export OTEL_EXPORTER_OTLP_HEADERS="Comet-Workspace=default,projectName=merge-god-local"
+#
+# Local debugging:
+#   export MERGE_GOD_TELEMETRY_EXPORTER="console"
+#
+# Explicitly disable, even when other telemetry env vars are present:
+#   export MERGE_GOD_TELEMETRY_ENABLED="false"
+
 # Interactive Mode (optional, per-repo setting)
 # When enabled (default: true), the TUI will prompt for confirmation before:
 #   - Processing each PR
