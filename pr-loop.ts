@@ -42,6 +42,7 @@ import {
 } from "./review_gate_comment_model";
 import {
   categorizeOpenPrs,
+  planStackedPrMergeOrder,
   type CategorizedPRs,
 } from "./pr_loop_model";
 import {
@@ -1898,10 +1899,17 @@ export async function main(): Promise<void> {
       continue;
     }
 
+    const stackMergeOrderPlan = planStackedPrMergeOrder(categorizedPrs);
     const prDetails = {
       for_review: categorizedPrs["for-review"].map((pr) => prQueueInfoFromRecord(pr, { titleMaxLength: 50 })),
       for_landing: categorizedPrs["for-landing"].map((pr) => prQueueInfoFromRecord(pr, { titleMaxLength: 50 })),
       untagged: categorizedPrs["untagged"].map((pr) => prQueueInfoFromRecord(pr, { titleMaxLength: 50 })),
+      processing_order: stackMergeOrderPlan.ordered.map((item) => ({
+        ...prQueueInfoFromRecord(item.pr, { titleMaxLength: 50 }),
+        mode: item.mode,
+        stack_dependencies: item.stack_dependency_numbers,
+        stack_dependents: item.stack_dependent_numbers,
+      })),
     };
 
     logJson("iteration", {
@@ -1911,48 +1919,52 @@ export async function main(): Promise<void> {
       for_landing: categorizedPrs["for-landing"].length,
       untagged: categorizedPrs["untagged"].length,
       pr_details: prDetails,
+      stack_merge_order: {
+        strategy: "branch-ref-topological-order",
+        stacks: stackMergeOrderPlan.stacks,
+        blocked: stackMergeOrderPlan.blocked,
+      },
     });
 
     let totalProcessed = 0;
-    for (const mode of ["for-review", "for-landing"] as const) {
-      for (const pr of categorizedPrs[mode]) {
-        const prNumber = prDetailsNumber(pr) ?? undefined;
+    for (const planned of stackMergeOrderPlan.ordered) {
+      const pr = planned.pr;
+      const mode = planned.mode;
+      const prNumber = prDetailsNumber(pr) ?? undefined;
 
-        if (prNumber && processingPrs.has(prNumber)) {
-          logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
-          continue;
-        }
-
-        if (prNumber) processingPrs.add(prNumber);
-
-        try {
-          const success = await processPr(
-            pr,
-            guidelines,
-            commitExamples,
-            defaultBranch,
-            mode,
-            args.interactive,
-            db,
-            repoName,
-            mergeRules,
-          );
-          if (success && prNumber) processingPrs.delete(prNumber);
-          totalProcessed++;
-        } catch (e) {
-          const reason = errMsg(e);
-          logJson("process_pr", {
-            action: "exception",
-            pr_number: prNumber,
-            mode,
-            error: reason,
-          });
-          if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
-          if (prNumber) processingPrs.delete(prNumber);
-        }
-
-        await sleep(10_000);
+      if (prNumber && processingPrs.has(prNumber)) {
+        logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
+        continue;
       }
+
+      if (prNumber) processingPrs.add(prNumber);
+
+      try {
+        const success = await processPr(
+          pr,
+          guidelines,
+          commitExamples,
+          defaultBranch,
+          mode,
+          args.interactive,
+          db,
+          repoName,
+          mergeRules,
+        );
+        if (success && prNumber) processingPrs.delete(prNumber);
+        totalProcessed++;
+      } catch (e) {
+        const reason = errMsg(e);
+        logJson("process_pr", {
+          action: "exception",
+          pr_number: prNumber,
+          mode,
+          error: reason,
+        });
+        if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
+        if (prNumber) processingPrs.delete(prNumber);
+      }
+      await sleep(10_000);
     }
 
     logJson("iteration", {
