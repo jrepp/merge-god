@@ -19,7 +19,7 @@ import { pathToFileURL } from "node:url";
 import YAML from "yaml";
 
 import { SyncStore, GitClient, createPullRequest, PRState } from "@merge-god/github-sync";
-import { gather_pr_context, getOpenPrs, getPrDetails } from "./pr-loop";
+import { gather_pr_context, getOpenPrs, getPrDetails, planStackedPrMergeOrder } from "./pr-loop";
 
 interface RepoConfig {
   path?: string;
@@ -231,6 +231,7 @@ async function syncRepo(
       await new GitClient(repoPath).getDefaultBranch();
 
       const categorized = getOpenPrs();
+      const plan = planStackedPrMergeOrder(categorized);
       const landing = (categorized["for-landing"] ?? []).map(
         (pr) => pr["number"] as number,
       );
@@ -243,10 +244,27 @@ async function syncRepo(
       const sortedPrs = [...allPrs].sort((a, b) => a - b);
 
       logJson("sync_repo", {
-        action: "discovered_prs",
+        action: "repo_overview",
         repo: repoName,
-        pr_count: allPrs.size,
-        pr_numbers: sortedPrs,
+        processable_count: allPrs.size,
+        processable_pr_numbers: sortedPrs,
+        for_review_count: categorized["for-review"].length,
+        for_landing_count: categorized["for-landing"].length,
+        untagged_count: categorized["untagged"].length,
+        untagged_pr_numbers: categorized["untagged"]
+          .map((pr) => pr["number"])
+          .filter((number): number is number => typeof number === "number"),
+        stack_merge_order: {
+          strategy: "branch-ref-topological-order",
+          processing_order: plan.ordered.map((item) => ({
+            pr_number: item.pr["number"],
+            mode: item.mode,
+            stack_dependencies: item.stack_dependency_numbers,
+            stack_dependents: item.stack_dependent_numbers,
+          })),
+          stacks: plan.stacks,
+          blocked: plan.blocked,
+        },
       });
 
       if (allPrs.size === 0) {
