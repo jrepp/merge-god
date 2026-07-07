@@ -86,6 +86,24 @@ describe("planStackedPrMergeOrder", () => {
       },
     ]);
   });
+
+  test("reports only the cyclic PRs when downstream PRs are blocked by the cycle", () => {
+    const categorized = emptyCategorized();
+    categorized["for-landing"].push(pr(9, "feature/c", "feature/a"));
+    categorized["for-landing"].push(pr(7, "feature/a", "feature/b"));
+    categorized["for-landing"].push(pr(8, "feature/b", "feature/a"));
+
+    const plan = planStackedPrMergeOrder(categorized);
+
+    assert.deepEqual(plan.ordered.map((item) => item.pr["number"]).sort(), [7, 8, 9]);
+    assert.deepEqual(plan.blocked, [
+      {
+        pr_number: 7,
+        reason: "stack_dependency_cycle",
+        cycle_pr_numbers: [7, 8],
+      },
+    ]);
+  });
 });
 
 describe("suggestProcessingLabel", () => {

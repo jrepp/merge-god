@@ -986,6 +986,45 @@ function sortedNumbers(values: Iterable<number>): number[] {
   return [...values].sort((a, b) => a - b);
 }
 
+function findDependencyCycle(
+  remaining: Set<number>,
+  dependencies: Map<number, Set<number>>,
+  compareNumbers: (a: number, b: number) => number,
+): number[] {
+  const visited = new Set<number>();
+  const stack: number[] = [];
+  const stackIndex = new Map<number, number>();
+
+  const visit = (number: number): number[] | null => {
+    visited.add(number);
+    stackIndex.set(number, stack.length);
+    stack.push(number);
+
+    const dependencyNumbers = [...(dependencies.get(number) ?? [])]
+      .filter((dependency) => remaining.has(dependency))
+      .sort(compareNumbers);
+    for (const dependency of dependencyNumbers) {
+      const dependencyStackIndex = stackIndex.get(dependency);
+      if (dependencyStackIndex !== undefined) return sortedNumbers(stack.slice(dependencyStackIndex));
+      if (!visited.has(dependency)) {
+        const cycle = visit(dependency);
+        if (cycle) return cycle;
+      }
+    }
+
+    stack.pop();
+    stackIndex.delete(number);
+    return null;
+  };
+
+  for (const number of [...remaining].sort(compareNumbers)) {
+    if (visited.has(number)) continue;
+    const cycle = visit(number);
+    if (cycle) return cycle;
+  }
+  return sortedNumbers(remaining);
+}
+
 function processingLabelsFromPr(pr: Record<string, unknown>): string[] {
   return asArray(pr["labels"])
     .map((labelRaw) => {
@@ -1089,15 +1128,19 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
       .filter((number) => [...(dependencies.get(number) ?? [])].every((dependency) => !remaining.has(dependency)))
       .sort(compareNumbers);
     const hasCycle = ready.length === 0;
-    const next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
-    if (hasCycle && !cycleReportedFor.has(next)) {
-      const cyclePrNumbers = sortedNumbers(remaining);
-      for (const number of cyclePrNumbers) cycleReportedFor.add(number);
-      blocked.push({
-        pr_number: next,
-        reason: "stack_dependency_cycle",
-        cycle_pr_numbers: cyclePrNumbers,
-      });
+    let next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
+    if (hasCycle) {
+      const cyclePrNumbers = findDependencyCycle(remaining, dependencies, compareNumbers);
+      const cycleRepresentative = [...cyclePrNumbers].sort(compareNumbers)[0] ?? next;
+      next = cycleRepresentative;
+      if (!cycleReportedFor.has(cycleRepresentative)) {
+        for (const number of cyclePrNumbers) cycleReportedFor.add(number);
+        blocked.push({
+          pr_number: cycleRepresentative,
+          reason: "stack_dependency_cycle",
+          cycle_pr_numbers: cyclePrNumbers,
+        });
+      }
     }
     remaining.delete(next);
     const item = processableNumber.get(next);
