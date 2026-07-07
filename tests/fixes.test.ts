@@ -9,7 +9,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { validateGitRef } from "../pr-loop";
+import { PR_VIEW_JSON_FIELDS, validateGitRef } from "../pr-loop";
 
 describe("validateGitRef", () => {
   test("accepts valid refs", () => {
@@ -42,5 +42,13 @@ describe("validateGitRef", () => {
     assert.equal(validateGitRef(undefined as unknown as string), false, "undefined should be invalid");
     assert.equal(validateGitRef(123 as unknown as string), false, "number should be invalid");
     assert.equal(validateGitRef(["list"] as unknown as string), false, "array should be invalid");
+  });
+});
+
+describe("GitHub CLI field compatibility", () => {
+  test("PR detail fields avoid removed reviewers field", () => {
+    assert.equal(PR_VIEW_JSON_FIELDS.includes("reviewers" as never), false);
+    assert.equal(PR_VIEW_JSON_FIELDS.includes("reviewRequests"), true);
+    assert.equal(PR_VIEW_JSON_FIELDS.includes("latestReviews"), true);
   });
 });

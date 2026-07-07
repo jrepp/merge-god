@@ -1258,6 +1258,33 @@ export function detectDefaultBranch(): string {
 }
 
 /** Fetch comprehensive PR details from `gh pr view`. */
+export const PR_VIEW_JSON_FIELDS = [
+  "number",
+  "title",
+  "body",
+  "state",
+  "headRefName",
+  "baseRefName",
+  "isDraft",
+  "mergeable",
+  "author",
+  "createdAt",
+  "updatedAt",
+  "closedAt",
+  "mergedAt",
+  "labels",
+  "assignees",
+  "reviewRequests",
+  "latestReviews",
+  "additions",
+  "deletions",
+  "changedFiles",
+  "commits",
+  "reviews",
+  "reviewDecision",
+  "statusCheckRollup",
+] as const;
+
 export function getPrDetails(prNumber: number): Record<string, unknown> {
   logJson("get_pr_details", { action: "start", pr_number: prNumber });
 
@@ -1267,9 +1294,7 @@ export function getPrDetails(prNumber: number): Record<string, unknown> {
     "view",
     String(prNumber),
     "--json",
-    "number,title,body,state,headRefName,baseRefName,isDraft,mergeable," +
-      "author,createdAt,updatedAt,closedAt,mergedAt,labels,assignees,reviewers," +
-      "additions,deletions,changedFiles,commits,reviews,reviewDecision,statusCheckRollup",
+    PR_VIEW_JSON_FIELDS.join(","),
   ]);
 
   if (returncode !== 0) {

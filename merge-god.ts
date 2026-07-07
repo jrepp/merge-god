@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import chalk from "chalk";
@@ -68,6 +68,10 @@ function runChild(script: string, args: string[]): number {
 function resolvePath(p: string | undefined, fallback: string): string {
   if (!p) return resolve(fallback);
   return isAbsolute(p) ? p : resolve(p);
+}
+
+function inferRepoName(repoPath: string | undefined): string {
+  return basename(resolvePath(repoPath, "."));
 }
 
 interface GlobalArgs {
@@ -138,6 +142,7 @@ function cmdScan(g: GlobalArgs): number {
       config: { type: "string" },
       db: { type: "string" },
       repo: { type: "string" },
+      "repo-path": { type: "string" },
       pr: { type: "string" },
     },
     allowPositionals: true,
@@ -148,6 +153,10 @@ function cmdScan(g: GlobalArgs): number {
   if (config) args.push("--config", config);
   if (db) args.push("--db", db);
   if (parsed.values.repo) args.push("--repo", parsed.values.repo);
+  if (parsed.values["repo-path"]) {
+    args.push("--repo-path", parsed.values["repo-path"]);
+    if (!parsed.values.repo) args.push("--repo", inferRepoName(parsed.values["repo-path"]));
+  }
   if (parsed.values.pr) args.push("--pr", parsed.values.pr);
   const rc = runChild(args[0]!, args.slice(1));
   if (rc === 0) logText("PR context synced successfully", "success");
@@ -167,12 +176,8 @@ function cmdAgent(g: GlobalArgs): number {
     },
     allowPositionals: true,
   });
-  const repo = parsed.values.repo;
+  const repo = parsed.values.repo ?? inferRepoName(parsed.values["repo-path"]);
   const pr = parsed.values.pr;
-  if (!repo) {
-    logText("--repo is required for agent command", "error");
-    return 1;
-  }
   if (!pr) {
     logText("--pr is required for agent command", "error");
     return 1;
@@ -344,6 +349,9 @@ COMMANDS:
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
+Quick self-test:
+  tsx merge-god.ts scan --repo-path . --pr 14
+  tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
 Run 'tsx merge-god.ts help' for details.
 `;
 

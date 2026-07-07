@@ -20,6 +20,7 @@
     "agents/",
     "bin/",
     "config.example.yaml",
+    "config.merge-god-self-test.example.yaml",
     "docs/",
     ".merge-rules.yaml",
     "merge_god/",

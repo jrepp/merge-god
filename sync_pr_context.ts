@@ -290,6 +290,7 @@ async function main(): Promise<number> {
       config: { type: "string", default: "config.yaml" },
       db: { type: "string", default: "merge-god-state.db" },
       repo: { type: "string" },
+      "repo-path": { type: "string" },
       pr: { type: "string" },
     },
     strict: true,
@@ -305,21 +306,24 @@ async function main(): Promise<number> {
     }
   }
 
-  if (prNumber !== undefined && !values.repo) {
+  if (prNumber !== undefined && !values.repo && !values["repo-path"]) {
     logJson("error", { error: "--pr requires --repo to be specified" });
     return 1;
   }
 
   const configPath = values.config ?? "config.yaml";
-  let config: Record<string, unknown>;
-  try {
-    config = loadConfig(configPath);
-  } catch (e) {
-    logJson("error", {
-      error: `Failed to load config: ${errMsg(e)}`,
-      config_path: configPath,
-    });
-    return 1;
+  const directRepoPath = values["repo-path"];
+  let config: Record<string, unknown> | null = null;
+  if (!directRepoPath) {
+    try {
+      config = loadConfig(configPath);
+    } catch (e) {
+      logJson("error", {
+        error: `Failed to load config: ${errMsg(e)}`,
+        config_path: configPath,
+      });
+      return 1;
+    }
   }
 
   const dbPath = values.db ?? "merge-god-state.db";
@@ -337,15 +341,19 @@ async function main(): Promise<number> {
 
   logJson("sync", {
     action: "start",
-    config: configPath,
+    config: directRepoPath ? null : configPath,
     database: dbPath,
     repo_filter: values.repo ?? null,
+    repo_path: directRepoPath ?? null,
     pr_filter: prNumber ?? null,
   });
 
-  const repos = config["repos"];
+  const repos = directRepoPath
+    ? [{ path: directRepoPath, name: values.repo ?? basename(resolve(directRepoPath)), enabled: true }]
+    : config?.["repos"];
   if (!Array.isArray(repos)) {
     logJson("error", { error: "Config 'repos' section is not a list" });
+    await db.close();
     return 1;
   }
 
