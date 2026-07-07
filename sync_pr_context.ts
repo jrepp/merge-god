@@ -18,7 +18,11 @@ import { pathToFileURL } from "node:url";
 
 import YAML from "yaml";
 
-import { SyncStore, GitClient, createPullRequest, PRState } from "@merge-god/github-sync";
+import { SyncStore, GitClient } from "@merge-god/github-sync";
+import { prContextTelemetrySummary } from "./pr_context_log_model";
+import { prDetailsBaseBranch, prDetailsHeadBranch, prDetailsUrl } from "./pr_details_access_model";
+import { categorizedPrNumbers } from "./pr_loop_model";
+import { pullRequestSnapshotFromDetails } from "./pr_snapshot_model";
 import { gather_pr_context, getOpenPrs, getPrDetails } from "./pr-loop";
 
 interface RepoConfig {
@@ -69,15 +73,6 @@ function loadConfig(configPath: string): Record<string, unknown> {
   return config as Record<string, unknown>;
 }
 
-function authorLogin(details: Record<string, unknown>): string {
-  const author = details["author"];
-  if (typeof author === "object" && author !== null) {
-    const login = (author as Record<string, unknown>)["login"];
-    if (typeof login === "string") return login;
-  }
-  return "unknown";
-}
-
 async function syncPrToDatabase(
   db: SyncStore,
   repoPath: string,
@@ -90,9 +85,9 @@ async function syncPrToDatabase(
     chdir(repoPath);
 
     const details = getPrDetails(prNumber);
-    const headBranch = (details["headRefName"] as string | undefined) ?? "";
-    const baseBranch = (details["baseRefName"] as string | undefined) ?? "main";
-    const url = (details["url"] as string | undefined) ?? "";
+    const headBranch = prDetailsHeadBranch(details);
+    const baseBranch = prDetailsBaseBranch(details);
+    const url = prDetailsUrl(details);
 
     const [prDetails, prContext] = await gather_pr_context(
       prNumber,
@@ -113,34 +108,16 @@ async function syncPrToDatabase(
 
     await db.savePrContext(repoName, prNumber, prDetails, prContext);
 
-    const pr = createPullRequest({
-      number: prNumber,
-      title: (prDetails["title"] as string | undefined) ?? "",
-      state: PRState.OPEN,
-      head_branch: (prDetails["headRefName"] as string | undefined) ?? "",
-      base_branch: (prDetails["baseRefName"] as string | undefined) ?? "main",
-      author: authorLogin(prDetails),
-      url,
-      created_at: new Date(),
-      updated_at: new Date(),
-      draft: false,
-      labels: ((prDetails["labels"] as unknown[] | undefined) ?? []) as string[],
-    });
+    const pr = pullRequestSnapshotFromDetails(prDetails, prContext, { url });
     await db.savePrSnapshot(repoName, pr);
 
-    const diff = (prContext["diff"] as string | undefined) ?? "";
-    const comments = (prContext["comments"] as unknown[] | undefined) ?? [];
-    const reviewComments = (prContext["review_comments"] as unknown[] | undefined) ?? [];
-    const files = (prContext["files"] as unknown[] | undefined) ?? [];
+    const contextSummary = prContextTelemetrySummary(prContext);
 
     logJson("sync_pr", {
       action: "complete",
       repo: repoName,
       pr_number: prNumber,
-      diff_size: diff.length,
-      comment_count: comments.length,
-      review_comment_count: reviewComments.length,
-      file_count: files.length,
+      ...contextSummary,
     });
 
     return true;
@@ -231,25 +208,17 @@ async function syncRepo(
       await new GitClient(repoPath).getDefaultBranch();
 
       const categorized = getOpenPrs();
-      const landing = (categorized["for-landing"] ?? []).map(
-        (pr) => pr["number"] as number,
-      );
-      const review = (categorized["for-review"] ?? []).map(
-        (pr) => pr["number"] as number,
-      );
-      const allPrs = new Set<number>([...landing, ...review]);
-      stats.total = allPrs.size;
-
-      const sortedPrs = [...allPrs].sort((a, b) => a - b);
+      const sortedPrs = categorizedPrNumbers(categorized, ["for-landing", "for-review"]);
+      stats.total = sortedPrs.length;
 
       logJson("sync_repo", {
         action: "discovered_prs",
         repo: repoName,
-        pr_count: allPrs.size,
+        pr_count: sortedPrs.length,
         pr_numbers: sortedPrs,
       });
 
-      if (allPrs.size === 0) {
+      if (sortedPrs.length === 0) {
         logJson("sync_repo", {
           action: "warning",
           repo: repoName,

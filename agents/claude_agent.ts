@@ -11,7 +11,15 @@ import { spawn } from "node:child_process";
 import { promises as fsp, type Stats } from "node:fs";
 import path from "node:path";
 
+import { agentGateSummarySection } from "../agent_gate_summary_model";
 import type { AgentAction, AgentCallbacks } from "./callbacks";
+import { prAgentContextFromDict } from "../pr_agent_context_model";
+import {
+  recordAgentRun,
+  recordPromptRendered,
+  sanitizeSpanAttributes,
+  withTelemetrySpan,
+} from "../telemetry";
 
 type MessageParam = Anthropic.MessageParam;
 type Tool = Anthropic.Tool;
@@ -148,6 +156,9 @@ export interface PRContext {
   review_comments: Record<string, unknown>[];
   general_comments: Record<string, unknown>[];
 
+  merge_blockers: Record<string, unknown>[];
+  queue_context: Record<string, unknown> | null;
+
   changed_files: Record<string, unknown>[];
   diff: string;
 
@@ -172,35 +183,7 @@ export function createPRContextFromDict(
   prDetails: Record<string, unknown>,
   prContext: Record<string, unknown>,
 ): PRContext {
-  const conflicts = asRecord(prContext["conflicts"]);
-  const ciStatus = asRecord(prContext["ci_status"]);
-  const author = asRecord(prDetails["author"]);
-  const failed = numVal(ciStatus["failed"]);
-
-  return createPRContext({
-    pr_number: numVal(prDetails["number"]),
-    title: strVal(prDetails["title"]),
-    body: optStrVal(prDetails["body"]),
-    head_branch: strVal(prDetails["headRefName"]),
-    base_branch: strVal(prDetails["baseRefName"], "main"),
-    author: strVal(author["login"], "unknown"),
-    url: strVal(prContext["url"]),
-    has_conflicts: Boolean(conflicts["has_conflicts"]),
-    conflicting_files: arrVal<string>(conflicts["conflicting_files"]),
-    has_failing_ci: failed > 0,
-    failing_checks: arrVal<Record<string, unknown>>(ciStatus["failed_checks"]),
-    review_comments: arrVal<Record<string, unknown>>(prContext["review_comments"]),
-    general_comments: arrVal<Record<string, unknown>>(prContext["comments"]),
-    changed_files: arrVal<Record<string, unknown>>(prContext["files"]),
-    diff: strVal(prContext["diff"]),
-    commits: arrVal<Record<string, unknown>>(prContext["commits"]),
-    guidelines: strVal(prContext["guidelines"]),
-    commit_examples: strVal(prContext["commit_examples"]),
-    merge_rules: strVal(prContext["merge_rules"]),
-    labels: arrVal<string>(prDetails["labels"]),
-    ci_checks: ciStatus,
-    review_decision: optStrVal(prDetails["reviewDecision"]),
-  });
+  return createPRContext(prAgentContextFromDict(prDetails, prContext));
 }
 
 /** Result of PR processing. */
@@ -401,9 +384,21 @@ pre-commit run --all-files
     mode: string,
     callbacks: AgentCallbacks,
   ): Promise<ProcessingResult> {
+    return withTelemetrySpan(
+      "merge_god.claude_agent.process_pr",
+      {
+        "merge_god.operation": "claude_agent.process_pr",
+        "merge_god.agent_kind": "claude",
+        "merge_god.pr_number": prContext.pr_number,
+        "merge_god.mode": mode,
+        "merge_god.repo_path": this.repo_path ?? "",
+        "merge_god.model": this.model,
+      },
+      async (span) => {
     const startTime = new Date();
 
     const tasks = this.decomposePrTasks(prContext, mode);
+    span.setAttribute("merge_god.task_count", tasks.length);
 
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i]!;
@@ -447,13 +442,29 @@ pre-commit run --all-files
     const duration = (Date.now() - startTime.getTime()) / 1000;
     const allSuccessful = tasks.every((task) => task.status === "completed");
 
-    return createProcessingResult({
+    const result = createProcessingResult({
       success: allSuccessful,
       tasks,
       actions: this.actions_taken,
       duration,
       error: allSuccessful ? null : "Some tasks failed",
     });
+    span.setAttributes(sanitizeSpanAttributes({
+      "merge_god.success": result.success,
+      "merge_god.result_status": result.success ? "success" : "failure",
+      "merge_god.result_summary": result.success ? "All tasks completed" : result.error,
+      "merge_god.duration_seconds": result.duration,
+      "merge_god.actions_total": result.actions.length,
+      "merge_god.tasks_failed": result.tasks.filter((task) => task.status === "failed").length,
+    }));
+    recordAgentRun("claude", result.success, result.duration, {
+      "merge_god.pr_number": prContext.pr_number,
+      "merge_god.mode": mode,
+      "merge_god.model": this.model,
+    });
+    return result;
+      },
+    );
   }
 
   /** Break down PR processing into discrete, manageable tasks. */
@@ -677,10 +688,14 @@ pre-commit run --all-files
 ${prContext.merge_rules}
 `
       : "";
+    const gateContext = agentGateSummarySection(prContext);
 
     if (task.id === "analyze") {
-      return (
+      return this.recordTaskPrompt(
+        task,
+        prContext,
         baseContext +
+        gateContext +
         `
 ## Your Task
 Analyze this PR and identify:
@@ -708,8 +723,11 @@ Provide a structured analysis of what needs to be done.
       const conflictingFilesStr = prContext.conflicting_files
         .map((f) => `- ${f}`)
         .join("\n");
-      return (
+      return this.recordTaskPrompt(
+        task,
+        prContext,
         baseContext +
+        gateContext +
         `
 ## Your Task
 Resolve merge conflicts in the following files:
@@ -750,9 +768,12 @@ Begin by reading the conflicting files to understand the conflicts.
           ? `... and ${prContext.review_comments.length - 5} more comments`
           : "";
 
-      return (
+      return this.recordTaskPrompt(
+        task,
+        prContext,
         baseContext +
         mergeRules +
+        gateContext +
         `
 ## Your Task
 Address the following code review comments:
@@ -800,9 +821,12 @@ Work through the comments systematically.
         })
         .join("\n");
 
-      return (
+      return this.recordTaskPrompt(
+        task,
+        prContext,
         baseContext +
         mergeRules +
+        gateContext +
         `
 ## Your Task
 Fix the following failing CI checks:
@@ -850,9 +874,12 @@ Start by analyzing the failing checks.
 
       const guidelines = prContext.guidelines || "Follow best practices for the codebase";
 
-      return (
+      return this.recordTaskPrompt(
+        task,
+        prContext,
         baseContext +
         mergeRules +
+        gateContext +
         `
 ## Your Task
 Conduct a comprehensive code review of the changes in this PR.
@@ -898,9 +925,12 @@ Review the code systematically and make targeted improvements.
     }
 
     if (task.id === "validate") {
-      return (
+      return this.recordTaskPrompt(
+        task,
+        prContext,
         baseContext +
         mergeRules +
+        gateContext +
         `
 ## Your Task
 Final validation before marking PR ready:
@@ -938,7 +968,17 @@ Perform final validation and report status. Only mark as ready if all checks pas
       );
     }
 
-    return baseContext;
+    return this.recordTaskPrompt(task, prContext, baseContext);
+  }
+
+  private recordTaskPrompt(task: AgentTask, prContext: PRContext, prompt: string): string {
+    recordPromptRendered(`claude_task.${task.id}`, prompt, {
+      "merge_god.pr_number": prContext.pr_number,
+      "merge_god.task_id": task.id,
+      "merge_god.prompt_template": task.prompt_template,
+      "merge_god.model": this.model,
+    });
+    return prompt;
   }
 
   /** Provide task-specific tools to the agent. */

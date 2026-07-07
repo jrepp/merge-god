@@ -68,6 +68,56 @@ doormat:
 Credential refresh is **non-fatal**: if it fails, processing continues and the
 attempt is logged.
 
+## Telemetry and Opik
+
+merge-god can emit OpenTelemetry traces and metrics for debugging PR and issue
+agent runs. Telemetry is disabled by default. Enable it with Opik environment
+variables or a generic OTLP HTTP endpoint.
+
+For Opik Cloud:
+
+```bash
+export OPIK_API_KEY="your-opik-api-key"
+export OPIK_WORKSPACE_NAME="default"
+export OPIK_PROJECT_NAME="merge-god"
+```
+
+For any OTLP HTTP collector:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20token"
+```
+
+For a self-hosted Opik instance started with `./opik.sh`:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:5173/api/v1/private/otel"
+export OTEL_EXPORTER_OTLP_HEADERS="Comet-Workspace=default,projectName=merge-god-local"
+```
+
+For local debugging without a collector:
+
+```bash
+export MERGE_GOD_TELEMETRY_EXPORTER="console"
+```
+
+Set `MERGE_GOD_TELEMETRY_ENABLED=false` to force telemetry off even when Opik or
+OTLP variables are present.
+
+Each PR processing attempt is traced as `merge_god.process_pr`, with child spans
+for context gathering and pi agent execution. Issue implementation runs are
+traced as `merge_god.process_issue`.
+
+Key metrics:
+
+| Metric | Meaning |
+| --- | --- |
+| `merge_god.prompt.rendered` | Count of rendered or submitted prompts, tagged by prompt kind. |
+| `merge_god.prompt.size` | Prompt size histogram in characters. |
+| `merge_god.agent.run` | Agent run count tagged by agent kind and result status. |
+| `merge_god.agent.duration` | Agent run duration histogram in seconds. |
+
 ## Merge rules
 
 Each repository can define root-level merge policy in `.merge-rules.yaml`.

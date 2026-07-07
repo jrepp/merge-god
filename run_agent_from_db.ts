@@ -32,8 +32,10 @@ import {
 } from "./agents/__init__";
 import { SyncStore } from "@merge-god/github-sync";
 import { AppStore } from "./app_store";
+import { replayPrContextSummary, replayTrajectoryWorkItemFromContext } from "./pr_replay_model";
 import { TrajectoryRuntime } from "./trajectory_runtime";
 import type { CompatibilityTrajectoryIds } from "./trajectory";
+import { initializeTelemetry, shutdownTelemetry } from "./telemetry";
 
 function logJson(eventType: string, data: Record<string, unknown>): void {
   const logEntry = {
@@ -103,14 +105,6 @@ function adaptDatabase(db: AppStore): AgentDatabase {
 
 function disableNotification(): boolean {
   return true;
-}
-
-function stringValue(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 export async function runAgentFromDb(
@@ -188,21 +182,12 @@ export async function runAgentFromDb(
     }
     [prDetails, prContextDict] = prData;
 
-    const conflictsSrc =
-      (prContextDict["conflicts"] as Record<string, unknown> | undefined) ?? {};
-    const ciStatusSrc =
-      (prContextDict["ci_status"] as Record<string, unknown> | undefined) ?? {};
-    const failedVal = ciStatusSrc["failed"];
-    const failedNum = typeof failedVal === "number" ? failedVal : 0;
+    const contextSummary = replayPrContextSummary(prContextDict);
 
     logJson("agent_from_db", {
       action: "context_loaded",
       pr_number: prNumber,
-      has_diff: Boolean(prContextDict["diff"]),
-      has_comments: Boolean(prContextDict["comments"]),
-      has_review_comments: Boolean(prContextDict["review_comments"]),
-      has_conflicts: Boolean(conflictsSrc["has_conflicts"]),
-      has_failing_ci: failedNum > 0,
+      ...contextSummary,
     });
   } catch (e) {
     logJson("agent_from_db", {
@@ -290,17 +275,13 @@ export async function runAgentFromDb(
   }
 
   try {
+    const workItem = replayTrajectoryWorkItemFromContext(prDetails, prContextDict);
     const workflow = trajectoryRuntime.startPrAgentWorkflow({
       repo_name: repoName,
       repo_path: repoPath ?? process.cwd(),
       pr_number: prNumber,
       mode,
-      title: stringValue(prDetails["title"]),
-      url: stringValue(prContextDict["url"]),
-      labels: stringArray(prDetails["labels"]),
-      base_ref: stringValue(prDetails["baseRefName"]) ?? stringValue(prDetails["base_branch"]),
-      head_ref: stringValue(prDetails["headRefName"]) ?? stringValue(prDetails["head_branch"]),
-      current_sha: stringValue(prDetails["head_sha"]),
+      ...workItem,
       session_id: sessionId,
       model,
     });
@@ -526,17 +507,20 @@ export async function main(): Promise<boolean> {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  initializeTelemetry(undefined, logJson);
   process.on("SIGINT", () => {
     logJson("shutdown", { reason: "keyboard_interrupt" });
-    process.exit(130);
+    void shutdownTelemetry().finally(() => process.exit(130));
   });
   main()
-    .then((success) => process.exit(success ? 0 : 1))
+    .then((success) => {
+      void shutdownTelemetry().finally(() => process.exit(success ? 0 : 1));
+    })
     .catch((e: unknown) => {
       logJson("fatal_error", {
         error: String(e),
         error_type: errorTypeName(e),
       });
-      process.exit(1);
+      void shutdownTelemetry().finally(() => process.exit(1));
     });
 }

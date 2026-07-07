@@ -71,6 +71,8 @@ export type ActivityType =
   | "semantic_summary"
   | "operator_handoff";
 
+export type ModelTier = "fast" | "standard" | "high";
+
 export interface OrchestrationRunRecord {
   run_id: string;
   repo_name: string;
@@ -273,6 +275,8 @@ export interface ProposedNextActionInput {
 export interface ChildActivityInput {
   type: ActivityType;
   summary: string;
+  model_tier: ModelTier;
+  model_reason: string;
   prompt_runtime_ref?: string | null;
   context_pack_refs?: string[];
   evidence_refs?: string[];

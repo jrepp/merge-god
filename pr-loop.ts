@@ -23,8 +23,62 @@ import { pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 import YAML from "yaml";
 import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
+import {
+  evidenceSummaryFromPrDetailsAndContext,
+  renderReviewGateStatusComment,
+  type ReviewGateEvidenceSummary,
+  type ReviewGateStatus,
+} from "./evidence_comment";
 import type { GitOpsObserver } from "./git_ops";
 import { SyncStore } from "@merge-god/github-sync";
+import type { DiffAvailability } from "./merge_pr_model";
+import { createSpawnCommandRunner } from "./command_runner";
+import { validateGitRef } from "./git_ref";
+import { analyzeCiStatus, gatherPrContextFromSource } from "./pr_context_gatherer";
+import { GhCliPullRequestContextSource } from "./pr_context_source";
+import {
+  findOwnedReviewGateCacheCommentId,
+  planReviewGateCommentCommand,
+} from "./review_gate_comment_model";
+import {
+  categorizeOpenPrs,
+  planStackedPrMergeOrder,
+  type CategorizedPRs,
+} from "./pr_loop_model";
+import {
+  PR_STATE_LABELS,
+  prStateLabel,
+  stalePrStateLabelNames,
+  type PrProcessingState,
+} from "./pr_state";
+import { prDetailsNumber } from "./pr_details_access_model";
+import { prQueueInfoFromRecord } from "./pr_queue_display_model";
+import {
+  buildPrAgentCompletionPlan,
+  buildPrAgentExceptionPlan,
+  buildPrAgentWorkItemPlan,
+  buildPrContextGatherFailurePlan,
+  buildPrProcessingStartNotification,
+  classifyPrAgentResult,
+  classifyPrFailureState,
+  normalizePrProcessingInput,
+} from "./pr_processor_model";
+import { buildIssuePrompt, buildPrPrompt } from "./pr_prompt";
+import { reviewGateStatusesFromContext } from "./review_gate_status";
+import {
+  addTelemetryEvent,
+  initializeTelemetry,
+  recordPromptRendered,
+  shutdownTelemetry,
+  sanitizeSpanAttributes,
+  withTelemetrySpan,
+} from "./telemetry";
+
+export { renderReviewGateStatusComment } from "./evidence_comment";
+export { validateGitRef } from "./git_ref";
+export { classifyPrFailureState, piAgentFailureReason } from "./pr_processor_model";
+export { buildIssuePrompt, buildPrPrompt, buildReviewPrompt } from "./pr_prompt";
+export type { PrProcessingState } from "./pr_state";
 
 // SyncStore persists PR context for offline agent runs.
 const DB_AVAILABLE: boolean = true;
@@ -58,30 +112,6 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function conciseFailureText(v: unknown): string {
-  if (typeof v !== "string") return "";
-  return v.trim().replace(/\s+/g, " ");
-}
-
-export function piAgentFailureReason(
-  returncode: number,
-  result: unknown,
-  stderr: string,
-  stdout: string,
-): string {
-  const resultObj = asRecord(result);
-  const candidates = [
-    resultObj["error"],
-    resultObj["summary"],
-    stderr,
-    stdout,
-  ];
-  const detail = candidates.map(conciseFailureText).find(Boolean);
-  if (returncode !== 0 && detail) return `pi exited ${returncode}: ${detail}`;
-  if (returncode !== 0) return `pi exited ${returncode}`;
-  return detail || "pi agent reported failure";
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -95,7 +125,27 @@ export function logJson(eventType: string, data: Record<string, unknown>): void 
     event: eventType,
     data,
   };
+  addTelemetryEvent(`log.${eventType}`, logTelemetryAttributes(eventType, data));
   console.log(JSON.stringify(entry));
+}
+
+function logTelemetryAttributes(eventType: string, data: Record<string, unknown>): Record<string, unknown> {
+  const attrs: Record<string, unknown> = { "merge_god.event_type": eventType };
+  for (const key of [
+    "action",
+    "pr_number",
+    "issue_number",
+    "mode",
+    "phase",
+    "phase_name",
+    "success",
+    "returncode",
+    "duration",
+    "error",
+  ]) {
+    if (data[key] !== undefined) attrs[`merge_god.${key}`] = data[key];
+  }
+  return attrs;
 }
 
 function createGitOpsObserver(): GitOpsObserver {
@@ -297,42 +347,46 @@ export function runCommand(
   }
 }
 
+function fetchPaginatedGhArray(endpoint: string, eventType: string, prNumber: number): Record<string, unknown>[] {
+  const [returncode, stdout, stderr] = runCommand([
+    "gh",
+    "api",
+    endpoint,
+    "--paginate",
+    "--jq",
+    ".[]",
+  ]);
+
+  if (returncode !== 0) {
+    logJson(eventType, { action: "error", pr_number: prNumber, stderr });
+    return [];
+  }
+
+  let payload: unknown;
+  try {
+    const trimmed = stdout.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[")) {
+      payload = JSON.parse(trimmed);
+    } else {
+      return trimmed
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    }
+  } catch (e) {
+    logJson(eventType, { action: "parse_error", pr_number: prNumber, error: errMsg(e) });
+    return [];
+  }
+
+  return Array.isArray(payload) ? (payload as Record<string, unknown>[]) : [];
+}
+
+function createDefaultPrContextSource(): GhCliPullRequestContextSource {
+  return new GhCliPullRequestContextSource(createSpawnCommandRunner(logJson), logJson);
+}
+
 // --- PR state labels ---------------------------------------------------------
-
-export type PrProcessingState = "ready" | "processing" | "embarked" | "blocked" | "failed" | "complete";
-
-const PR_STATE_LABELS: Record<PrProcessingState, { name: string; color: string; description: string }> = {
-  ready: {
-    name: "merge:ready",
-    color: "0E8A16",
-    description: "merge-god may process or embark this PR",
-  },
-  processing: {
-    name: "merge:processing",
-    color: "1D76DB",
-    description: "merge-god is actively processing this PR",
-  },
-  embarked: {
-    name: "merge:embarked",
-    color: "5319E7",
-    description: "merge-god included this PR in an embark cohort",
-  },
-  blocked: {
-    name: "merge:blocked",
-    color: "D93F0B",
-    description: "merge-god is blocked and needs human input or external state",
-  },
-  failed: {
-    name: "merge:failed",
-    color: "B60205",
-    description: "merge-god processing failed",
-  },
-  complete: {
-    name: "merge:complete",
-    color: "0E8A16",
-    description: "merge-god completed processing for this PR",
-  },
-};
 
 const ensuredPrStateLabels = new Set<string>();
 
@@ -349,7 +403,7 @@ function ensurePrStateLabels(): boolean {
 }
 
 function ensurePrStateLabel(state: PrProcessingState): boolean {
-  const label = PR_STATE_LABELS[state];
+  const label = prStateLabel(state);
   if (ensuredPrStateLabels.has(label.name)) return true;
 
   const [returncode, _stdout, stderr] = runCommand(
@@ -381,36 +435,10 @@ function ensurePrStateLabel(state: PrProcessingState): boolean {
   return true;
 }
 
-export function classifyPrFailureState(
-  reason: string,
-  result: unknown = null,
-): Exclude<PrProcessingState, "ready" | "processing" | "embarked" | "complete"> {
-  const resultObj = asRecord(result);
-  const text = [
-    reason,
-    resultObj["error"],
-    resultObj["summary"],
-    ...asArray(resultObj["needs"]),
-  ]
-    .map((item) => (typeof item === "string" ? item : ""))
-    .join(" ")
-    .toLowerCase();
-
-  if (
-    /\b(blocked|need|needs|needed|requires?|manual|human|approval|permission|permissions|credential|credentials|auth|authentication|authorization|rate limit)\b/.test(
-      text,
-    )
-  ) {
-    return "blocked";
-  }
-
-  return "failed";
-}
-
 export function setPrStateLabel(prNumber: number, state: PrProcessingState, reason = ""): boolean {
   if (!ensurePrStateLabels()) return false;
 
-  const targetLabel = PR_STATE_LABELS[state].name;
+  const targetLabel = prStateLabel(state).name;
   const [returncode, _stdout, stderr] = runCommand(
     [
       "gh",
@@ -435,9 +463,7 @@ export function setPrStateLabel(prNumber: number, state: PrProcessingState, reas
     return false;
   }
 
-  const staleLabels = Object.values(PR_STATE_LABELS)
-    .map((label) => label.name)
-    .filter((name) => name !== targetLabel);
+  const staleLabels = stalePrStateLabelNames(state);
   for (const staleLabel of staleLabels) {
     const [removeCode, _removeStdout, removeStderr] = runCommand(
       ["gh", "issue", "edit", String(prNumber), "--remove-label", staleLabel],
@@ -467,75 +493,7 @@ export function setPrStateLabel(prNumber: number, state: PrProcessingState, reas
 
 // --- Review gate status comment cache ----------------------------------------
 
-export type ReviewGateStatusValue = "pass" | "fail" | "blocked" | "skipped" | "pending" | "unknown";
-
-export interface ReviewGateStatus {
-  rule: string;
-  status: ReviewGateStatusValue | string;
-  explanation: string;
-}
-
-const REVIEW_GATE_CACHE_MARKER = "<!-- merge-god-review-gate-cache:v1 -->";
-const REVIEW_GATE_ALLOWED_STATUSES = new Set<ReviewGateStatusValue>([
-  "pass",
-  "fail",
-  "blocked",
-  "skipped",
-  "pending",
-  "unknown",
-]);
 let currentGhLogin: string | null | undefined;
-
-function normalizeGateStatus(status: unknown): ReviewGateStatusValue {
-  const raw = typeof status === "string" ? status.trim().toLowerCase() : "";
-  if (raw === "passed" || raw === "success" || raw === "ok") return "pass";
-  if (raw === "failed" || raw === "failure" || raw === "error") return "fail";
-  if (REVIEW_GATE_ALLOWED_STATUSES.has(raw as ReviewGateStatusValue)) {
-    return raw as ReviewGateStatusValue;
-  }
-  return "unknown";
-}
-
-function sanitizeGateCell(value: unknown, maxLength: number): string {
-  const raw = typeof value === "string" ? value : String(value ?? "");
-  let clean = raw
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, maxLength);
-  if (raw.trim().length > maxLength) clean += "...";
-  return clean
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\|/g, "\\|")
-    .replace(/`/g, "&#96;")
-    .replace(/@/g, "(at)");
-}
-
-export function renderReviewGateStatusComment(
-  gates: ReviewGateStatus[],
-  updatedAt = new Date().toISOString(),
-): string {
-  const rows = gates.length > 0
-    ? gates
-    : [{ rule: "review-gates", status: "unknown", explanation: "No gate status was provided." }];
-  return [
-    REVIEW_GATE_CACHE_MARKER,
-    "## merge-god review gate status",
-    "",
-    "_Non-authoritative cache. Durable source of truth is merge-god trajectory/database state and validation evidence; this comment may be stale or missing._",
-    "",
-    `Updated: ${sanitizeGateCell(updatedAt, 40)}`,
-    "",
-    "| Rule | Status | Explanation |",
-    "| --- | --- | --- |",
-    ...rows.map((gate) => {
-      const status = normalizeGateStatus(gate.status);
-      return `| ${sanitizeGateCell(gate.rule, 80)} | ${status} | ${sanitizeGateCell(gate.explanation, 240)} |`;
-    }),
-  ].join("\n");
-}
 
 function currentGitHubLogin(): string | null {
   if (currentGhLogin !== undefined) return currentGhLogin;
@@ -544,44 +502,44 @@ function currentGitHubLogin(): string | null {
   return currentGhLogin;
 }
 
+async function currentGitHubLoginAsync(): Promise<string | null> {
+  if (currentGhLogin !== undefined) return currentGhLogin;
+  const [returncode, stdout] = await createSpawnCommandRunner(logJson).run(
+    ["gh", "api", "user", "--jq", ".login"],
+    undefined,
+    30,
+  );
+  currentGhLogin = returncode === 0 ? stdout.trim() || null : null;
+  return currentGhLogin;
+}
+
 function findOwnedReviewGateCacheComment(prNumber: number): number | null {
   const comments = getPrComments(prNumber);
-  const login = currentGitHubLogin();
-  for (const comment of comments) {
-    const body = toStr(comment["body"]);
-    if (!body.includes(REVIEW_GATE_CACHE_MARKER)) continue;
-    const author = toStr(asRecord(comment["user"])["login"]);
-    if (login && author !== login) continue;
-    const id = comment["id"];
-    if (typeof id === "number" && Number.isInteger(id)) return id;
-  }
-  return null;
+  return findOwnedReviewGateCacheCommentId(comments, currentGitHubLogin());
+}
+
+async function findOwnedReviewGateCacheCommentAsync(prNumber: number): Promise<number | null> {
+  const [comments, login] = await Promise.all([
+    getPrCommentsAsync(prNumber),
+    currentGitHubLoginAsync(),
+  ]);
+  return findOwnedReviewGateCacheCommentId(comments, login);
 }
 
 export function updateReviewGateStatusComment(
   prNumber: number,
   gates: ReviewGateStatus[],
-  opts: { updatedAt?: string } = {},
+  opts: { updatedAt?: string; evidence?: ReviewGateEvidenceSummary | null } = {},
 ): boolean {
-  const body = renderReviewGateStatusComment(gates, opts.updatedAt);
+  const body = renderReviewGateStatusComment(gates, opts.updatedAt, opts.evidence ?? null);
   const existingCommentId = findOwnedReviewGateCacheComment(prNumber);
-  const args = existingCommentId === null
-    ? ["gh", "api", `repos/{owner}/{repo}/issues/${prNumber}/comments`, "-f", `body=${body}`]
-    : [
-        "gh",
-        "api",
-        "-X",
-        "PATCH",
-        `repos/{owner}/{repo}/issues/comments/${existingCommentId}`,
-        "-f",
-        `body=${body}`,
-      ];
-  const [returncode, _stdout, stderr] = runCommand(args, undefined, 30, 1024 * 1024);
+  const plan = planReviewGateCommentCommand(prNumber, body, existingCommentId);
+  const [returncode, _stdout, stderr] = runCommand(plan.args, undefined, 30, 1024 * 1024);
   if (returncode !== 0) {
     logJson("review_gate_comment", {
       action: "update_failed",
       pr_number: prNumber,
-      mode: existingCommentId === null ? "create" : "edit",
+      mode: plan.mode,
       stderr,
     });
     return false;
@@ -589,217 +547,45 @@ export function updateReviewGateStatusComment(
   logJson("review_gate_comment", {
     action: "updated",
     pr_number: prNumber,
-    mode: existingCommentId === null ? "create" : "edit",
+    mode: plan.mode,
     gate_count: gates.length,
   });
   return true;
 }
 
-function reviewGateStatusesFromContext(
-  prDetails: Record<string, unknown>,
-  prContext: Record<string, unknown>,
-  mergeRules: string,
-): ReviewGateStatus[] {
-  const conflicts = asRecord(prContext["conflicts"]);
-  const ciStatus = asRecord(prContext["ci_status"]);
-  const reviewDecision = toStr(prDetails["reviewDecision"], "UNKNOWN").toUpperCase();
-  const ciFailed = toNum(ciStatus["failed"]);
-  const ciPending = toNum(ciStatus["pending"]);
-  const ciTotal = toNum(ciStatus["total_checks"]);
-  const hasConflicts = conflicts["has_conflicts"] === true;
-  return [
-    {
-      rule: "context-gathered",
-      status: Object.keys(prDetails).length > 0 ? "pass" : "blocked",
-      explanation: Object.keys(prDetails).length > 0
-        ? "PR metadata, comments, commits, files, diff, conflicts, and CI state were gathered."
-        : "PR details could not be loaded.",
-    },
-    {
-      rule: "merge-conflicts",
-      status: hasConflicts ? "blocked" : "pass",
-      explanation: hasConflicts
-        ? `Merge conflicts detected in ${asArray(conflicts["conflicting_files"]).length} file(s).`
-        : "No merge conflicts were detected against the base branch.",
-    },
-    {
-      rule: "ci-status",
-      status: ciFailed > 0 ? "fail" : (ciPending > 0 ? "pending" : (ciTotal > 0 ? "pass" : "unknown")),
-      explanation: ciTotal > 0
-        ? `${ciFailed} failed, ${ciPending} pending, ${toNum(ciStatus["passed"])} passed out of ${ciTotal} check(s).`
-        : "No CI status checks were reported.",
-    },
-    {
-      rule: "review-decision",
-      status: reviewDecision === "APPROVED" ? "pass" : (reviewDecision === "CHANGES_REQUESTED" ? "blocked" : "pending"),
-      explanation: reviewDecision === "APPROVED"
-        ? "GitHub review decision is approved."
-        : (reviewDecision === "CHANGES_REQUESTED"
-            ? "GitHub review decision has requested changes."
-            : `GitHub review decision is ${reviewDecision || "unknown"}.`),
-    },
-    {
-      rule: "repo-merge-rules",
-      status: mergeRules ? "pending" : "skipped",
-      explanation: mergeRules
-        ? "Repository merge rules were loaded and still require final gate evaluation."
-        : "No repository merge rules were loaded.",
-    },
-  ];
+export async function updateReviewGateStatusCommentAsync(
+  prNumber: number,
+  gates: ReviewGateStatus[],
+  opts: { updatedAt?: string; evidence?: ReviewGateEvidenceSummary | null } = {},
+): Promise<boolean> {
+  const body = renderReviewGateStatusComment(gates, opts.updatedAt, opts.evidence ?? null);
+  const existingCommentId = await findOwnedReviewGateCacheCommentAsync(prNumber);
+  const plan = planReviewGateCommentCommand(prNumber, body, existingCommentId);
+  const [returncode, _stdout, stderr] = await createSpawnCommandRunner(logJson).run(
+    plan.args,
+    undefined,
+    30,
+    1024 * 1024,
+  );
+  if (returncode !== 0) {
+    logJson("review_gate_comment", {
+      action: "update_failed",
+      pr_number: prNumber,
+      mode: plan.mode,
+      stderr,
+    });
+    return false;
+  }
+  logJson("review_gate_comment", {
+    action: "updated",
+    pr_number: prNumber,
+    mode: plan.mode,
+    gate_count: gates.length,
+  });
+  return true;
 }
 
 // --- PR / issue discovery ---------------------------------------------------
-
-export interface CategorizedPRs {
-  "for-review": Record<string, unknown>[];
-  "for-landing": Record<string, unknown>[];
-  "untagged": Record<string, unknown>[];
-}
-
-export type ProcessingMode = "for-review" | "for-landing";
-
-export interface PlannedPr {
-  pr: Record<string, unknown>;
-  mode: ProcessingMode;
-  priority: number;
-  stack_dependency_numbers: number[];
-  stack_dependent_numbers: number[];
-}
-
-export interface StackMergeOrderPlan {
-  ordered: PlannedPr[];
-  stacks: Record<string, unknown>[];
-  blocked: Record<string, unknown>[];
-}
-
-function prNumberValue(pr: Record<string, unknown>): number | null {
-  const value = pr["number"];
-  return Number.isInteger(value) && (value as number) > 0 ? (value as number) : null;
-}
-
-function plannedModeRank(mode: ProcessingMode): number {
-  return mode === "for-review" ? 0 : 1;
-}
-
-function orderedProcessablePrs(categorized: CategorizedPRs): { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }[] {
-  const items: { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }[] = [];
-  let sourceIndex = 0;
-  for (const mode of ["for-review", "for-landing"] as const) {
-    for (const pr of categorized[mode]) {
-      items.push({ pr, mode, sourceIndex });
-      sourceIndex++;
-    }
-  }
-  return items;
-}
-
-/**
- * Plan processing order for labeled PRs, honoring stacked-PR branch dependencies.
- *
- * A PR whose base ref is another open PR's head ref depends on that parent PR.
- * Processable parents are ordered before children, even across for-review /
- * for-landing mode buckets. If the parent is untagged, the child stays
- * processable but the plan reports the missing underlying set so operators can
- * create labels/cohorts before relying on the final merge order.
- */
-export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMergeOrderPlan {
-  const processable = orderedProcessablePrs(categorized);
-  const allOpen = [...processable.map((item) => item.pr), ...categorized["untagged"]];
-  const byHeadRef = new Map<string, Record<string, unknown>>();
-  const processableNumber = new Map<number, { pr: Record<string, unknown>; mode: ProcessingMode; sourceIndex: number }>();
-
-  for (const pr of allOpen) {
-    const headRef = toStr(pr["headRefName"]);
-    if (headRef && !byHeadRef.has(headRef)) byHeadRef.set(headRef, pr);
-  }
-
-  for (const item of processable) {
-    const number = prNumberValue(item.pr);
-    if (number !== null) processableNumber.set(number, item);
-  }
-
-  const dependencies = new Map<number, Set<number>>();
-  const dependents = new Map<number, Set<number>>();
-  const blocked: Record<string, unknown>[] = [];
-
-  for (const item of processable) {
-    const childNumber = prNumberValue(item.pr);
-    if (childNumber === null) continue;
-    dependencies.set(childNumber, dependencies.get(childNumber) ?? new Set<number>());
-    dependents.set(childNumber, dependents.get(childNumber) ?? new Set<number>());
-
-    const baseRef = toStr(item.pr["baseRefName"]);
-    const parent = baseRef ? byHeadRef.get(baseRef) : undefined;
-    const parentNumber = parent ? prNumberValue(parent) : null;
-    if (!parent || parentNumber === null || parentNumber === childNumber) continue;
-
-    if (processableNumber.has(parentNumber)) {
-      dependencies.get(childNumber)!.add(parentNumber);
-      dependents.set(parentNumber, dependents.get(parentNumber) ?? new Set<number>());
-      dependents.get(parentNumber)!.add(childNumber);
-    } else {
-      blocked.push({
-        pr_number: childNumber,
-        depends_on_pr_number: parentNumber,
-        depends_on_head_ref: baseRef,
-        reason: "stack_parent_without_processing_label",
-      });
-    }
-  }
-
-  const ordered: PlannedPr[] = [];
-  const remaining = new Set(processable.map((item) => prNumberValue(item.pr)).filter((n): n is number => n !== null));
-  const itemPriority = (number: number): [number, number, number] => {
-    const item = processableNumber.get(number);
-    if (!item) return [1, Number.MAX_SAFE_INTEGER, number];
-    return [plannedModeRank(item.mode), item.sourceIndex, number];
-  };
-  const compareNumbers = (a: number, b: number): number => {
-    const ap = itemPriority(a);
-    const bp = itemPriority(b);
-    return ap[0] - bp[0] || ap[1] - bp[1] || ap[2] - bp[2];
-  };
-
-  while (remaining.size > 0) {
-    const ready = [...remaining]
-      .filter((number) => [...(dependencies.get(number) ?? [])].every((dependency) => !remaining.has(dependency)))
-      .sort(compareNumbers);
-    const next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
-    remaining.delete(next);
-    const item = processableNumber.get(next);
-    if (!item) continue;
-    ordered.push({
-      pr: item.pr,
-      mode: item.mode,
-      priority: ordered.length,
-      stack_dependency_numbers: [...(dependencies.get(next) ?? [])].sort((a, b) => a - b),
-      stack_dependent_numbers: [...(dependents.get(next) ?? [])].sort((a, b) => a - b),
-    });
-  }
-
-  const stackedNumbers = new Set<number>();
-  for (const [child, parents] of dependencies) {
-    if (parents.size === 0) continue;
-    stackedNumbers.add(child);
-    for (const parent of parents) stackedNumbers.add(parent);
-  }
-  const orderIndex = new Map(ordered.map((item, index) => [prNumberValue(item.pr), index] as const));
-  const stacks = [...stackedNumbers]
-    .sort((a, b) => (orderIndex.get(a) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(b) ?? Number.MAX_SAFE_INTEGER) || compareNumbers(a, b))
-    .map((number) => {
-      const item = processableNumber.get(number);
-      return {
-        pr_number: number,
-        mode: item?.mode ?? null,
-        head_ref: item ? toStr(item.pr["headRefName"]) : null,
-        base_ref: item ? toStr(item.pr["baseRefName"]) : null,
-        depends_on: [...(dependencies.get(number) ?? [])].sort((a, b) => a - b),
-        dependents: [...(dependents.get(number) ?? [])].sort((a, b) => a - b),
-      };
-    });
-
-  return { ordered, stacks, blocked };
-}
 
 /**
  * Fetch open PRs and categorize them by processing-mode labels.
@@ -847,130 +633,12 @@ export function getOpenPrs(): CategorizedPRs {
     return { "for-review": [], "for-landing": [], "untagged": [] };
   }
 
-  const categorized: CategorizedPRs = {
-    "for-review": [],
-    "for-landing": [],
-    "untagged": [],
-  };
-
-  const filteredPrs: { draft: unknown[]; wip: unknown[]; invalid: unknown[]; state: unknown[] } = {
-    draft: [],
-    wip: [],
-    invalid: [],
-    state: [],
-  };
-
-  for (const prRaw of allPrs) {
-    if (typeof prRaw !== "object" || prRaw === null) continue;
-    const pr = prRaw as Record<string, unknown>;
-
-    const prNumber = pr["number"];
-    const prTitle = toStr(pr["title"], "Unknown");
-
-    if (pr["number"] === undefined || pr["headRefName"] === undefined || pr["url"] === undefined) {
-      logJson("fetch_prs", { action: "invalid_pr", pr });
-      filteredPrs["invalid"].push({ number: prNumber, title: prTitle, reason: "missing_fields" });
-      continue;
-    }
-
-    if (pr["isDraft"] === true) {
-      filteredPrs["draft"].push({ number: prNumber, title: prTitle });
-      logJson("fetch_prs", { action: "skip_draft", pr_number: prNumber, title: prTitle });
-      continue;
-    }
-
-    const labels: string[] = [];
-    for (const labelRaw of asArray(pr["labels"])) {
-      const label = asRecord(labelRaw);
-      if (label["name"] !== undefined) labels.push(toStr(label["name"]).toLowerCase());
-    }
-
-    let wipLabelFound: string | null = null;
-    for (const label of labels) {
-      for (const wip of ["wip", "work-in-process", "work in process"]) {
-        if (label.includes(wip)) {
-          wipLabelFound = label;
-          break;
-        }
-      }
-      if (wipLabelFound) break;
-    }
-
-    if (wipLabelFound) {
-      filteredPrs["wip"].push({ number: prNumber, title: prTitle, label: wipLabelFound });
-      logJson("fetch_prs", {
-        action: "skip_wip",
-        pr_number: prNumber,
-        title: prTitle,
-        wip_label: wipLabelFound,
-      });
-      continue;
-    }
-
-    const stateLabelFound = labels.find((label) =>
-      [
-        PR_STATE_LABELS.processing.name,
-        PR_STATE_LABELS.embarked.name,
-        PR_STATE_LABELS.blocked.name,
-        PR_STATE_LABELS.failed.name,
-        PR_STATE_LABELS.complete.name,
-      ].includes(label),
-    );
-    if (stateLabelFound) {
-      filteredPrs["state"].push({ number: prNumber, title: prTitle, label: stateLabelFound });
-      logJson("fetch_prs", {
-        action: "skip_state",
-        pr_number: prNumber,
-        title: prTitle,
-        state_label: stateLabelFound,
-      });
-      continue;
-    }
-
-    if (labels.includes("for-review")) {
-      categorized["for-review"].push(pr);
-      logJson("fetch_prs", {
-        action: "categorized",
-        pr_number: prNumber,
-        title: prTitle,
-        category: "for-review",
-        labels,
-      });
-    } else if (labels.includes("for-landing")) {
-      categorized["for-landing"].push(pr);
-      logJson("fetch_prs", {
-        action: "categorized",
-        pr_number: prNumber,
-        title: prTitle,
-        category: "for-landing",
-        labels,
-      });
-    } else {
-      categorized["untagged"].push(pr);
-      logJson("fetch_prs", {
-        action: "categorized",
-        pr_number: prNumber,
-        title: prTitle,
-        category: "untagged",
-        labels,
-      });
-    }
+  const result = categorizeOpenPrs(allPrs);
+  for (const event of result.events) {
+    logJson("fetch_prs", event);
   }
-
-  logJson("fetch_prs", {
-    action: "complete",
-    total: allPrs.length,
-    for_review: categorized["for-review"].length,
-    for_landing: categorized["for-landing"].length,
-    untagged: categorized["untagged"].length,
-    filtered_draft: filteredPrs["draft"].length,
-    filtered_wip: filteredPrs["wip"].length,
-    filtered_invalid: filteredPrs["invalid"].length,
-    filtered_state: filteredPrs["state"].length,
-    filtered_prs: filteredPrs,
-  });
-
-  return categorized;
+  logJson("fetch_prs", result.summary);
+  return result.categorized;
 }
 
 /** Fetch open issues labeled "for-impl" that should be implemented. */
@@ -1050,22 +718,6 @@ export function getOpenIssues(): Record<string, unknown>[] {
 
 // --- Git helpers ------------------------------------------------------------
 
-/** Validate that a string is a safe git reference name (prevents injection). */
-export function validateGitRef(ref: string): boolean {
-  if (!ref || typeof ref !== "string") return false;
-
-  const unsafeChars = ["\0", "\n", "\r", " ", "~", "^", ":", "?", "*", "[", "\\", "..", "@{", "//"];
-  for (const c of unsafeChars) {
-    if (ref.includes(c)) return false;
-  }
-
-  if (ref.startsWith(".") || ref.startsWith("/") || ref.endsWith(".") || ref.endsWith("/") || ref.endsWith(".lock")) {
-    return false;
-  }
-
-  return !(ref.length > 200);
-}
-
 /** Detect the default branch of the repository. */
 export function detectDefaultBranch(): string {
   let [returncode, stdout, _stderr] = runCommand(
@@ -1099,8 +751,8 @@ export function getPrDetails(prNumber: number): Record<string, unknown> {
     "view",
     String(prNumber),
     "--json",
-    "number,title,body,state,headRefName,baseRefName,isDraft,mergeable," +
-      "author,createdAt,updatedAt,closedAt,mergedAt,labels,assignees,reviewers," +
+    "number,title,body,state,headRefName,baseRefName,isDraft,mergeable,mergeStateStatus," +
+      "author,createdAt,updatedAt,closedAt,mergedAt,labels,assignees," +
       "additions,deletions,changedFiles,commits,reviews,reviewDecision,statusCheckRollup",
   ]);
 
@@ -1121,32 +773,15 @@ export function getPrDetails(prNumber: number): Record<string, unknown> {
   return details;
 }
 
+export async function getPrDetailsAsync(prNumber: number): Promise<Record<string, unknown>> {
+  return createDefaultPrContextSource().getDetails(prNumber);
+}
+
 /** Fetch all PR discussion/issue comments. */
 export function getPrComments(prNumber: number): Record<string, unknown>[] {
   logJson("get_pr_comments", { action: "start", pr_number: prNumber });
 
-  const [returncode, stdout, stderr] = runCommand([
-    "gh",
-    "api",
-    `repos/{owner}/{repo}/issues/${prNumber}/comments`,
-    "--jq",
-    ".",
-  ]);
-
-  if (returncode !== 0) {
-    logJson("get_pr_comments", { action: "error", pr_number: prNumber, stderr });
-    return [];
-  }
-
-  let comments: unknown;
-  try {
-    comments = stdout ? JSON.parse(stdout) : [];
-  } catch (e) {
-    logJson("get_pr_comments", { action: "parse_error", pr_number: prNumber, error: errMsg(e) });
-    return [];
-  }
-
-  const list = Array.isArray(comments) ? (comments as Record<string, unknown>[]) : [];
+  const list = fetchPaginatedGhArray(`repos/{owner}/{repo}/issues/${prNumber}/comments`, "get_pr_comments", prNumber);
   logJson("get_pr_comments", {
     action: "complete",
     pr_number: prNumber,
@@ -1155,32 +790,15 @@ export function getPrComments(prNumber: number): Record<string, unknown>[] {
   return list;
 }
 
+export async function getPrCommentsAsync(prNumber: number): Promise<Record<string, unknown>[]> {
+  return createDefaultPrContextSource().getComments(prNumber);
+}
+
 /** Fetch all inline PR review comments. */
 export function getPrReviewComments(prNumber: number): Record<string, unknown>[] {
   logJson("get_pr_review_comments", { action: "start", pr_number: prNumber });
 
-  const [returncode, stdout, stderr] = runCommand([
-    "gh",
-    "api",
-    `repos/{owner}/{repo}/pulls/${prNumber}/comments`,
-    "--jq",
-    ".",
-  ]);
-
-  if (returncode !== 0) {
-    logJson("get_pr_review_comments", { action: "error", pr_number: prNumber, stderr });
-    return [];
-  }
-
-  let comments: unknown;
-  try {
-    comments = stdout ? JSON.parse(stdout) : [];
-  } catch (e) {
-    logJson("get_pr_review_comments", { action: "parse_error", pr_number: prNumber, error: errMsg(e) });
-    return [];
-  }
-
-  const list = Array.isArray(comments) ? (comments as Record<string, unknown>[]) : [];
+  const list = fetchPaginatedGhArray(`repos/{owner}/{repo}/pulls/${prNumber}/comments`, "get_pr_review_comments", prNumber);
   logJson("get_pr_review_comments", {
     action: "complete",
     pr_number: prNumber,
@@ -1189,15 +807,31 @@ export function getPrReviewComments(prNumber: number): Record<string, unknown>[]
   return list;
 }
 
+export async function getPrReviewCommentsAsync(prNumber: number): Promise<Record<string, unknown>[]> {
+  return createDefaultPrContextSource().getReviewComments(prNumber);
+}
+
 /** Get the PR diff. */
 export function getPrDiff(prNumber: number): string {
-  logJson("get_pr_diff", { action: "start", pr_number: prNumber });
+  return getPrDiffWithAvailability(prNumber).diff;
+}
 
+export function getPrDiffWithAvailability(prNumber: number): { diff: string; availability: DiffAvailability } {
+  logJson("get_pr_diff", { action: "start", pr_number: prNumber });
   const [returncode, stdout, stderr] = runCommand(["gh", "pr", "diff", String(prNumber)]);
 
   if (returncode !== 0) {
     logJson("get_pr_diff", { action: "error", pr_number: prNumber, stderr });
-    return "";
+    return {
+      diff: "",
+      availability: {
+        available: false,
+        source: "gh-pr-diff",
+        size: 0,
+        truncated: /too_large|maximum number of lines|exceeded/i.test(stderr),
+        error: stderr || `gh pr diff exited ${returncode}`,
+      },
+    };
   }
 
   logJson("get_pr_diff", {
@@ -1205,7 +839,27 @@ export function getPrDiff(prNumber: number): string {
     pr_number: prNumber,
     diff_size: stdout.length,
   });
-  return stdout;
+  return {
+    diff: stdout,
+    availability: {
+      available: stdout.length > 0,
+      source: "gh-pr-diff",
+      size: stdout.length,
+      truncated: false,
+      error: null,
+    },
+  };
+}
+
+export async function getPrDiffWithAvailabilityAsync(
+  prNumber: number,
+  headBranch?: string,
+  baseBranch?: string,
+): Promise<{ diff: string; availability: DiffAvailability }> {
+  return createDefaultPrContextSource().getDiff(prNumber, {
+    head_branch: headBranch ?? "",
+    base_branch: baseBranch ?? "",
+  });
 }
 
 /** Check if a PR has merge conflicts with its base branch. */
@@ -1327,28 +981,7 @@ export function checkMergeConflicts(
 export function getPrCommits(prNumber: number): Record<string, unknown>[] {
   logJson("get_pr_commits", { action: "start", pr_number: prNumber });
 
-  const [returncode, stdout, stderr] = runCommand([
-    "gh",
-    "api",
-    `repos/{owner}/{repo}/pulls/${prNumber}/commits`,
-    "--jq",
-    ".",
-  ]);
-
-  if (returncode !== 0) {
-    logJson("get_pr_commits", { action: "error", pr_number: prNumber, stderr });
-    return [];
-  }
-
-  let commits: unknown;
-  try {
-    commits = stdout ? JSON.parse(stdout) : [];
-  } catch (e) {
-    logJson("get_pr_commits", { action: "parse_error", pr_number: prNumber, error: errMsg(e) });
-    return [];
-  }
-
-  const list = Array.isArray(commits) ? (commits as Record<string, unknown>[]) : [];
+  const list = fetchPaginatedGhArray(`repos/{owner}/{repo}/pulls/${prNumber}/commits`, "get_pr_commits", prNumber);
   logJson("get_pr_commits", {
     action: "complete",
     pr_number: prNumber,
@@ -1357,32 +990,15 @@ export function getPrCommits(prNumber: number): Record<string, unknown>[] {
   return list;
 }
 
+export async function getPrCommitsAsync(prNumber: number): Promise<Record<string, unknown>[]> {
+  return createDefaultPrContextSource().getCommits(prNumber);
+}
+
 /** Get list of changed files in the PR. */
 export function getPrFiles(prNumber: number): Record<string, unknown>[] {
   logJson("get_pr_files", { action: "start", pr_number: prNumber });
 
-  const [returncode, stdout, stderr] = runCommand([
-    "gh",
-    "api",
-    `repos/{owner}/{repo}/pulls/${prNumber}/files`,
-    "--jq",
-    ".",
-  ]);
-
-  if (returncode !== 0) {
-    logJson("get_pr_files", { action: "error", pr_number: prNumber, stderr });
-    return [];
-  }
-
-  let files: unknown;
-  try {
-    files = stdout ? JSON.parse(stdout) : [];
-  } catch (e) {
-    logJson("get_pr_files", { action: "parse_error", pr_number: prNumber, error: errMsg(e) });
-    return [];
-  }
-
-  const list = Array.isArray(files) ? (files as Record<string, unknown>[]) : [];
+  const list = fetchPaginatedGhArray(`repos/{owner}/{repo}/pulls/${prNumber}/files`, "get_pr_files", prNumber);
   logJson("get_pr_files", {
     action: "complete",
     pr_number: prNumber,
@@ -1391,53 +1007,8 @@ export function getPrFiles(prNumber: number): Record<string, unknown>[] {
   return list;
 }
 
-/** Analyze CI/CD status from a statusCheckRollup list. */
-export function analyzeCiStatus(statusChecks: Record<string, unknown>[] | null): Record<string, unknown> {
-  if (!statusChecks || statusChecks.length === 0) {
-    return {
-      total_checks: 0,
-      passed: 0,
-      failed: 0,
-      pending: 0,
-      skipped: 0,
-      failed_checks: [],
-    };
-  }
-
-  let passed = 0;
-  let failed = 0;
-  let pending = 0;
-  let skipped = 0;
-  const failedChecks: Record<string, unknown>[] = [];
-
-  for (const check of statusChecks) {
-    const status = toStr(check["state"]).toUpperCase();
-    const conclusion = toStr(check["conclusion"]).toUpperCase();
-
-    if (conclusion === "SUCCESS") {
-      passed++;
-    } else if (conclusion === "FAILURE" || conclusion === "TIMED_OUT" || conclusion === "STARTUP_FAILURE") {
-      failed++;
-      failedChecks.push({
-        name: toStr(check["name"], "unknown"),
-        conclusion,
-        details_url: toStr(check["detailsUrl"]),
-      });
-    } else if (status === "PENDING" || status === "IN_PROGRESS") {
-      pending++;
-    } else if (conclusion === "SKIPPED" || conclusion === "NEUTRAL") {
-      skipped++;
-    }
-  }
-
-  return {
-    total_checks: statusChecks.length,
-    passed,
-    failed,
-    pending,
-    skipped,
-    failed_checks: failedChecks,
-  };
+export async function getPrFilesAsync(prNumber: number): Promise<Record<string, unknown>[]> {
+  return createDefaultPrContextSource().getFiles(prNumber);
 }
 
 /** Sync the repository with origin. Returns true on success. */
@@ -1573,418 +1144,6 @@ export function getMergeRules(repoPath = process.cwd()): string {
   return "";
 }
 
-// --- Prompt building --------------------------------------------------------
-
-/** Build a comprehensive prompt for pi to process the PR with full context. */
-export function buildPrPrompt(
-  prDetails: Record<string, unknown>,
-  prContext: Record<string, unknown>,
-  guidelines: string,
-  commitExamples: string,
-  mergeRules = "",
-): string {
-  const prNumber = prDetails["number"] ?? "unknown";
-  const title = toStr(prDetails["title"]);
-  const body = toStr(prDetails["body"]);
-  const headBranch = toStr(prDetails["headRefName"]);
-  const baseBranch = toStr(prDetails["baseRefName"], "main");
-  const url = toStr(prContext["url"]);
-  const prAuthor = toStr(asRecord(prDetails["author"])["login"], "unknown");
-
-  const parts: string[] = [
-    `# PR #${prNumber}: ${title}`,
-    "",
-    `**Author**: ${prAuthor}`,
-    `**Branch**: ${headBranch} → ${baseBranch}`,
-    `**URL**: ${url}`,
-    "",
-  ];
-
-  if (body) {
-    parts.push("## PR Description", "", body, "");
-  }
-
-  const additions = toNum(prDetails["additions"]);
-  const deletions = toNum(prDetails["deletions"]);
-  const changedFiles = toNum(prDetails["changedFiles"]);
-
-  parts.push(
-    "## PR Statistics",
-    "",
-    `- **Files changed**: ${changedFiles}`,
-    `- **Additions**: +${additions}`,
-    `- **Deletions**: -${deletions}`,
-    "",
-  );
-
-  const conflictInfo = asRecord(prContext["conflicts"]);
-  if (conflictInfo["has_conflicts"] === true) {
-    const conflictingFiles = asArray(conflictInfo["conflicting_files"]).map((f) => toStr(f));
-    parts.push(
-      "## ⚠️ Merge Conflicts Detected",
-      "",
-      `This PR has merge conflicts with ${baseBranch}. You MUST resolve these conflicts:`,
-      "",
-    );
-    for (const file of conflictingFiles) {
-      parts.push(`- \`${file}\``);
-    }
-    parts.push("");
-  }
-
-  const ciStatus = asRecord(prContext["ci_status"]);
-  if (toNum(ciStatus["total_checks"]) > 0) {
-    parts.push(
-      "## CI/CD Status",
-      "",
-      `- **Total checks**: ${ciStatus["total_checks"]}`,
-      `- **Passed**: ✅ ${ciStatus["passed"]}`,
-      `- **Failed**: ❌ ${ciStatus["failed"]}`,
-      `- **Pending**: ⏳ ${ciStatus["pending"]}`,
-      `- **Skipped**: ⏭️ ${ciStatus["skipped"]}`,
-      "",
-    );
-
-    const failedChecks = asArray(ciStatus["failed_checks"]);
-    if (failedChecks.length > 0) {
-      parts.push("### Failed Checks (MUST FIX)", "");
-      for (const checkRaw of failedChecks) {
-        const check = asRecord(checkRaw);
-        parts.push(`- **${check["name"]}**: ${check["conclusion"]}`);
-        if (check["details_url"]) {
-          parts.push(`  - Details: ${check["details_url"]}`);
-        }
-      }
-      parts.push("");
-    }
-  }
-
-  const reviewDecision = toStr(prDetails["reviewDecision"]);
-  if (reviewDecision) {
-    const emoji =
-      reviewDecision === "APPROVED"
-        ? "✅"
-        : reviewDecision === "CHANGES_REQUESTED"
-          ? "⚠️"
-          : "⏳";
-    parts.push("## Review Status", "", `${emoji} **${reviewDecision}**`, "");
-  }
-
-  const reviewComments = asArray(prContext["review_comments"]);
-  if (reviewComments.length > 0) {
-    parts.push(
-      "## Code Review Comments (MUST ADDRESS)",
-      "",
-      "These are inline code review comments that require your attention:",
-      "",
-    );
-    let i = 1;
-    for (const commentRaw of reviewComments.slice(0, 20)) {
-      const comment = asRecord(commentRaw);
-      const commentAuthor = toStr(asRecord(comment["user"])["login"], "unknown");
-      const commentBody = toStr(comment["body"]);
-      const path = toStr(comment["path"]);
-      const line = toStr(comment["line"]) || toStr(comment["original_line"]);
-      parts.push(
-        `### Review Comment ${i}`,
-        `**File**: \`${path}\` (line ${line})`,
-        `**Author**: ${commentAuthor}`,
-        "",
-        commentBody,
-        "",
-      );
-      i++;
-    }
-  }
-
-  const comments = asArray(prContext["comments"]);
-  if (comments.length > 0) {
-    parts.push("## Discussion Comments", "");
-    let i = 1;
-    for (const commentRaw of comments.slice(-10)) {
-      const comment = asRecord(commentRaw);
-      const commentAuthor = toStr(asRecord(comment["user"])["login"], "unknown");
-      const commentBody = toStr(comment["body"]);
-      parts.push(`### Comment ${i}`, `**Author**: ${commentAuthor}`, "", commentBody, "");
-      i++;
-    }
-  }
-
-  const changedFilesList = asArray(prContext["files"]);
-  if (changedFilesList.length > 0) {
-    parts.push("## Changed Files", "");
-    for (const fileRaw of changedFilesList.slice(0, 50)) {
-      const file = asRecord(fileRaw);
-      const filename = toStr(file["filename"]);
-      const status = toStr(file["status"], "modified");
-      const fileAdditions = toNum(file["additions"]);
-      const fileDeletions = toNum(file["deletions"]);
-      const statusEmoji =
-        status === "added"
-          ? "✨"
-          : status === "removed"
-            ? "🗑️"
-            : status === "modified"
-              ? "📝"
-              : status === "renamed"
-                ? "🔄"
-                : "📝";
-      parts.push(`- ${statusEmoji} \`${filename}\` (+${fileAdditions}/-${fileDeletions})`);
-    }
-    parts.push("");
-  }
-
-  const commits = asArray(prContext["commits"]);
-  if (commits.length > 0) {
-    parts.push("## Commit History", "");
-    for (const commitRaw of commits.slice(-10)) {
-      const commit = asRecord(commitRaw);
-      const message = toStr(asRecord(commit["commit"])["message"]).split("\n")[0];
-      const sha = toStr(commit["sha"]);
-      const shortSha = sha.length >= 7 ? sha.slice(0, 7) : sha ? sha : "unknown";
-      parts.push(`- \`${shortSha}\` ${message}`);
-    }
-    parts.push("");
-  }
-
-  parts.push("---", "", "## Your Mission", "", `**Working on**: ${title}`, "");
-
-  if (body) {
-    const descriptionLines = body.trim().split("\n");
-    const summary = descriptionLines[0] ?? body.slice(0, 500);
-    parts.push(`**Purpose**: ${summary}`, "");
-  }
-
-  parts.push("Get this PR merged successfully by completing ALL of the following:", "");
-
-  const tasks: string[] = [];
-  if (conflictInfo["has_conflicts"] === true) {
-    tasks.push("1. **RESOLVE MERGE CONFLICTS** - This is CRITICAL and must be done first");
-  }
-
-  let taskNum = tasks.length + 1;
-  tasks.push(`${taskNum}. Checkout the PR branch: \`${headBranch}\``);
-  tasks.push(`${taskNum + 1}. Sync with \`${baseBranch}\` (fetch and merge/rebase)`);
-  taskNum += 2;
-
-  if (reviewComments.length > 0) {
-    tasks.push(
-      `${taskNum}. Address ALL ${reviewComments.length} code review comments with appropriate changes`,
-    );
-    taskNum++;
-  }
-
-  if (toNum(ciStatus["failed"]) > 0) {
-    tasks.push(`${taskNum}. Fix ALL ${ciStatus["failed"]} failing CI checks`);
-    taskNum++;
-  }
-
-  tasks.push(`${taskNum}. Run tests and checks locally to verify everything passes`);
-  tasks.push(`${taskNum + 1}. Push changes back to \`${headBranch}\``);
-  tasks.push(`${taskNum + 2}. Verify CI passes on GitHub after pushing`);
-
-  parts.push(...tasks);
-  parts.push("");
-
-  if (guidelines) {
-    parts.push(
-      "## Project Guidelines",
-      "",
-      "Follow these PR and contribution guidelines:",
-      "",
-      "```",
-      guidelines,
-      "```",
-      "",
-    );
-  } else if (commitExamples) {
-    parts.push(
-      "## Commit Style Examples",
-      "",
-      "No explicit guidelines found. Follow the style of recent commits:",
-      "",
-      "```",
-      commitExamples,
-      "```",
-      "",
-    );
-  }
-
-  if (mergeRules) {
-    parts.push("## Merge Rules", "", mergeRules, "");
-  }
-
-  parts.push(
-    "## Critical Rules",
-    "",
-    "- ❌ **NO assistant branding** in commits, comments, or code",
-    "- ✅ Write clear, professional commit messages matching project style",
-    "- ✅ Make focused, minimal changes addressing specific issues only",
-    "- ✅ Test thoroughly before pushing",
-    "- ✅ Respond to review comments on GitHub when appropriate",
-    "- ✅ If blocked, clearly document the issue and what's needed",
-    "- ✅ Open a separate remediation PR only when there is concrete signal and project-doc grounding",
-    "- ✅ For remediation PRs, cite signal refs such as CI logs, failing command output, review comments, issue text, stack traces, or repro artifacts",
-    "- ✅ For remediation PRs, cite grounding refs from AGENTS.md, docs/, .merge-rules.yaml, or referenced Workflow-IR",
-    "",
-    "## Execution",
-    "",
-    "Work autonomously through all tasks. Report progress and any blockers.",
-    "",
-  );
-
-  return parts.join("\n");
-}
-
-/** Build a code review prompt for targeted improvements (second agent pass). */
-export function buildReviewPrompt(
-  prNumber: number,
-  title: string,
-  headBranch: string,
-  url: string,
-  diff: string,
-  changedFiles: Record<string, unknown>[],
-  mergeRules = "",
-): string {
-  const parts: string[] = [
-    `# Code Review: PR #${prNumber} - ${title}`,
-    "",
-    `**Branch**: ${headBranch}`,
-    `**URL**: ${url}`,
-    "",
-    "## Your Mission: Code Review and Targeted Improvements",
-    "",
-    "You are conducting a thorough code review of this PR. Your goal is to:",
-    "",
-    "1. **Review all code changes** for quality, correctness, and best practices",
-    "2. **Identify issues** such as:",
-    "   - Bugs or logical errors",
-    "   - Security vulnerabilities",
-    "   - Performance issues",
-    "   - Code duplication",
-    "   - Poor error handling",
-    "   - Missing edge case handling",
-    "   - Inconsistent coding style",
-    "   - Missing or inadequate tests",
-    "   - Unclear or missing documentation",
-    "3. **Make targeted improvements** to fix identified issues",
-    "4. **Commit your improvements** with clear, descriptive messages",
-    "",
-    "## Changed Files",
-    "",
-  ];
-
-  for (const file of changedFiles.slice(0, 50)) {
-    const filename = toStr(file["filename"]);
-    const additions = toNum(file["additions"]);
-    const deletions = toNum(file["deletions"]);
-    const status = toStr(file["status"], "modified");
-    const statusEmoji =
-      status === "added"
-        ? "✨"
-        : status === "removed"
-          ? "🗑️"
-          : status === "modified"
-            ? "📝"
-            : status === "renamed"
-              ? "🔄"
-              : "📝";
-    parts.push(`- ${statusEmoji} \`${filename}\` (+${additions}/-${deletions})`);
-  }
-
-  const truncatedDiff = diff.length > 100000 ? diff.slice(0, 100000) : diff;
-
-  parts.push(
-    "",
-    "## Full Diff",
-    "",
-    "Below is the complete diff of all changes in this PR. Review each change carefully:",
-    "",
-    "```diff",
-    truncatedDiff,
-    "```",
-    "",
-    "## Review Guidelines",
-    "",
-    "### Code Quality Checks",
-    "- ✅ **Correctness**: Does the code do what it's supposed to do?",
-    "- ✅ **Error Handling**: Are errors handled gracefully?",
-    "- ✅ **Edge Cases**: Are boundary conditions and edge cases handled?",
-    "- ✅ **Resource Management**: Are resources (files, connections, etc.) properly managed?",
-    "- ✅ **Type Safety**: Are types used correctly? Any type errors?",
-    "",
-    "### Security Checks",
-    "- 🔒 **Input Validation**: Is user input properly validated?",
-    "- 🔒 **SQL Injection**: Are queries parameterized?",
-    "- 🔒 **XSS**: Is output properly escaped?",
-    "- 🔒 **Authentication/Authorization**: Are permissions checked?",
-    "- 🔒 **Secrets**: Are there any hardcoded secrets or credentials?",
-    "",
-    "### Performance Checks",
-    "- ⚡ **Algorithmic Efficiency**: Are algorithms efficient?",
-    "- ⚡ **Database Queries**: Are queries optimized? N+1 queries?",
-    "- ⚡ **Memory Usage**: Any memory leaks or excessive allocations?",
-    "- ⚡ **Caching**: Should results be cached?",
-    "",
-    "### Best Practices",
-    "- 📚 **DRY**: Is code duplicated? Can it be refactored?",
-    "- 📚 **SOLID**: Does code follow SOLID principles?",
-    "- 📚 **Naming**: Are variables and functions clearly named?",
-    "- 📚 **Comments**: Are complex sections documented?",
-    "- 📚 **Tests**: Are tests adequate? Missing test cases?",
-    "",
-    "## Making Improvements",
-    "",
-    "For each issue you identify:",
-    "",
-    "1. **Fix it directly** - Make the code changes",
-    "2. **Write clear commits** - Explain what you fixed and why",
-    "3. **Run tests** - Ensure your changes don't break anything",
-    "4. **Be surgical** - Make focused, minimal changes",
-    "",
-    "### Commit Message Format",
-    "",
-    "Use clear, descriptive commit messages:",
-    "",
-    "```",
-    "Fix: [brief description]",
-    "",
-    "[Detailed explanation of what was wrong and how you fixed it]",
-    "```",
-    "",
-    "Examples:",
-    "- `Fix: Add input validation to prevent SQL injection in user search`",
-    "- `Refactor: Extract duplicate error handling into helper function`",
-    "- `Performance: Add caching to reduce redundant API calls`",
-    "- `Security: Remove hardcoded API key, use environment variable`",
-    "",
-    "## Critical Rules",
-    "",
-    "- ❌ **NO assistant branding** in commits or comments",
-    "- ✅ **Be thorough** but don't over-engineer",
-    "- ✅ **Preserve intent** - don't change functionality unless it's wrong",
-    "- ✅ **Test your changes** before committing",
-    "- ✅ **If unsure**, skip that change and document why",
-    "",
-    "## Execution",
-    "",
-    "Review the diff systematically. For each file:",
-    "1. Understand what the code does",
-    "2. Look for issues based on guidelines above",
-    "3. Make improvements where needed",
-    "4. Commit with clear messages",
-    "",
-    "Focus on high-impact improvements. Don't waste time on trivial style issues.",
-    "",
-  );
-
-  if (mergeRules) {
-    parts.push("## Merge Rules", "", mergeRules, "");
-  }
-
-  return parts.join("\n");
-}
-
 // --- PR context gathering ---------------------------------------------------
 
 /**
@@ -2000,51 +1159,36 @@ export async function gatherPrContext(
   baseBranch: string,
   url: string,
 ): Promise<[Record<string, unknown>, Record<string, unknown>]> {
-  logJson("gather_pr_context", { action: "start", pr_number: prNumber });
-
-  const context: Record<string, unknown> = {
-    url,
-    comments: [] as unknown[],
-    review_comments: [] as unknown[],
-    commits: [] as unknown[],
-    files: [] as unknown[],
-    conflicts: {} as Record<string, unknown>,
-    ci_status: {} as Record<string, unknown>,
-    diff: "",
-  };
-
-  const details = getPrDetails(prNumber);
-
-  const statusChecks = asArray(details["statusCheckRollup"]) as Record<string, unknown>[];
-  context["ci_status"] = analyzeCiStatus(statusChecks);
-
-  context["comments"] = getPrComments(prNumber);
-  context["review_comments"] = getPrReviewComments(prNumber);
-  context["commits"] = getPrCommits(prNumber);
-  context["files"] = getPrFiles(prNumber);
-  context["conflicts"] = checkMergeConflicts(prNumber, headBranch, baseBranch);
-  context["diff"] = getPrDiff(prNumber);
-
-  const conflicts = asRecord(context["conflicts"]);
-  const ciStatus = asRecord(context["ci_status"]);
-  const diff = toStr(context["diff"]);
-
-  logJson("gather_pr_context", {
-    action: "complete",
-    pr_number: prNumber,
-    context_summary: {
-      comments: asArray(context["comments"]).length,
-      review_comments: asArray(context["review_comments"]).length,
-      commits: asArray(context["commits"]).length,
-      files: asArray(context["files"]).length,
-      has_conflicts: conflicts["has_conflicts"] === true,
-      ci_checks: toNum(ciStatus["total_checks"]),
-      ci_failed: toNum(ciStatus["failed"]),
-      diff_size: diff.length,
+  return withTelemetrySpan(
+    "merge_god.gather_pr_context",
+    {
+      "merge_god.pr_number": prNumber,
+      "merge_god.head_branch": headBranch,
+      "merge_god.base_branch": baseBranch,
+      "merge_god.url": url,
     },
-  });
-
-  return [details, context];
+    async (span) => {
+      const result = await gatherPrContextFromSource(
+        createDefaultPrContextSource(),
+        prNumber,
+        headBranch,
+        baseBranch,
+        url,
+        logJson,
+      );
+      const contextSummary = asRecord(result[1]["context_summary"]);
+      span.setAttributes(sanitizeSpanAttributes({
+        "merge_god.context.comments": contextSummary["comments"],
+        "merge_god.context.review_comments": contextSummary["review_comments"],
+        "merge_god.context.files": contextSummary["files"],
+        "merge_god.context.has_conflicts": contextSummary["has_conflicts"],
+        "merge_god.context.ci_failed": contextSummary["ci_failed"],
+        "merge_god.context.merge_blockers": contextSummary["merge_blockers"],
+        "merge_god.context.is_queue": contextSummary["is_queue"],
+      }));
+      return result;
+    },
+  );
 }
 
 // snake_case alias for cross-module compatibility (sync_pr_context imports this).
@@ -2066,49 +1210,46 @@ export async function processPr(
   repoName: string | null = null,
   mergeRules = "",
 ): Promise<boolean> {
-  const prNumber = pr["number"] as number | undefined;
-  const headBranch = pr["headRefName"] as string | undefined;
-  const baseBranch = (pr["baseRefName"] as string | undefined) ?? defaultBranch;
-  const url = pr["url"] as string | undefined;
-  const title = (pr["title"] as string | undefined) ?? "Unknown";
+  const inputResult = normalizePrProcessingInput(pr, defaultBranch, mode);
 
-  if (!prNumber) {
-    logJson("process_pr", { action: "validation_error", error: "Missing PR number", pr });
-    return false;
-  }
-
-  if (!headBranch) {
-    logJson("process_pr", { action: "validation_error", pr_number: prNumber, error: "Missing head branch" });
-    setPrStateLabel(prNumber, "blocked", "Missing head branch");
-    return false;
-  }
-
-  if (!url) {
-    logJson("process_pr", { action: "validation_error", pr_number: prNumber, error: "Missing PR URL" });
-    setPrStateLabel(prNumber, "blocked", "Missing PR URL");
-    return false;
-  }
-
-  if (!validateGitRef(headBranch)) {
+  if (!inputResult.ok) {
+    const error = inputResult.error;
     logJson("process_pr", {
       action: "validation_error",
-      pr_number: prNumber,
-      error: `Invalid head branch name: ${headBranch}`,
+      pr_number: error.pr_number ?? undefined,
+      error: error.reason,
+      field: error.field,
+      pr: error.pr_number === null ? pr : undefined,
     });
-    setPrStateLabel(prNumber, "failed", `Invalid head branch name: ${headBranch}`);
+    if (error.pr_number !== null && error.state !== null) {
+      setPrStateLabel(error.pr_number, error.state, error.reason);
+    }
     return false;
   }
 
-  if (!validateGitRef(baseBranch)) {
-    logJson("process_pr", {
-      action: "validation_error",
-      pr_number: prNumber,
-      error: `Invalid base branch name: ${baseBranch}`,
-    });
-    setPrStateLabel(prNumber, "failed", `Invalid base branch name: ${baseBranch}`);
-    return false;
-  }
+  const {
+    pr_number: prNumber,
+    head_branch: headBranch,
+    base_branch: baseBranch,
+    url,
+    title,
+  } = inputResult.value;
 
+  return withTelemetrySpan(
+    "merge_god.process_pr",
+    {
+      "merge_god.operation": "process_pr",
+      "merge_god.target": `pr:${prNumber}`,
+      "merge_god.run_label": `${repoName ?? basename(process.cwd())} PR #${prNumber} ${mode}`,
+      "merge_god.pr_number": prNumber,
+      "merge_god.title": title,
+      "merge_god.head_branch": headBranch,
+      "merge_god.base_branch": baseBranch,
+      "merge_god.mode": mode,
+      "merge_god.repo_name": repoName ?? "",
+      "merge_god.url": url,
+    },
+    async (span) => {
   if (interactive) {
     const approved = await requestConfirmation("process_pr", `Process PR #${prNumber}: ${title}`, String(prNumber), {
       title,
@@ -2135,11 +1276,12 @@ export async function processPr(
   });
   setPrStateLabel(prNumber, "processing", `Started ${mode}`);
 
+  const startNotification = buildPrProcessingStartNotification(inputResult.value);
   await sendNotification(
-    `Processing PR #${prNumber}: ${title}\nMode: ${mode}`,
-    `PR #${prNumber} - Processing Started`,
-    "default",
-    ["robot", "arrows_clockwise"],
+    startNotification.message,
+    startNotification.title,
+    startNotification.priority,
+    startNotification.tags,
   );
 
   logJson("process_pr", {
@@ -2162,20 +1304,15 @@ export async function processPr(
     });
   } catch (e) {
     const reason = errMsg(e);
+    const failurePlan = buildPrContextGatherFailurePlan(inputResult.value, reason);
     logJson("process_pr", { action: "context_gather_error", pr_number: prNumber, error: reason });
-    setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
-    updateReviewGateStatusComment(prNumber, [
-      {
-        rule: "context-gathered",
-        status: "blocked",
-        explanation: reason,
-      },
-    ]);
+    setPrStateLabel(prNumber, failurePlan.state, reason);
+    await updateReviewGateStatusCommentAsync(prNumber, [failurePlan.gate]);
     await sendNotification(
-      `PR #${prNumber} failed: ${title}\nError gathering context: ${reason.slice(0, 100)}`,
-      `PR #${prNumber} - Error`,
-      "high",
-      ["x", "warning"],
+      failurePlan.notification.message,
+      failurePlan.notification.title,
+      failurePlan.notification.priority,
+      failurePlan.notification.tags,
     );
     return false;
   }
@@ -2187,7 +1324,7 @@ export async function processPr(
       error: "Failed to fetch PR details",
     });
     setPrStateLabel(prNumber, "blocked", "Failed to fetch PR details");
-    updateReviewGateStatusComment(prNumber, [
+    await updateReviewGateStatusCommentAsync(prNumber, [
       {
         rule: "context-gathered",
         status: "blocked",
@@ -2198,7 +1335,8 @@ export async function processPr(
   }
 
   reviewGateStatuses = reviewGateStatusesFromContext(prDetails, prContextDict, mergeRules);
-  updateReviewGateStatusComment(prNumber, reviewGateStatuses);
+  const reviewGateEvidence = evidenceSummaryFromPrDetailsAndContext(prDetails, prContextDict);
+  await updateReviewGateStatusCommentAsync(prNumber, reviewGateStatuses, { evidence: reviewGateEvidence });
 
   prContextDict["guidelines"] = guidelines;
   prContextDict["commit_examples"] = commitExamples;
@@ -2219,12 +1357,18 @@ export async function processPr(
   }
 
   const prompt = buildPrPrompt(prDetails, prContextDict, guidelines, commitExamples, mergeRules);
+  recordPromptRendered("pr_landing", prompt, {
+    "merge_god.pr_number": prNumber,
+    "merge_god.mode": mode,
+    "merge_god.repo_name": repoName ?? "",
+  });
 
   logJson("process_pr", {
     action: "prompt_generated",
     pr_number: prNumber,
     prompt_size: prompt.length,
   });
+  span.setAttribute("merge_god.prompt_size", prompt.length);
 
   logJson("process_pr", {
     action: "agent_processing",
@@ -2234,18 +1378,7 @@ export async function processPr(
     mode,
   });
 
-  const workItem: WorkItem = {
-    kind: "pr",
-    repo: repoName ?? undefined,
-    repo_path: process.cwd(),
-    pr_number: prNumber,
-    mode,
-    title,
-    url,
-    head_branch: headBranch,
-    base_branch: baseBranch,
-    prompt,
-  };
+  const workItem: WorkItem = buildPrAgentWorkItemPlan(inputResult.value, prompt, process.cwd(), repoName);
 
   try {
     const startedAt = Date.now();
@@ -2255,30 +1388,47 @@ export async function processPr(
       agentObserver: createAgentObservationObserver(),
     });
     const duration = (Date.now() - startedAt) / 1000;
-    const resultObj = piResult.result && typeof piResult.result === "object" ? piResult.result : {};
-    const status = typeof resultObj["status"] === "string" ? resultObj["status"] : "";
-    const success = piResult.returncode === 0 && status !== "failure";
-    const failureReason = success
-      ? null
-      : piAgentFailureReason(piResult.returncode, piResult.result, piResult.stderr, piResult.stdout);
-    updateReviewGateStatusComment(prNumber, [
-      ...reviewGateStatuses,
-      {
-        rule: "pi-agent",
-        status: success ? "pass" : classifyPrFailureState(failureReason ?? "", piResult.result),
-        explanation: success
-          ? "Pi agent completed successfully."
-          : (failureReason ?? "Pi agent reported failure."),
-      },
-    ]);
+    const agentDecision = classifyPrAgentResult(piResult);
+    const completionPlan = buildPrAgentCompletionPlan(inputResult.value, agentDecision, piResult.returncode, duration);
+    span.setAttributes(sanitizeSpanAttributes({
+      "merge_god.success": agentDecision.success,
+      "merge_god.duration_seconds": duration,
+      "merge_god.returncode": piResult.returncode,
+      "merge_god.failure_reason": agentDecision.failure_reason,
+      "merge_god.final_state": completionPlan.state,
+      "merge_god.result_status": agentDecision.success ? "success" : "failure",
+      "merge_god.result_summary": completionPlan.success
+        ? "Pi agent completed successfully"
+        : agentDecision.failure_reason ?? "Pi agent failed",
+    }));
+    addTelemetryEvent("merge_god.run_result", {
+      operation: "process_pr",
+      target: `pr:${prNumber}`,
+      mode,
+      result_status: agentDecision.success ? "success" : "failure",
+      result_summary: completionPlan.success
+        ? "Pi agent completed successfully"
+        : agentDecision.failure_reason ?? "Pi agent failed",
+      duration_seconds: duration,
+      returncode: piResult.returncode,
+      final_state: completionPlan.state,
+    });
+    await updateReviewGateStatusCommentAsync(
+      prNumber,
+      [
+        ...reviewGateStatuses,
+        completionPlan.gate,
+      ],
+      { evidence: reviewGateEvidence },
+    );
 
     logJson("process_pr", {
       action: "complete",
       pr_number: prNumber,
       phase: "3/3",
-      success,
+      success: agentDecision.success,
       duration,
-      reason: failureReason,
+      reason: agentDecision.failure_reason,
       returncode: piResult.returncode,
       stdout: piResult.stdout,
       stderr: piResult.stderr,
@@ -2286,56 +1436,49 @@ export async function processPr(
       mode,
     });
 
-    if (success) {
-      setPrStateLabel(prNumber, "complete", "Pi agent completed successfully");
-      await sendNotification(
-        `PR #${prNumber} completed: ${title}\n` +
-          `Mode: ${mode}\n` +
-          `Duration: ${duration.toFixed(1)}s`,
-        `PR #${prNumber} - Complete`,
-        "default",
-        ["white_check_mark", "rocket"],
-      );
-    } else {
-      setPrStateLabel(prNumber, classifyPrFailureState(failureReason ?? "", piResult.result), failureReason ?? "");
-      await sendNotification(
-        `PR #${prNumber} failed: ${title}\n` +
-          `Return code: ${piResult.returncode}\n` +
-          `Duration: ${duration.toFixed(1)}s`,
-        `PR #${prNumber} - Failed`,
-        "high",
-        ["x", "warning"],
-      );
-    }
+    setPrStateLabel(
+      prNumber,
+      completionPlan.state,
+      completionPlan.success ? "Pi agent completed successfully" : agentDecision.failure_reason ?? "",
+    );
+    await sendNotification(
+      completionPlan.notification.message,
+      completionPlan.notification.title,
+      completionPlan.notification.priority,
+      completionPlan.notification.tags,
+    );
 
-    return success;
+    return agentDecision.success;
   } catch (e) {
     const reason = errMsg(e);
+    const exceptionPlan = buildPrAgentExceptionPlan(inputResult.value, reason);
     logJson("process_pr", {
       action: "exception",
       pr_number: prNumber,
       error: reason,
       error_type: e instanceof Error ? e.name : typeof e,
     });
-    setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
-    updateReviewGateStatusComment(prNumber, [
-      ...reviewGateStatuses,
-      {
-        rule: "pi-agent",
-        status: classifyPrFailureState(reason),
-        explanation: reason,
-      },
-    ]);
+    setPrStateLabel(prNumber, exceptionPlan.state, reason);
+    await updateReviewGateStatusCommentAsync(
+      prNumber,
+      [
+        ...reviewGateStatuses,
+        exceptionPlan.gate,
+      ],
+      { evidence: reviewGateEvidence },
+    );
 
     await sendNotification(
-      `PR #${prNumber} exception: ${reason.slice(0, 100)}`,
-      `PR #${prNumber} - Error`,
-      "urgent",
-      ["x", "warning"],
+      exceptionPlan.notification.message,
+      exceptionPlan.notification.title,
+      exceptionPlan.notification.priority,
+      exceptionPlan.notification.tags,
     );
 
     return false;
   }
+    },
+  );
 }
 
 /**
@@ -2372,6 +1515,17 @@ export async function processIssue(
     return false;
   }
 
+  return withTelemetrySpan(
+    "merge_god.process_issue",
+    {
+      "merge_god.operation": "process_issue",
+      "merge_god.target": `issue:${issueNumber}`,
+      "merge_god.run_label": `Issue #${issueNumber} for-impl`,
+      "merge_god.issue_number": issueNumber,
+      "merge_god.title": title,
+      "merge_god.url": url,
+    },
+    async (span) => {
   if (interactive) {
     const approved = await requestConfirmation(
       "implement_issue",
@@ -2439,79 +1593,27 @@ export async function processIssue(
     }
   }
 
-  const description = body ? body : "No description provided";
-  const guidelinesText = guidelines ? guidelines : "No specific guidelines available";
-  const examplesText = commitExamples ? commitExamples : "No examples available";
-  const mergeRulesText = mergeRules ? mergeRules : "No repo-local merge rules found";
-
-  const prompt = [
-    "# Issue Implementation Task",
-    "",
-    "You are tasked with implementing a GitHub issue in this repository.",
-    "",
-    "## Issue Details",
-    "",
-    `**Issue Number:** #${issueNumber}`,
-    `**Title:** ${title}`,
-    `**URL:** ${url}`,
-    "",
-    "**Description:**",
-    description,
-    "",
-    "## Your Task",
-    "",
-    "1. **Implement the feature or fix described in the issue**",
-    "   - Read and understand the issue requirements carefully",
-    "   - Implement the solution following best practices",
-    "   - Ensure code quality, security, and performance",
-    "",
-    "2. **Write tests for your implementation**",
-    "   - Add appropriate unit tests",
-    "   - Ensure existing tests still pass",
-    "",
-    "3. **Commit your changes**",
-    "   - Make focused, logical commits",
-    "   - Write clear commit messages following project conventions",
-    `   - Reference the issue in commits (e.g., "Fixes #${issueNumber}")`,
-    "",
-    "4. **Create a pull request**",
-    `   - Use: \`gh pr create --fill --head ${branchName} --base ${defaultBranch}\``,
-    `   - Link to the issue in PR description (use "Closes #${issueNumber}")`,
-    "   - Request any necessary reviews",
-    "",
-    "## Project Guidelines",
-    "",
-    guidelinesText,
-    "",
-    "## Merge Rules",
-    "",
-    mergeRulesText,
-    "",
-    "## Commit Message Examples",
-    "",
-    examplesText,
-    "",
-    "## Important Notes",
-    "",
-    `- You are currently on branch: \`${branchName}\``,
-    `- Base branch: \`${defaultBranch}\``,
-    `- This implementation should close issue #${issueNumber}`,
-    "- Focus on completing the requirements in the issue",
-    "- Open a separate remediation PR only when there is concrete signal and project-doc grounding",
-    "- For remediation PRs, cite signal refs such as CI logs, failing command output, review comments, issue text, stack traces, or repro artifacts",
-    "- For remediation PRs, cite grounding refs from AGENTS.md, docs/, .merge-rules.yaml, or referenced Workflow-IR",
-    "- Ask questions if requirements are unclear",
-    "- Test thoroughly before creating the PR",
-    "",
-    "Begin implementing the issue now.",
-    "",
-  ].join("\n");
+  const prompt = buildIssuePrompt({
+    issueNumber,
+    title,
+    url,
+    body,
+    branchName,
+    defaultBranch,
+    guidelines,
+    commitExamples,
+    mergeRules,
+  });
+  recordPromptRendered("issue_impl", prompt, {
+    "merge_god.issue_number": issueNumber,
+  });
 
   logJson("process_issue", {
     action: "prompt_generated",
     issue_number: issueNumber,
     prompt_size: prompt.length,
   });
+  span.setAttribute("merge_god.prompt_size", prompt.length);
 
   logJson("process_issue", { action: "running_pi", issue_number: issueNumber });
 
@@ -2541,6 +1643,19 @@ export async function processIssue(
   });
 
   const success = rc === 0;
+  span.setAttributes(sanitizeSpanAttributes({
+    "merge_god.success": success,
+    "merge_god.returncode": rc,
+    "merge_god.result_status": success ? "success" : "failure",
+    "merge_god.result_summary": success ? "Issue implementation completed" : "Issue implementation failed",
+  }));
+  addTelemetryEvent("merge_god.run_result", {
+    operation: "process_issue",
+    target: `issue:${issueNumber}`,
+    result_status: success ? "success" : "failure",
+    result_summary: success ? "Issue implementation completed" : "Issue implementation failed",
+    returncode: rc,
+  });
 
   if (success) {
     await sendNotification(
@@ -2561,6 +1676,8 @@ export async function processIssue(
   logJson("process_issue", { action: "complete", issue_number: issueNumber, success });
 
   return success;
+    },
+  );
 }
 
 // --- Repository validation --------------------------------------------------
@@ -2649,9 +1766,10 @@ export function parseCliArgs(): CliArgs {
 export async function main(): Promise<void> {
   process.on("SIGINT", () => {
     logJson("shutdown", { reason: "keyboard_interrupt" });
-    process.exit(0);
+    void shutdownTelemetry().finally(() => process.exit(0));
   });
 
+  initializeTelemetry(undefined, logJson);
   const args = parseCliArgs();
   const repoPath = resolve(args.repoPath);
 
@@ -2783,21 +1901,11 @@ export async function main(): Promise<void> {
 
     const stackMergeOrderPlan = planStackedPrMergeOrder(categorizedPrs);
     const prDetails = {
-      for_review: categorizedPrs["for-review"].map((pr) => ({
-        number: pr["number"],
-        title: toStr(pr["title"]).slice(0, 50),
-      })),
-      for_landing: categorizedPrs["for-landing"].map((pr) => ({
-        number: pr["number"],
-        title: toStr(pr["title"]).slice(0, 50),
-      })),
-      untagged: categorizedPrs["untagged"].map((pr) => ({
-        number: pr["number"],
-        title: toStr(pr["title"]).slice(0, 50),
-      })),
+      for_review: categorizedPrs["for-review"].map((pr) => prQueueInfoFromRecord(pr, { titleMaxLength: 50 })),
+      for_landing: categorizedPrs["for-landing"].map((pr) => prQueueInfoFromRecord(pr, { titleMaxLength: 50 })),
+      untagged: categorizedPrs["untagged"].map((pr) => prQueueInfoFromRecord(pr, { titleMaxLength: 50 })),
       processing_order: stackMergeOrderPlan.ordered.map((item) => ({
-        number: item.pr["number"],
-        title: toStr(item.pr["title"]).slice(0, 50),
+        ...prQueueInfoFromRecord(item.pr, { titleMaxLength: 50 }),
         mode: item.mode,
         stack_dependencies: item.stack_dependency_numbers,
         stack_dependents: item.stack_dependent_numbers,
@@ -2822,7 +1930,7 @@ export async function main(): Promise<void> {
     for (const planned of stackMergeOrderPlan.ordered) {
       const pr = planned.pr;
       const mode = planned.mode;
-      const prNumber = pr["number"] as number | undefined;
+      const prNumber = prDetailsNumber(pr) ?? undefined;
 
       if (prNumber && processingPrs.has(prNumber)) {
         logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
@@ -2856,7 +1964,6 @@ export async function main(): Promise<void> {
         if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
         if (prNumber) processingPrs.delete(prNumber);
       }
-
       await sleep(10_000);
     }
 
@@ -2875,6 +1982,6 @@ export async function main(): Promise<void> {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   void main().catch((e) => {
     logJson("fatal_error", { error: errMsg(e) });
-    process.exit(1);
+    void shutdownTelemetry().finally(() => process.exit(1));
   });
 }
