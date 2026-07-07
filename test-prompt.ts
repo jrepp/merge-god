@@ -9,6 +9,11 @@ import { chdir } from "node:process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { normalizeCiStatusCounts } from "./ci_status_model";
+import { hasActiveMergeConflicts } from "./conflict_model";
+import { prContextCiStatus, prContextCommits, prContextConflicts } from "./pr_context_access_model";
+import { prContextTelemetrySummary } from "./pr_context_log_model";
+import { prDetailsBaseBranch, prDetailsHeadBranch, prDetailsTitle, prDetailsUrl } from "./pr_details_access_model";
 import {
   validateRepository,
   getPrGuidelines,
@@ -16,6 +21,7 @@ import {
   gatherPrContext,
   buildPrPrompt,
 } from "./pr-loop";
+import { initializeTelemetry, recordPromptRendered, shutdownTelemetry } from "./telemetry";
 
 function runCommand(
   cmd: string[],
@@ -68,10 +74,10 @@ async function main(): Promise<void> {
 
   const prInfo = JSON.parse(stdout) as Record<string, unknown>;
 
-  const title = prInfo["title"] as string;
-  const headBranch = prInfo["headRefName"] as string;
-  const baseBranch = (prInfo["baseRefName"] as string | undefined) ?? "main";
-  const url = prInfo["url"] as string;
+  const title = prDetailsTitle(prInfo);
+  const headBranch = prDetailsHeadBranch(prInfo);
+  const baseBranch = prDetailsBaseBranch(prInfo);
+  const url = prDetailsUrl(prInfo);
 
   const guidelines = getPrGuidelines();
   const commitExamples = guidelines ? "" : getCommitHistoryExamples(baseBranch);
@@ -79,13 +85,14 @@ async function main(): Promise<void> {
   const [prDetails, prContext] = await gatherPrContext(prNumber, headBranch, baseBranch, url);
 
   const prompt = buildPrPrompt(prDetails, prContext, guidelines, commitExamples);
+  recordPromptRendered("test_prompt.pr", prompt, {
+    "merge_god.pr_number": prNumber,
+  });
 
-  const comments = (prContext["comments"] as unknown[] | undefined) ?? [];
-  const reviewComments = (prContext["review_comments"] as unknown[] | undefined) ?? [];
-  const commits = (prContext["commits"] as unknown[] | undefined) ?? [];
-  const files = (prContext["files"] as unknown[] | undefined) ?? [];
-  const conflicts = (prContext["conflicts"] as Record<string, unknown> | undefined) ?? {};
-  const ciStatus = (prContext["ci_status"] as Record<string, unknown> | undefined) ?? {};
+  const contextSummary = prContextTelemetrySummary(prContext);
+  const commits = prContextCommits(prContext);
+  const hasConflicts = hasActiveMergeConflicts(prContextConflicts(prContext));
+  const ciCounts = normalizeCiStatusCounts(prContextCiStatus(prContext));
 
   const sep = "=".repeat(80);
   console.error("\n" + sep);
@@ -94,13 +101,13 @@ async function main(): Promise<void> {
   console.error(`PR: #${prNumber} - ${title}`);
   console.error(`Branch: ${headBranch} → ${baseBranch}`);
   console.error(`Prompt size: ${prompt.length} characters`);
-  console.error(`Comments: ${comments.length}`);
-  console.error(`Review comments: ${reviewComments.length}`);
+  console.error(`Comments: ${contextSummary.comment_count}`);
+  console.error(`Review comments: ${contextSummary.review_comment_count}`);
   console.error(`Commits: ${commits.length}`);
-  console.error(`Files changed: ${files.length}`);
-  console.error(`Has conflicts: ${conflicts["has_conflicts"] ?? false}`);
-  console.error(`CI checks: ${ciStatus["total_checks"] ?? 0}`);
-  console.error(`Failed checks: ${ciStatus["failed"] ?? 0}`);
+  console.error(`Files changed: ${contextSummary.file_count}`);
+  console.error(`Has conflicts: ${hasConflicts}`);
+  console.error(`CI checks: ${ciCounts.total}`);
+  console.error(`Failed checks: ${ciCounts.failed}`);
   console.error(sep);
   console.error("\nGenerated prompt (stdout):\n");
 
@@ -108,8 +115,13 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  initializeTelemetry();
+  main()
+    .then(() => {
+      void shutdownTelemetry().finally(() => process.exit(0));
+    })
+    .catch((e) => {
+      console.error(e);
+      void shutdownTelemetry().finally(() => process.exit(1));
+    });
 }

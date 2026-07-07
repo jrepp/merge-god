@@ -234,6 +234,58 @@ report results back over HTTP.
 
 ---
 
+## PR Loop Decomposition Pattern
+
+The PR loop is the outer shell for an automated workflow, not the home for every
+rule. New PR-processing behavior should follow a functional-core,
+imperative-shell pattern, migrated with a strangler approach: each new behavior
+gets added behind a small pure module or async port, then the old inline logic is
+deleted once callers are moved.
+
+- Put queue inference, blocker analysis, state transitions, prompt rendering,
+  and comment rendering in pure modules that accept plain data and return plain
+  data.
+- Put GitHub, git, database, notification, and agent calls behind small async
+  ports with concrete adapters.
+- Keep `pr-loop.ts` focused on CLI setup, process lifecycle, polling, and
+  composition.
+- Prefer async orchestration and `Promise.all` for independent I/O instead of
+  adding new synchronous subprocess helpers.
+- Avoid one large `PrProcessor` object. Use narrow application services that
+  compose ports for one workflow step, such as context gathering, PR processing,
+  issue processing, final merge execution, or review-gate commenting.
+
+Current examples are `merge_pr_model.ts`, `ci_status_model.ts`,
+`queue_validation_model.ts`, `pr_merge_blocker_model.ts`,
+`evidence_comment.ts`, `git_ref.ts`, `command_runner.ts`,
+`pr_context_source.ts`, `pr_context_gatherer.ts`, `pr_prompt.ts`,
+`agent_gate_summary_model.ts`, `pr_processor_model.ts`,
+`pr_snapshot_model.ts`, and `pr_state.ts`. Agent context replay is projected in
+`pr_agent_context_model.ts`, and PR replay
+logging plus trajectory metadata live in `pr_replay_model.ts`, so the DB runner
+only loads cached context, creates durable records, and invokes the agent. Sync
+telemetry counts are projected in `pr_context_log_model.ts` before CLI logging.
+Process validation uses `pr_context_validation_model.ts` so the validator checks
+the same canonical and cached alias shapes that agent replay consumes.
+PR discovery categorization lives in `pr_loop_model.ts`, processing-state label
+policy lives in `pr_state.ts`, and PR processing input normalization lives in
+`pr_processor_model.ts`; these modules use the same PR-detail access helpers
+before side effects start. PR processing lifecycle decisions, including
+start/failure notifications and review-gate rows for context gathering or agent
+completion, are also planned in `pr_processor_model.ts` as plain data.
+`pr-loop.ts` fetches raw PR data, emits the resulting structured events, and
+executes those plans through GitHub, notification, database, and agent ports.
+PR queue display rows are projected in
+`pr_queue_display_model.ts` before they are logged or rendered, and dashboard
+event summaries are normalized in `dashboard_event_model.ts` before the TUI
+turns them into user-facing log lines.
+Follow-up remediation PR requests are normalized in `follow_up_pr_model.ts`
+before the coordination API performs git or GitHub operations.
+Design intent and migration rules are tracked in
+`docs-cms/adr/adr-014-pr-loop-functional-core.md`.
+
+---
+
 ## ADR-006: Real-Time Notifications via ntfy.sh
 
 **Date**: 2025-11-21

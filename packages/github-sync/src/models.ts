@@ -143,6 +143,85 @@ export interface PullRequest {
   conflicting_files: string[];
 }
 
+export type DiffSource = "gh-pr-diff" | "local-git-diff" | "forge-file-patches";
+
+export interface DiffAvailability {
+  available: boolean;
+  source: DiffSource | null;
+  size: number;
+  truncated: boolean;
+  error: string | null;
+}
+
+export function createDiffAvailability(opts: {
+  available: boolean;
+  source?: DiffSource | null;
+  size?: number;
+  truncated?: boolean;
+  error?: string | null;
+}): DiffAvailability {
+  return {
+    available: opts.available,
+    source: opts.source ?? null,
+    size: opts.size ?? 0,
+    truncated: opts.truncated ?? false,
+    error: opts.error ?? null,
+  };
+}
+
+export type MergeBlockerKind =
+  | "draft"
+  | "review_required"
+  | "changes_requested"
+  | "ci_failed"
+  | "ci_pending"
+  | "ci_missing"
+  | "merge_conflicts"
+  | "diff_unavailable"
+  | "merge_state_blocked"
+  | "external_gate"
+  | "unknown";
+
+export interface MergeBlocker {
+  kind: MergeBlockerKind;
+  status: "blocked" | "pending" | "unknown";
+  summary: string;
+  evidence_refs: string[];
+}
+
+export interface QueueConstituentPR {
+  number: number;
+  title: string | null;
+  url: string | null;
+  head_sha: string | null;
+  status: "queued" | "merged_into_queue" | "validated" | "blocked" | "unknown";
+  evidence_refs: string[];
+}
+
+export interface QueueMergeCommit {
+  sha: string;
+  pr_number: number | null;
+  subject: string;
+  conflict_files: string[];
+  evidence_refs: string[];
+}
+
+export interface QueueValidationEvidence {
+  command: string;
+  status: "passed" | "failed" | "blocked" | "unknown";
+  scope: string | null;
+  evidence_ref: string | null;
+}
+
+export interface MergeQueueContext {
+  is_queue: boolean;
+  strategy: "title_pr_list" | "merge_commits" | "manual" | "unknown";
+  constituent_prs: QueueConstituentPR[];
+  merge_commits: QueueMergeCommit[];
+  validation_evidence: QueueValidationEvidence[];
+  unresolved_blockers: MergeBlocker[];
+}
+
 export function createPullRequest(opts: {
   number: number;
   title: string;
@@ -238,6 +317,9 @@ export interface PRContext {
   files: Record<string, unknown>[];
   conflicts: Record<string, unknown>;
   ci_status: Record<string, unknown>;
+  diff_availability: DiffAvailability;
+  merge_blockers: MergeBlocker[];
+  queue_context: MergeQueueContext | null;
   guidelines: string;
   commit_examples: string;
   captured_at: Date | null;
@@ -255,6 +337,9 @@ export function createPRContext(opts: {
   files?: Record<string, unknown>[];
   conflicts?: Record<string, unknown>;
   ci_status?: Record<string, unknown>;
+  diff_availability?: DiffAvailability;
+  merge_blockers?: MergeBlocker[];
+  queue_context?: MergeQueueContext | null;
   guidelines?: string;
   commit_examples?: string;
   captured_at?: Date | null;
@@ -271,6 +356,13 @@ export function createPRContext(opts: {
     files: opts.files ?? [],
     conflicts: opts.conflicts ?? {},
     ci_status: opts.ci_status ?? {},
+    diff_availability: opts.diff_availability ?? createDiffAvailability({
+      available: opts.diff.length > 0,
+      source: opts.diff.length > 0 ? "gh-pr-diff" : null,
+      size: opts.diff.length,
+    }),
+    merge_blockers: opts.merge_blockers ?? [],
+    queue_context: opts.queue_context ?? null,
     guidelines: opts.guidelines ?? "",
     commit_examples: opts.commit_examples ?? "",
     captured_at: opts.captured_at ?? null,

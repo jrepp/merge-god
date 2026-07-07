@@ -1,0 +1,175 @@
+description: merge-god PR agent optimization harness
+
+prompts:
+  - file://prompts/pr-agent-overlay.md
+
+providers:
+  - id: file://providers/merge-god-prompt-provider.ts
+    label: merge-god-agent-upstream
+    config:
+      dryRun: false
+      # Override with MERGE_GOD_PROMPTFOO_PROVIDER.
+      # Default uses GitHub Models through its OpenAI-compatible endpoint.
+      # Examples: openai:chat:gpt-5-mini, anthropic:messages:claude-sonnet-4-5
+      upstreamProvider: openai:chat:openai/gpt-4.1-mini
+      upstreamProviderConfig:
+        apiBaseUrl: https://models.github.ai/inference
+        apiKeyEnvar: GITHUB_TOKEN
+        max_completion_tokens: 160
+        omitDefaults: true
+
+evaluateOptions:
+  maxConcurrency: 1
+  delay: 2000
+
+tests:
+  - description: Landing docs fixture should identify clean landing work
+    vars:
+      prompt_kind: pr
+      guidelines: "Run npm test before pushing."
+      commit_examples: "docs: add landing checklist fixture"
+      merge_rules: "Source: `.merge-rules.yaml`"
+      pr_details:
+        number: 1
+        title: "docs: add landing checklist fixture"
+        headRefName: mg-test/landing-doc-update
+        baseRefName: main
+        reviewDecision: REVIEW_REQUIRED
+      pr_context:
+        conflicts:
+          has_conflicts: false
+          conflicting_files: []
+        ci_status:
+          passed: 1
+          failed: 0
+          failed_checks: []
+        review_comments: []
+        files:
+          - filename: README.md
+    assert:
+      - type: icontains
+        value: npm test
+        metric: ci-signal
+      - type: icontains
+        value: verify
+        metric: verification
+      - type: not-icontains
+        value: merged
+        metric: no-unsupported-merge-claim
+
+  - description: Review fixture should prioritize requested review handling
+    vars:
+      prompt_kind: pr
+      guidelines: "Run npm test before pushing."
+      commit_examples: "feat: add average helper fixture"
+      merge_rules: "Source: `.merge-rules.yaml`"
+      pr_details:
+        number: 2
+        title: "feat: add average helper fixture"
+        headRefName: mg-test/review-code-change
+        baseRefName: main
+        reviewDecision: CHANGES_REQUESTED
+      pr_context:
+        conflicts:
+          has_conflicts: false
+          conflicting_files: []
+        ci_status:
+          passed: 1
+          failed: 0
+          failed_checks: []
+        review_comments:
+          - body: "Confirm average([]) behavior."
+            path: tests/calculator.test.js
+        files:
+          - filename: src/calculator.js
+          - filename: tests/calculator.test.js
+    assert:
+      - type: icontains
+        value: review
+        metric: review-signal
+      - type: icontains
+        value: average
+        metric: code-context
+      - type: icontains
+        value: npm test
+        metric: verification
+      - type: not-icontains
+        value: merged
+        metric: no-unsupported-merge-claim
+
+  - description: Failing CI fixture should make the failed check the first blocker
+    vars:
+      prompt_kind: pr
+      guidelines: "Run npm test before pushing."
+      commit_examples: "test: add failing ci fixture"
+      merge_rules: "Source: `.merge-rules.yaml`"
+      pr_details:
+        number: 3
+        title: "test: add failing ci fixture"
+        headRefName: mg-test/failing-ci
+        baseRefName: main
+        reviewDecision: REVIEW_REQUIRED
+      pr_context:
+        conflicts:
+          has_conflicts: false
+          conflicting_files: []
+        ci_status:
+          passed: 0
+          failed: 1
+          failed_checks:
+            - name: merge-god-test/node-test
+              conclusion: failure
+        review_comments: []
+        files:
+          - filename: tests/calculator.test.js
+    assert:
+      - type: icontains
+        value: failing
+        metric: blocker-priority
+      - type: icontains
+        value: merge-god-test/node-test
+        metric: failed-check
+      - type: icontains
+        value: npm test
+        metric: verification
+      - type: not-icontains
+        value: merged
+        metric: no-unsupported-merge-claim
+
+  - description: Conflict fixture should prioritize conflict resolution
+    vars:
+      prompt_kind: pr
+      guidelines: "Run npm test before pushing."
+      commit_examples: "test: create conflicting branch fixture"
+      merge_rules: "Source: `.merge-rules.yaml`"
+      pr_details:
+        number: 4
+        title: "test: create conflicting branch fixture"
+        headRefName: mg-test/conflict-resolution
+        baseRefName: main
+        reviewDecision: REVIEW_REQUIRED
+      pr_context:
+        conflicts:
+          has_conflicts: true
+          conflicting_files:
+            - fixtures/conflict-target.txt
+        ci_status:
+          passed: 1
+          failed: 0
+          failed_checks: []
+        review_comments: []
+        files:
+          - filename: fixtures/conflict-target.txt
+    assert:
+      - type: icontains
+        value: conflict
+        metric: blocker-priority
+      - type: icontains
+        value: fixtures/conflict-target.txt
+        metric: conflict-file
+      - type: icontains
+        value: npm test
+        metric: verification
+      - type: not-icontains
+        value: merged
+        metric: no-unsupported-merge-claim

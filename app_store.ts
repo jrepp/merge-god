@@ -1618,7 +1618,10 @@ export class AppStore {
           ids.activity_id,
           input.type,
           "ready",
-          stringifyJson({}),
+          stringifyJson({
+            model_tier: input.model_tier,
+            model_reason: input.model_reason,
+          }),
           stringifyJson({ inherited_from: ids.activity_id }),
           input.prompt_runtime_ref ?? null,
           stringifyJson(input.context_pack_refs ?? []),
@@ -1639,6 +1642,8 @@ export class AppStore {
           child_activity_id: activityId,
           type: input.type,
           summary: input.summary,
+          model_tier: input.model_tier,
+          model_reason: input.model_reason,
         },
       });
       this.db.exec("COMMIT");
