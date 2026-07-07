@@ -17,6 +17,7 @@
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  createDiffAvailability,
   getPRCiStatus,
   type PullRequest,
   type PRContext,
@@ -91,6 +92,16 @@ function loadJsonArray(
   } catch {
     return fallback;
   }
+}
+
+function diffAvailabilityFromContext(ctx: Record<string, unknown>): PRContext["diff_availability"] {
+  const diff = (ctx["diff"] as string | undefined) ?? "";
+  const fallback = createDiffAvailability({
+    available: diff.length > 0,
+    source: diff.length > 0 ? "gh-pr-diff" : null,
+    size: diff.length,
+  }) as unknown as Record<string, unknown>;
+  return loadJsonObject(ctx["diff_availability"], fallback) as unknown as PRContext["diff_availability"];
 }
 
 /** Coerce any value to a number, treating null/undefined as 0. */
@@ -732,6 +743,9 @@ export class SyncStore {
         files: loadJsonArray(ctx["files"], []),
         conflicts: loadJsonObject(ctx["conflicts"], {}),
         ci_status: loadJsonObject(ctx["ci_status"], {}),
+        diff_availability: diffAvailabilityFromContext(ctx),
+        merge_blockers: loadJsonArray(ctx["merge_blockers"], []) as unknown as PRContext["merge_blockers"],
+        queue_context: (ctx["queue_context"] as PRContext["queue_context"] | undefined) ?? null,
         guidelines: (ctx["guidelines"] as string | undefined) ?? "",
         commit_examples: (ctx["commit_examples"] as string | undefined) ?? "",
         captured_at: capturedAt,
@@ -806,6 +820,9 @@ export class SyncStore {
         files: loadJsonArray(ctx["files"], []),
         conflicts: loadJsonObject(ctx["conflicts"], {}),
         ci_status: loadJsonObject(ctx["ci_status"], {}),
+        diff_availability: diffAvailabilityFromContext(ctx),
+        merge_blockers: loadJsonArray(ctx["merge_blockers"], []) as unknown as PRContext["merge_blockers"],
+        queue_context: (ctx["queue_context"] as PRContext["queue_context"] | undefined) ?? null,
         guidelines: (ctx["guidelines"] as string | undefined) ?? "",
         commit_examples: (ctx["commit_examples"] as string | undefined) ?? "",
         captured_at: capturedAt,

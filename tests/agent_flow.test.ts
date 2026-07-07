@@ -17,16 +17,64 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { AppStore } from "../app_store";
-import { CoordinationServer, findExtension, loadPiDotEnv, runPiAgent, type PiAgentResult } from "../coordination";
+import {
+  CoordinationServer,
+  findExtension,
+  loadPiDotEnv,
+  runPiAgent,
+  type CoordinationTrajectoryBridge,
+  type PiAgentResult,
+} from "../coordination";
+import {
+  evidenceSummaryFromPrContext,
+  renderReviewGateStatusComment,
+} from "../evidence_comment";
+import { analyzeMergeBlockers, inferMergeQueueContext } from "../merge_pr_model";
 import {
   agentAnnotationLabelsFromResult,
   agentTokenUsageFromResult,
   classifyPrFailureState,
   mergeGodRuntimeTelemetry,
   piAgentFailureReason,
-  renderReviewGateStatusComment,
 } from "../pr-loop";
+import { reviewGateStatusesFromContext } from "../review_gate_status";
 import { TrajectoryRuntime } from "../trajectory_runtime";
+
+class MockTrajectoryBridge implements CoordinationTrajectoryBridge {
+  events: unknown[] = [];
+  childActivityInputs: Array<{
+    type: string;
+    summary: string;
+    model_tier?: string;
+    model_reason?: string;
+    prompt_runtime_ref?: string | null;
+    context_pack_refs?: string[];
+    evidence_refs?: string[];
+    metadata?: Record<string, unknown>;
+  }> = [];
+
+  getState(): unknown {
+    return { run: { run_id: "run-1", status: "executing" }, events: this.events };
+  }
+
+  appendEvent(input: unknown): unknown {
+    this.events.push(input);
+    return { event_id: `event-${this.events.length}` };
+  }
+
+  heartbeat(input: Record<string, unknown>): unknown {
+    return { ok: true, phase: input["phase"] ?? null };
+  }
+
+  proposeNext(input: { next_action: string }): unknown {
+    return { accepted: input.next_action === "continue", next_action: input.next_action };
+  }
+
+  createChildActivity(input: MockTrajectoryBridge["childActivityInputs"][number]): unknown {
+    this.childActivityInputs.push(input);
+    return { accepted: input.type === "ci_fix", child_activity_id: "child-1" };
+  }
+}
 
 describe("agent flow: coordination round-trip", () => {
   test("health endpoint reports ok", async () => {
@@ -109,25 +157,8 @@ describe("agent flow: coordination round-trip", () => {
   });
 
   test("trajectory bridge exposes state and records events", async () => {
-    const events: unknown[] = [];
-    const s = new CoordinationServer("127.0.0.1", 0, {
-      getState() {
-        return { run: { run_id: "run-1", status: "executing" }, events };
-      },
-      appendEvent(input) {
-        events.push(input);
-        return { event_id: `event-${events.length}` };
-      },
-      heartbeat(input) {
-        return { ok: true, phase: input["phase"] ?? null };
-      },
-      proposeNext(input) {
-        return { accepted: input.next_action === "continue", next_action: input.next_action };
-      },
-      createChildActivity(input) {
-        return { accepted: input.type === "ci_fix", child_activity_id: "child-1" };
-      },
-    });
+    const bridge = new MockTrajectoryBridge();
+    const s = new CoordinationServer("127.0.0.1", 0, bridge);
     await s.start();
     try {
       const stateRes = await fetch(`${s.baseUrl}/trajectory`);
@@ -152,7 +183,7 @@ describe("agent flow: coordination round-trip", () => {
       assert.equal(eventRes.status, 200);
       assert.equal(eventBody.ok, true);
       assert.equal(eventBody.event.event_id, "event-1");
-      assert.equal(events.length, 1);
+      assert.equal(bridge.events.length, 1);
 
       const heartbeatRes = await fetch(`${s.baseUrl}/trajectory/heartbeat`, {
         method: "POST",
@@ -181,7 +212,12 @@ describe("agent flow: coordination round-trip", () => {
       const childRes = await fetch(`${s.baseUrl}/trajectory/child-activity`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "ci_fix", summary: "fix failing check" }),
+        body: JSON.stringify({
+          type: "ci_fix",
+          summary: "fix failing check",
+          model_tier: "fast",
+          model_reason: "Small scoped CI fix can use fast model quality.",
+        }),
       });
       const childBody = (await childRes.json()) as {
         ok: boolean;
@@ -190,6 +226,39 @@ describe("agent flow: coordination round-trip", () => {
       assert.equal(childRes.status, 200);
       assert.equal(childBody.activity.accepted, true);
       assert.equal(childBody.activity.child_activity_id, "child-1");
+      assert.deepEqual(bridge.childActivityInputs, [
+        {
+          type: "ci_fix",
+          summary: "fix failing check",
+          model_tier: "fast",
+          model_reason: "Small scoped CI fix can use fast model quality.",
+          prompt_runtime_ref: null,
+          context_pack_refs: [],
+          evidence_refs: [],
+          metadata: {},
+        },
+      ]);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("trajectory child activity endpoint rejects missing model quality", async () => {
+    const bridge = new MockTrajectoryBridge();
+    const s = new CoordinationServer("127.0.0.1", 0, bridge);
+    await s.start();
+    try {
+      const res = await fetch(`${s.baseUrl}/trajectory/child-activity`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "ci_fix", summary: "fix failing check" }),
+      });
+      const body = (await res.json()) as { ok: boolean; error: string };
+
+      assert.equal(res.status, 400);
+      assert.equal(body.ok, false);
+      assert.match(body.error, /model_tier/);
+      assert.deepEqual(bridge.childActivityInputs, []);
     } finally {
       await s.stop();
     }
@@ -211,6 +280,629 @@ describe("agent flow: coordination round-trip", () => {
     } finally {
       await s.stop();
     }
+  });
+});
+
+describe("PR context inference", () => {
+  test("infers merge queue lineage from title and merge commits", () => {
+    const blockers = [
+      {
+        kind: "review_required" as const,
+        status: "blocked" as const,
+        summary: "GitHub requires review before this PR can merge.",
+        evidence_refs: ["github:reviewDecision"],
+      },
+    ];
+    const context = inferMergeQueueContext(
+      { title: "Merge queue: PRs 178, 179, 180" },
+      {
+        commits: [
+          {
+            sha: "abc1234",
+            commit: {
+              message: "Merge PR #178\n\n# Conflicts:\n#\tapps/chat/src/ChatApp.tsx",
+            },
+          },
+          {
+            sha: "def5678",
+            commit: {
+              message: "Merge origin/main into PR 183 merge queue\n\n# Conflicts:\n#\tapps/chat/src/useBridge.ts",
+            },
+          },
+        ],
+        comments: [
+          {
+            html_url: "https://example.test/pull/183#issuecomment-1",
+            body: [
+              "- `npm run typecheck` -> passed.",
+              "- #178 `npm test -- bridge` -> failed.",
+              "- `npm run lint -- apps/chat` -> blocked (scope: apps/chat)",
+            ].join("\n"),
+          },
+        ],
+      },
+      blockers,
+    );
+
+    assert.ok(context !== null);
+    assert.equal(context!.is_queue, true);
+    assert.equal(context!.strategy, "title_pr_list");
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.status]),
+      [
+        [178, "blocked"],
+        [179, "queued"],
+        [180, "queued"],
+      ],
+    );
+    assert.equal(context!.merge_commits.length, 2);
+    assert.deepEqual(context!.merge_commits[0]!.conflict_files, ["apps/chat/src/ChatApp.tsx"]);
+    assert.deepEqual(context!.validation_evidence, [
+      {
+        command: "npm run typecheck",
+        status: "passed",
+        scope: null,
+        evidence_ref: "https://example.test/pull/183#issuecomment-1",
+      },
+      {
+        command: "npm test -- bridge",
+        status: "failed",
+        scope: "#178",
+        evidence_ref: "https://example.test/pull/183#issuecomment-1",
+      },
+      {
+        command: "npm run lint -- apps/chat",
+        status: "blocked",
+        scope: "apps/chat",
+        evidence_ref: "https://example.test/pull/183#issuecomment-1",
+      },
+    ]);
+    assert.deepEqual(context!.unresolved_blockers, [
+      ...blockers,
+      {
+        kind: "ci_failed",
+        status: "blocked",
+        summary: "Queue constituent PR #178 has 1 failed or blocked validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/183#issuecomment-1"],
+      },
+      {
+        kind: "ci_failed",
+        status: "blocked",
+        summary: "Queue validation scope apps/chat has 1 failed or blocked validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/183#issuecomment-1"],
+      },
+    ]);
+  });
+
+  test("promotes path-scoped and queue-wide validation evidence into blockers", () => {
+    const context = inferMergeQueueContext(
+      { title: "Merge PRs #201 and #202" },
+      {
+        commits: [],
+        comments: [
+          {
+            html_url: "https://example.test/pull/203#issuecomment-validation",
+            body: [
+              "- `npm run typecheck` -> inconclusive",
+              "- scope: packages/api npm run lint -- api -> failed",
+              "- scope: packages/ui `npm run test -- ui` -> pending",
+              "- #201 `npm run test -- foo` -> passed",
+            ].join("\n"),
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.deepEqual(context!.unresolved_blockers, [
+      {
+        kind: "unknown",
+        status: "unknown",
+        summary: "Queue-wide validation has 1 inconclusive validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/203#issuecomment-validation"],
+      },
+      {
+        kind: "ci_failed",
+        status: "blocked",
+        summary: "Queue validation scope packages/api has 1 failed or blocked validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/203#issuecomment-validation"],
+      },
+      {
+        kind: "unknown",
+        status: "unknown",
+        summary: "Queue validation scope packages/ui has 1 inconclusive validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/203#issuecomment-validation"],
+      },
+    ]);
+    assert.deepEqual(
+      context!.validation_evidence.find((item) => item.scope === "packages/api"),
+      {
+        command: "npm run lint -- api",
+        status: "failed",
+        scope: "packages/api",
+        evidence_ref: "https://example.test/pull/203#issuecomment-validation",
+      },
+    );
+  });
+
+  test("enriches queue constituents from PR body and comment evidence", () => {
+    const context = inferMergeQueueContext(
+      {
+        title: "Merge queue",
+        body: [
+          "Queue contains:",
+          "- [#178](https://github.example.test/org/repo/pull/178) - Add bridge support head:abc123def",
+          "- #179: Stabilize renderer @team",
+          "- [PR #181](https://github.example.test/org/repo/pull/181) Payment retry head=1234567",
+          "- PR #182 Observability cleanup sha=7654321",
+        ].join("\n"),
+      },
+      {
+        commits: [
+          {
+            sha: "abc1234",
+            commit: { message: "Merge PR #178" },
+          },
+        ],
+        comments: [
+          {
+            html_url: "https://example.test/pull/183#issuecomment-2",
+            body: [
+              "- #180: Follow-up validation sha:def456789",
+              "- https://github.example.test/org/repo/pull/183 - Docs queue note head:fedcba9",
+            ].join("\n"),
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.title, pr.url, pr.head_sha, pr.status]),
+      [
+        [178, "Add bridge support", "https://github.example.test/org/repo/pull/178", "abc123def", "merged_into_queue"],
+        [179, "Stabilize renderer @team", null, null, "queued"],
+        [180, "Follow-up validation", null, "def456789", "queued"],
+        [181, "Payment retry", "https://github.example.test/org/repo/pull/181", "1234567", "queued"],
+        [182, "Observability cleanup", null, "7654321", "queued"],
+        [183, "Docs queue note", "https://github.example.test/org/repo/pull/183", "fedcba9", "queued"],
+      ],
+    );
+    assert.deepEqual(context!.constituent_prs.find((pr) => pr.number === 180)!.evidence_refs, [
+      "https://example.test/pull/183#issuecomment-2",
+      "pr:#180",
+    ]);
+    assert.deepEqual(context!.constituent_prs.find((pr) => pr.number === 183)!.evidence_refs, [
+      "https://example.test/pull/183#issuecomment-2",
+      "pr:#183",
+    ]);
+  });
+
+  test("derives manual queue strategy and constituent status from scoped validation", () => {
+    const context = inferMergeQueueContext(
+      {
+        title: "Merge queue",
+        body: [
+          "Manual queue:",
+          "- #178: Add bridge support",
+          "- #179: Stabilize renderer",
+          "- #180: Refresh snapshots",
+        ].join("\n"),
+      },
+      {
+        commits: [],
+        comments: [
+          {
+            html_url: "https://example.test/pull/183#issuecomment-validation",
+            body: [
+              "- #178 `npm test -- bridge` -> passed.",
+              "- #179 `npm test -- renderer` -> failed.",
+            ].join("\n"),
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.equal(context!.strategy, "manual");
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.status]),
+      [
+        [178, "validated"],
+        [179, "blocked"],
+        [180, "queued"],
+      ],
+    );
+    assert.deepEqual(context!.constituent_prs.find((pr) => pr.number === 178)!.evidence_refs, [
+      "github:pr-body",
+      "https://example.test/pull/183#issuecomment-validation",
+      "pr:#178",
+    ]);
+    assert.deepEqual(context!.unresolved_blockers, [
+      {
+        kind: "ci_failed",
+        status: "blocked",
+        summary: "Queue constituent PR #179 has 1 failed or blocked validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/183#issuecomment-validation"],
+      },
+    ]);
+  });
+
+  test("uses body hints for stack and batch queue titles without merge commits", () => {
+    const context = inferMergeQueueContext(
+      {
+        title: "Stack validation lane",
+        body: [
+          "Stack constituents:",
+          "- [ ] #184: Add account settings head=abc1840",
+          "- PR #185 Billing cleanup sha=abc1850",
+        ].join("\n"),
+      },
+      {
+        commits: [],
+        comments: [
+          {
+            html_url: "https://example.test/pull/186#issuecomment-validation",
+            body: "- #184 `npm run test -- account` -> passed",
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.equal(context!.strategy, "manual");
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.title, pr.head_sha, pr.status]),
+      [
+        [184, "Add account settings", "abc1840", "validated"],
+        [185, "Billing cleanup", "abc1850", "queued"],
+      ],
+    );
+    assert.deepEqual(context!.constituent_prs.find((pr) => pr.number === 184)!.evidence_refs, [
+      "github:pr-body",
+      "https://example.test/pull/186#issuecomment-validation",
+      "pr:#184",
+    ]);
+  });
+
+  test("ignores incidental title numbers when inferring queue constituents", () => {
+    const context = inferMergeQueueContext(
+      { title: "Merge queue 2026-07-01 batch 14: PRs 178, 179 and #180" },
+      {
+        commits: [
+          {
+            sha: "abc1234",
+            commit: { message: "Merge PR #178" },
+          },
+        ],
+        comments: [],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => pr.number),
+      [178, 179, 180],
+    );
+  });
+
+  test("recognizes standard GitHub merge commit subjects", () => {
+    const context = inferMergeQueueContext(
+      { title: "Merge queue" },
+      {
+        commits: [
+          {
+            sha: "abc1234",
+            commit: {
+              message: [
+                "Merge pull request #181 from owner/feature",
+                "",
+                "# Conflicts:",
+                "#\tpackages/api/src/index.ts",
+                "#\tpackages/api/src/routes.ts",
+                "",
+                "# Please enter a commit message to explain why this merge is necessary.",
+              ].join("\n"),
+            },
+          },
+        ],
+        comments: [],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.status]),
+      [[181, "merged_into_queue"]],
+    );
+    assert.equal(context!.merge_commits[0]!.pr_number, 181);
+    assert.deepEqual(context!.merge_commits[0]!.conflict_files, [
+      "packages/api/src/index.ts",
+      "packages/api/src/routes.ts",
+    ]);
+  });
+
+  test("recognizes merge batch titles and richer validation evidence", () => {
+    const context = inferMergeQueueContext(
+      { title: "Merge PRs #201 and #202" },
+      {
+        commits: [],
+        comments: [
+          {
+            html_url: "https://example.test/pull/203#issuecomment-validation",
+            body: [
+              "- [x] #201 `npm run test -- foo`",
+              "- #202 npm run lint -> failed",
+            ].join("\n"),
+          },
+        ],
+        review_comments: [
+          {
+            html_url: "https://example.test/pull/203#discussion_r1",
+            body: "- PR #202 `npm run typecheck` => blocked",
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.equal(context!.strategy, "title_pr_list");
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.status]),
+      [
+        [201, "validated"],
+        [202, "blocked"],
+      ],
+    );
+    assert.deepEqual(context!.validation_evidence, [
+      {
+        command: "npm run test -- foo",
+        status: "passed",
+        scope: "#201",
+        evidence_ref: "https://example.test/pull/203#issuecomment-validation",
+      },
+      {
+        command: "npm run lint",
+        status: "failed",
+        scope: "#202",
+        evidence_ref: "https://example.test/pull/203#issuecomment-validation",
+      },
+      {
+        command: "npm run typecheck",
+        status: "blocked",
+        scope: "#202",
+        evidence_ref: "https://example.test/pull/203#discussion_r1",
+      },
+    ]);
+    assert.deepEqual(context!.constituent_prs.find((pr) => pr.number === 202)!.evidence_refs, [
+      "https://example.test/pull/203#issuecomment-validation",
+      "https://example.test/pull/203#discussion_r1",
+      "pr:#202",
+    ]);
+  });
+
+  test("recognizes emoji and markdown table validation evidence", () => {
+    const context = inferMergeQueueContext(
+      { title: "Merge PRs #203 and #204" },
+      {
+        commits: [],
+        comments: [
+          {
+            html_url: "https://example.test/pull/205#issuecomment-table",
+            body: [
+              "| Scope | Command | Result |",
+              "| --- | --- | --- |",
+              "| #203 | npm run test -- api | ✅ |",
+              "| PR #204 | npm run test -- ui | ❌ failed |",
+              "| scope: packages/api | npm run lint -- api | 🚧 |",
+              "- #203 npm run typecheck:api => ✔",
+            ].join("\n"),
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.status]),
+      [
+        [203, "validated"],
+        [204, "blocked"],
+      ],
+    );
+    assert.deepEqual(context!.validation_evidence, [
+      {
+        command: "npm run test -- api",
+        status: "passed",
+        scope: "#203",
+        evidence_ref: "https://example.test/pull/205#issuecomment-table",
+      },
+      {
+        command: "npm run test -- ui",
+        status: "failed",
+        scope: "#204",
+        evidence_ref: "https://example.test/pull/205#issuecomment-table",
+      },
+      {
+        command: "npm run lint -- api",
+        status: "blocked",
+        scope: "packages/api",
+        evidence_ref: "https://example.test/pull/205#issuecomment-table",
+      },
+      {
+        command: "npm run typecheck:api",
+        status: "passed",
+        scope: "#203",
+        evidence_ref: "https://example.test/pull/205#issuecomment-table",
+      },
+    ]);
+  });
+
+  test("marks constituents unknown when scoped validation outcome is unknown", () => {
+    const context = inferMergeQueueContext(
+      { title: "Merge PRs #205 and #206" },
+      {
+        commits: [],
+        comments: [
+          {
+            html_url: "https://example.test/pull/207#issuecomment-unknown",
+            body: [
+              "- [ ] #205 `npm run smoke -- waiting`",
+              "- #205 `npm run unit` -> passed",
+              "- #206 `npm run test -- api` -> passed",
+              "- #207 `npm run e2e` -> skipped",
+            ].join("\n"),
+          },
+        ],
+      },
+    );
+
+    assert.ok(context !== null);
+    assert.deepEqual(
+      context!.constituent_prs.map((pr) => [pr.number, pr.status]),
+      [
+        [205, "unknown"],
+        [206, "validated"],
+        [207, "unknown"],
+      ],
+    );
+    assert.deepEqual(context!.validation_evidence, [
+      {
+        command: "npm run smoke -- waiting",
+        status: "unknown",
+        scope: "#205",
+        evidence_ref: "https://example.test/pull/207#issuecomment-unknown",
+      },
+      {
+        command: "npm run unit",
+        status: "passed",
+        scope: "#205",
+        evidence_ref: "https://example.test/pull/207#issuecomment-unknown",
+      },
+      {
+        command: "npm run test -- api",
+        status: "passed",
+        scope: "#206",
+        evidence_ref: "https://example.test/pull/207#issuecomment-unknown",
+      },
+      {
+        command: "npm run e2e",
+        status: "unknown",
+        scope: "#207",
+        evidence_ref: "https://example.test/pull/207#issuecomment-unknown",
+      },
+    ]);
+    assert.deepEqual(context!.unresolved_blockers, [
+      {
+        kind: "unknown",
+        status: "unknown",
+        summary: "Queue constituent PR #205 has 1 inconclusive validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/207#issuecomment-unknown"],
+      },
+      {
+        kind: "unknown",
+        status: "unknown",
+        summary: "Queue constituent PR #207 has 1 inconclusive validation evidence item(s).",
+        evidence_refs: ["https://example.test/pull/207#issuecomment-unknown"],
+      },
+    ]);
+  });
+
+  test("does not treat a single incidental PR reference as a queue", () => {
+    const context = inferMergeQueueContext(
+      { title: "Fix flaky test mentioned in PR 201" },
+      {
+        commits: [],
+        comments: [],
+      },
+    );
+
+    assert.equal(context, null);
+  });
+
+  test("analyzes review, CI, diff, and merge-state blockers", () => {
+    const blockers = analyzeMergeBlockers(
+      {
+        isDraft: true,
+        reviewDecision: "REVIEW_REQUIRED",
+        mergeStateStatus: "BLOCKED",
+      },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 0, failed: 0, pending: 0 },
+        diff_availability: {
+          available: false,
+          source: "gh-pr-diff",
+          size: 0,
+          truncated: true,
+          error: "diff exceeded the maximum number of lines",
+        },
+      },
+    );
+
+    assert.deepEqual(
+      blockers.map((blocker) => blocker.kind),
+      ["draft", "review_required", "merge_state_blocked", "ci_missing", "diff_unavailable"],
+    );
+    assert.equal(blockers.find((blocker) => blocker.kind === "diff_unavailable")?.status, "blocked");
+    assert.equal(blockers.find((blocker) => blocker.kind === "draft")?.summary, "GitHub reports this PR is still marked as draft.");
+  });
+
+  test("analyzes unclassified CI checks as unknown blockers", () => {
+    const blockers = analyzeMergeBlockers(
+      {},
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, passed: 0, failed: 0, pending: 0, unknown: 1 },
+        diff_availability: { available: true, source: "gh-pr-diff", size: 42, truncated: false, error: null },
+      },
+    );
+
+    assert.deepEqual(
+      blockers.map((blocker) => [blocker.kind, blocker.status, blocker.summary]),
+      [["unknown", "unknown", "1 CI check(s) could not be classified."]],
+    );
+  });
+
+  test("preserves non-clean GitHub merge states as blocker evidence", () => {
+    const baseContext = {
+      conflicts: { has_conflicts: false, conflicting_files: [] },
+      ci_status: { total_checks: 1, failed: 0, pending: 0 },
+      diff_availability: { available: true, source: "gh-pr-diff", size: 42, truncated: false, error: null },
+    };
+
+    assert.deepEqual(
+      analyzeMergeBlockers({ mergeStateStatus: "DIRTY" }, baseContext).map((blocker) => [
+        blocker.kind,
+        blocker.status,
+        blocker.summary,
+      ]),
+      [["merge_state_blocked", "blocked", "GitHub reports the PR merge state as DIRTY."]],
+    );
+    assert.deepEqual(
+      analyzeMergeBlockers({ mergeStateStatus: "BEHIND" }, baseContext).map((blocker) => [
+        blocker.kind,
+        blocker.status,
+        blocker.summary,
+      ]),
+      [["merge_state_blocked", "pending", "GitHub reports the PR merge state as BEHIND."]],
+    );
+    assert.deepEqual(
+      analyzeMergeBlockers({ mergeStateStatus: "UNKNOWN" }, baseContext).map((blocker) => [
+        blocker.kind,
+        blocker.status,
+        blocker.summary,
+      ]),
+      [["merge_state_blocked", "unknown", "GitHub reports the PR merge state as UNKNOWN."]],
+    );
+    assert.deepEqual(
+      analyzeMergeBlockers({ mergeStateStatus: "CLEAN", mergeable: false }, baseContext).map((blocker) => [
+        blocker.kind,
+        blocker.status,
+        blocker.summary,
+      ]),
+      [["merge_state_blocked", "blocked", "GitHub reports this PR is not mergeable."]],
+    );
   });
 });
 
@@ -268,6 +960,228 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.equal(classifyPrFailureState("", { error: "manual approval required" }), "blocked");
   });
 
+  test("reviewGateStatusesFromContext projects modeled blockers into gate rows", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "APPROVED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, passed: 1 },
+        merge_blockers: [
+          {
+            kind: "merge_state_blocked",
+            status: "pending",
+            summary: "GitHub reports the PR merge state as BEHIND.",
+            evidence_refs: ["github:mergeStateStatus"],
+          },
+        ],
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.map((gate) => [gate.rule, gate.status]),
+      [
+        ["context-gathered", "pass"],
+        ["modeled-blockers", "pending"],
+        ["merge-conflicts", "pass"],
+        ["ci-status", "pass"],
+        ["review-decision", "pass"],
+        ["repo-merge-rules", "skipped"],
+      ],
+    );
+    assert.equal(
+      gates.find((gate) => gate.rule === "modeled-blockers")?.explanation,
+      "merge_state_blocked: GitHub reports the PR merge state as BEHIND.",
+    );
+  });
+
+  test("reviewGateStatusesFromContext includes queue unresolved blockers", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "APPROVED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, unknown: 0, passed: 1 },
+        merge_blockers: [],
+        queue_context: {
+          is_queue: true,
+          unresolved_blockers: [
+            {
+              kind: "ci_failed",
+              status: "blocked",
+              summary: "Queue constituent PR #179 has 1 failed or blocked validation evidence item(s).",
+              evidence_refs: ["https://example.test/comment"],
+            },
+          ],
+        },
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.find((gate) => gate.rule === "modeled-blockers"),
+      {
+        rule: "modeled-blockers",
+        status: "blocked",
+        explanation: "ci_failed: Queue constituent PR #179 has 1 failed or blocked validation evidence item(s).",
+      },
+    );
+  });
+
+  test("reviewGateStatusesFromContext prioritizes severe blocker explanations", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "APPROVED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, unknown: 0, passed: 1 },
+        merge_blockers: Array.from({ length: 6 }, (_, index) => ({
+          kind: "merge_state_blocked",
+          status: "pending",
+          summary: `Pending blocker ${index + 1}.`,
+          evidence_refs: [`pending:${index + 1}`],
+        })),
+        queue_context: {
+          is_queue: true,
+          unresolved_blockers: [
+            {
+              kind: "ci_failed",
+              status: "blocked",
+              summary: "Queue validation scope packages/api has 1 failed or blocked validation evidence item(s).",
+              evidence_refs: ["https://example.test/comment"],
+            },
+          ],
+        },
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.find((gate) => gate.rule === "modeled-blockers"),
+      {
+        rule: "modeled-blockers",
+        status: "blocked",
+        explanation: [
+          "ci_failed: Queue validation scope packages/api has 1 failed or blocked validation evidence item(s).",
+          "merge_state_blocked: Pending blocker 1.",
+          "merge_state_blocked: Pending blocker 2.",
+          "merge_state_blocked: Pending blocker 3.",
+          "merge_state_blocked: Pending blocker 4.",
+        ].join("; "),
+      },
+    );
+  });
+
+  test("reviewGateStatusesFromContext treats unknown queue validation as non-passing", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "APPROVED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, unknown: 0, passed: 1 },
+        merge_blockers: [],
+        queue_context: {
+          is_queue: true,
+          unresolved_blockers: [
+            {
+              kind: "unknown",
+              status: "unknown",
+              summary: "Queue constituent PR #205 has 1 inconclusive validation evidence item(s).",
+              evidence_refs: ["https://example.test/comment"],
+            },
+          ],
+        },
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.find((gate) => gate.rule === "modeled-blockers"),
+      {
+        rule: "modeled-blockers",
+        status: "unknown",
+        explanation: "unknown: Queue constituent PR #205 has 1 inconclusive validation evidence item(s).",
+      },
+    );
+  });
+
+  test("reviewGateStatusesFromContext gives blocked queue validation precedence", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "APPROVED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, unknown: 0, passed: 1 },
+        merge_blockers: [],
+        queue_context: {
+          is_queue: true,
+          unresolved_blockers: [
+            {
+              kind: "unknown",
+              status: "unknown",
+              summary: "Queue constituent PR #205 has 1 inconclusive validation evidence item(s).",
+              evidence_refs: ["https://example.test/comment"],
+            },
+            {
+              kind: "ci_failed",
+              status: "blocked",
+              summary: "Queue validation scope packages/api has 1 failed or blocked validation evidence item(s).",
+              evidence_refs: ["https://example.test/comment"],
+            },
+          ],
+        },
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.find((gate) => gate.rule === "modeled-blockers"),
+      {
+        rule: "modeled-blockers",
+        status: "blocked",
+        explanation: "ci_failed: Queue validation scope packages/api has 1 failed or blocked validation evidence item(s).; unknown: Queue constituent PR #205 has 1 inconclusive validation evidence item(s).",
+      },
+    );
+  });
+
+  test("reviewGateStatusesFromContext treats required review as blocking", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "REVIEW_REQUIRED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, unknown: 0, passed: 1 },
+        merge_blockers: [],
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.find((gate) => gate.rule === "review-decision"),
+      {
+        rule: "review-decision",
+        status: "blocked",
+        explanation: "GitHub requires review before this PR can merge.",
+      },
+    );
+  });
+
+  test("reviewGateStatusesFromContext treats unknown CI as non-passing", () => {
+    const gates = reviewGateStatusesFromContext(
+      { reviewDecision: "APPROVED" },
+      {
+        conflicts: { has_conflicts: false, conflicting_files: [] },
+        ci_status: { total_checks: 1, failed: 0, pending: 0, unknown: 1, passed: 0 },
+        merge_blockers: [],
+      },
+      "",
+    );
+
+    assert.deepEqual(
+      gates.find((gate) => gate.rule === "ci-status"),
+      {
+        rule: "ci-status",
+        status: "unknown",
+        explanation: "0 failed, 0 pending, 1 unknown, 0 passed out of 1 check(s).",
+      },
+    );
+  });
+
   test("renderReviewGateStatusComment sanitizes non-authoritative gate cache rows", () => {
     const rendered = renderReviewGateStatusComment(
       [
@@ -283,11 +1197,284 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.match(rendered, /Non-authoritative cache/);
     assert.match(rendered, /merge \\| gate &lt;script&gt;/);
     assert.match(rendered, /\| unknown \|/);
-    assert.match(rendered, /needs \(at\)ops &#96;approval&#96; \\| &lt;img/);
-    assert.doesNotMatch(rendered, /<script>|@ops|`approval`/);
+    assert.match(rendered, /needs &#64;ops &#96;approval&#96; \\| &lt;img/);
+    assert.doesNotMatch(rendered, /<script>|@ops|\(at\)ops|`approval`/);
   });
 
-  test("renderReviewGateStatusComment includes exact agent token usage when reported", () => {
+  test("renderReviewGateStatusComment includes merge queue evidence summary", () => {
+    const queueContext = inferMergeQueueContext(
+      {
+        title: "Merge queue: PRs #178 and #179",
+        body: "- #178 Add bridge support\n- #179 Renderer cleanup @team",
+      },
+      {
+        commits: [
+          {
+            sha: "abcdef123456",
+            commit: {
+              message: "Merge PR #178\n\n# Conflicts:\n#\tapps/chat/src/ChatApp.tsx",
+            },
+          },
+        ],
+        comments: [
+          {
+            html_url: "https://example.test/comment",
+            body: [
+              "- #178 `npm run typecheck` -> passed",
+              "- #178 `npm run lint` -> passed",
+              "- #178 `npm run test -- api` -> passed",
+              "- #179 `npm run test -- ui` -> pending",
+              "- #179 `npm run build` -> passed",
+              "- #179 `npm run e2e` -> blocked",
+              "- #179 `npm run smoke` -> passed",
+              "- #179 `npm run audit` -> passed",
+            ].join("\n"),
+          },
+        ],
+      },
+      [
+        {
+          kind: "review_required",
+          status: "blocked",
+          summary: "GitHub requires review before this PR can merge.",
+          evidence_refs: ["aaa:queue-unresolved-review", "github:reviewDecision"],
+        },
+      ],
+    );
+    assert.ok(queueContext !== null);
+
+    const evidence = evidenceSummaryFromPrContext({
+      ci_status: {
+        total_checks: 4,
+        passed: 1,
+        failed: 1,
+        pending: 1,
+        unknown: 1,
+        skipped: 0,
+        failed_checks: [
+          {
+            name: "build | deploy @ops",
+            conclusion: "FAILURE",
+            details_url: "https://example.test/checks/1",
+          },
+        ],
+        pending_checks: [
+          {
+            name: "deploy preview @ops",
+            status: "IN_PROGRESS",
+            details_url: "https://example.test/checks/deploy",
+          },
+        ],
+        unknown_checks: [
+          {
+            name: "manual gate @ops",
+            state: "ACTION_REQUIRED",
+            details_url: "https://example.test/checks/manual",
+          },
+        ],
+      },
+      diff_availability: {
+        available: false,
+        source: "gh-pr-diff",
+        size: 0,
+        truncated: true,
+        error: "diff exceeded maximum lines for @team",
+      },
+      merge_blockers: [
+        {
+          kind: "review_required",
+          status: "blocked",
+          summary: "GitHub requires review before this PR can merge.",
+          evidence_refs: ["github:reviewDecision", "comment:@ops|gate"],
+        },
+      ],
+      queue_context: queueContext,
+    });
+
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "context-gathered", status: "pass", explanation: "context captured" }],
+      "2026-06-30T00:00:00.000Z",
+      evidence,
+    );
+
+    assert.match(rendered, /## Evidence summary/);
+    assert.match(rendered, /CI checks \| blocked \| 1 failed, 1 pending, 1 unknown, 1 passed, 0 skipped out of 4 check\(s\)\. Failed: build \\\| deploy &#64;ops \(FAILURE, https:\/\/example.test\/checks\/1\) Pending: deploy preview &#64;ops \(IN_PROGRESS, https:\/\/example.test\/checks\/deploy\) Unknown: manual gate &#64;ops \(ACTION_REQUIRED, https:\/\/example.test\/checks\/manual\)/);
+    assert.match(rendered, /Diff availability \| blocked/);
+    assert.match(rendered, /diff exceeded maximum lines for &#64;team/);
+    assert.match(rendered, /review_required \| blocked/);
+    assert.match(rendered, /Evidence refs \| 11 \|/);
+    assert.match(rendered, /gh:pr-diff/);
+    assert.doesNotMatch(rendered, /aaa:queue-unresolved-review/);
+    assert.match(rendered, /https:\/\/example.test\/checks\/1/);
+    assert.match(rendered, /comment:&#64;ops\\\|gate/);
+    assert.match(rendered, /github:reviewDecision/);
+    assert.match(rendered, /## Merge queue evidence/);
+    assert.match(rendered, /Constituent PRs \| 2 \| #179, #178/);
+    assert.match(rendered, /Constituent status \| 2 \| #179 \(blocked, Renderer cleanup &#64;team\); #178 \(validated, Add bridge support\)/);
+    assert.match(rendered, /abcdef12 \(#178\)/);
+    assert.match(rendered, /Conflict files \| 1 \| apps\/chat\/src\/ChatApp.tsx/);
+    assert.match(rendered, /passed \[#178\]: npm run typecheck/);
+    assert.match(rendered, /Validation evidence \| 8 \| .*2 more/);
+    assert.match(rendered, /Unresolved blockers \| 1 \| ci_failed \(blocked\): Queue constituent PR #179 has 1 failed or blocked validation evidence item\(s\)\./);
+    assert.doesNotMatch(rendered, /npm run smoke/);
+    assert.doesNotMatch(rendered, /npm run audit/);
+    assert.doesNotMatch(rendered, /@team/);
+    assert.doesNotMatch(rendered, /@ops/);
+  });
+
+  test("renderReviewGateStatusComment shows omitted queue rows when summaries are capped", () => {
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "context-gathered", status: "pass", explanation: "context captured" }],
+      "2026-06-30T00:00:00.000Z",
+      evidenceSummaryFromPrContext({
+        queue_context: {
+          is_queue: true,
+          strategy: "merge_commits",
+          constituent_prs: Array.from({ length: 10 }, (_, index) => {
+            const number = index + 1;
+            return {
+              number,
+              title: `PR ${number}`,
+              url: null,
+              head_sha: null,
+              status: "queued",
+              evidence_refs: [],
+            };
+          }),
+          merge_commits: Array.from({ length: 10 }, (_, index) => {
+            const number = index + 1;
+            return {
+              sha: `abcde${String(number).padStart(3, "0")}`,
+              pr_number: number,
+              subject: `Merge PR #${number}`,
+              conflict_files: [],
+              evidence_refs: [],
+            };
+          }),
+          validation_evidence: [],
+          unresolved_blockers: [],
+        },
+      }),
+    );
+
+    assert.match(rendered, /Constituent PRs \| 10 \| #1, #2, #3, #4, #5, #6, #7, #8, 2 more/);
+    assert.match(rendered, /Constituent status \| 10 \| #1 \(queued, PR 1\).*2 more/);
+    assert.match(rendered, /Merge commits \| 10 \| abcde001 \(#1\).*abcde008 \(#8\), 2 more/);
+    assert.doesNotMatch(rendered, /#9 \(queued/);
+    assert.doesNotMatch(rendered, /abcde009/);
+  });
+
+  test("renderReviewGateStatusComment prioritizes non-passing validation evidence when capped", () => {
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "context-gathered", status: "pass", explanation: "context captured" }],
+      "2026-06-30T00:00:00.000Z",
+      evidenceSummaryFromPrContext({
+        queue_context: {
+          is_queue: true,
+          strategy: "manual",
+          constituent_prs: [],
+          merge_commits: [],
+          validation_evidence: [
+            { command: "npm run pass-1", status: "passed", scope: "#1", evidence_ref: "comment:1" },
+            { command: "npm run pass-2", status: "passed", scope: "#1", evidence_ref: "comment:2" },
+            { command: "npm run pass-3", status: "passed", scope: "#1", evidence_ref: "comment:3" },
+            { command: "npm run pass-4", status: "passed", scope: "#1", evidence_ref: "comment:4" },
+            { command: "npm run pass-5", status: "passed", scope: "#1", evidence_ref: "comment:5" },
+            { command: "npm run pass-6", status: "passed", scope: "#1", evidence_ref: "comment:6" },
+            { command: "npm run pass-7", status: "passed", scope: "#1", evidence_ref: "comment:7" },
+            { command: "npm run lint -- api", status: "blocked", scope: "packages/api", evidence_ref: "comment:blocked" },
+            { command: "npm run smoke", status: "unknown", scope: null, evidence_ref: "comment:unknown" },
+          ],
+          unresolved_blockers: [],
+        },
+      }),
+    );
+
+    assert.match(rendered, /Validation evidence \| 9 \| blocked \[packages\/api\]: npm run lint -- api; unknown: npm run smoke; passed \[#1\]: npm run pass-1/);
+    assert.match(rendered, /3 more/);
+    assert.doesNotMatch(rendered, /npm run pass-7/);
+  });
+
+  test("renderReviewGateStatusComment summarizes CI counts when failed check names are absent", () => {
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "ci-status", status: "pending", explanation: "pending checks" }],
+      "2026-06-30T00:00:00.000Z",
+      evidenceSummaryFromPrContext({
+        ci_status: {
+          total_checks: 4,
+          passed: 2,
+          failed: 0,
+          pending: 1,
+          skipped: 1,
+          failed_checks: [],
+        },
+      }),
+    );
+
+    assert.match(rendered, /CI checks \| pending \| 0 failed, 1 pending, 0 unknown, 2 passed, 1 skipped out of 4 check\(s\)\./);
+  });
+
+  test("renderReviewGateStatusComment shows pending check details when available", () => {
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "ci-status", status: "pending", explanation: "pending checks" }],
+      "2026-06-30T00:00:00.000Z",
+      evidenceSummaryFromPrContext({
+        ci_status: {
+          total_checks: 2,
+          passed: 1,
+          failed: 0,
+          pending: 1,
+          skipped: 0,
+          failed_checks: [],
+          pending_checks: [
+            {
+              name: "deploy preview @ops",
+              status: "IN_PROGRESS",
+              details_url: "https://example.test/checks/deploy",
+            },
+          ],
+        },
+      }),
+    );
+
+    assert.match(rendered, /CI checks \| pending \| 0 failed, 1 pending, 0 unknown, 1 passed, 0 skipped out of 2 check\(s\)\. Pending: deploy preview &#64;ops \(IN_PROGRESS, https:\/\/example.test\/checks\/deploy\)/);
+    assert.match(rendered, /Evidence refs \| 1 \| https:\/\/example.test\/checks\/deploy/);
+    assert.doesNotMatch(rendered, /@ops/);
+  });
+
+  test("renderReviewGateStatusComment shows unknown check details when available", () => {
+    const rendered = renderReviewGateStatusComment(
+      [{ rule: "ci-status", status: "unknown", explanation: "unknown check state" }],
+      "2026-06-30T00:00:00.000Z",
+      evidenceSummaryFromPrContext({
+        ci_status: {
+          total_checks: 1,
+          passed: 0,
+          failed: 0,
+          pending: 0,
+          unknown: 1,
+          skipped: 0,
+          failed_checks: [],
+          pending_checks: [],
+          unknown_checks: [
+            {
+              name: "manual approval @ops",
+              state: "ACTION_REQUIRED",
+              status: "",
+              conclusion: "",
+              details_url: "https://example.test/checks/manual",
+            },
+          ],
+        },
+      }),
+    );
+
+    assert.match(rendered, /CI checks \| unknown \| 0 failed, 0 pending, 1 unknown, 0 passed, 0 skipped out of 1 check\(s\)\. Unknown: manual approval &#64;ops \(ACTION_REQUIRED, https:\/\/example.test\/checks\/manual\)/);
+    assert.match(rendered, /Evidence refs \| 1 \| https:\/\/example.test\/checks\/manual/);
+    assert.doesNotMatch(rendered, /@ops/);
+  });
+
+  test("agentTokenUsageFromResult extracts exact agent token usage when reported", () => {
     const usage = agentTokenUsageFromResult({
       status: "success",
       telemetry: {
@@ -312,35 +1499,6 @@ describe("agent flow: runPiAgent result contract", () => {
       source: "pi-provider-usage",
     });
 
-    const rendered = renderReviewGateStatusComment(
-      [{ rule: "pi-agent", status: "pass", explanation: "completed" }],
-      "2026-06-30T00:00:00.000Z",
-      usage,
-    );
-
-    assert.match(rendered, /### Agent telemetry/);
-    assert.match(rendered, /\| Model \| claude-sonnet-4-5-20250929 \|/);
-    assert.match(rendered, /\| Input tokens \| 1,200 \|/);
-    assert.match(rendered, /\| Output tokens \| 345 \|/);
-    assert.match(rendered, /\| Cache read input tokens \| 55 \|/);
-    assert.match(rendered, /\| Total tokens \| 1,545 \|/);
-    assert.match(rendered, /Source: pi-provider-usage/);
-  });
-
-  test("renderReviewGateStatusComment includes merge-god runtime identity", () => {
-    const rendered = renderReviewGateStatusComment(
-      [{ rule: "pi-agent", status: "pass", explanation: "completed" }],
-      "2026-06-30T00:00:00.000Z",
-      {
-        model: "pi-model",
-        merge_god_commit: "abc123def456",
-        merge_god_release: "v0.1.0",
-      },
-    );
-
-    assert.match(rendered, /\| Model \| pi-model \|/);
-    assert.match(rendered, /\| merge-god commit \| abc123def456 \|/);
-    assert.match(rendered, /\| merge-god release \| v0.1.0 \|/);
   });
 
   test("mergeGodRuntimeTelemetry reports merge-god identity independent of target repo cwd", () => {
@@ -473,6 +1631,8 @@ await callTool("merge_god_propose_next", {
 await callTool("merge_god_create_child_activity", {
   type: "ci_diagnosis",
   summary: "fake pi requested a scoped CI diagnosis child activity",
+  model_tier: "standard",
+  model_reason: "CI diagnosis needs moderate reasoning over trajectory and check state.",
   evidence_refs: ["evidence://fake-pi/state-read"],
 });
 await callTool("merge_god_complete", {

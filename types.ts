@@ -115,6 +115,69 @@ export interface CIStatusInfo {
   failed_checks: string[];
 }
 
+export type DiffSource = "gh-pr-diff" | "local-git-diff" | "forge-file-patches";
+
+export interface DiffAvailability {
+  available: boolean;
+  source: DiffSource | null;
+  size: number;
+  truncated: boolean;
+  error: string | null;
+}
+
+export type MergeBlockerKind =
+  | "draft"
+  | "review_required"
+  | "changes_requested"
+  | "ci_failed"
+  | "ci_pending"
+  | "ci_missing"
+  | "merge_conflicts"
+  | "diff_unavailable"
+  | "merge_state_blocked"
+  | "external_gate"
+  | "unknown";
+
+export interface MergeBlocker {
+  kind: MergeBlockerKind;
+  status: "blocked" | "pending" | "unknown";
+  summary: string;
+  evidence_refs: string[];
+}
+
+export interface QueueConstituentPR {
+  number: number;
+  title: string | null;
+  url: string | null;
+  head_sha: string | null;
+  status: "queued" | "merged_into_queue" | "validated" | "blocked" | "unknown";
+  evidence_refs: string[];
+}
+
+export interface QueueMergeCommit {
+  sha: string;
+  pr_number: number | null;
+  subject: string;
+  conflict_files: string[];
+  evidence_refs: string[];
+}
+
+export interface QueueValidationEvidence {
+  command: string;
+  status: "passed" | "failed" | "blocked" | "unknown";
+  scope: string | null;
+  evidence_ref: string | null;
+}
+
+export interface MergeQueueContext {
+  is_queue: boolean;
+  strategy: "title_pr_list" | "merge_commits" | "manual" | "unknown";
+  constituent_prs: QueueConstituentPR[];
+  merge_commits: QueueMergeCommit[];
+  validation_evidence: QueueValidationEvidence[];
+  unresolved_blockers: MergeBlocker[];
+}
+
 export interface PRDetails {
   number: number;
   title: string;
@@ -136,6 +199,9 @@ export interface PRContextDict {
   conflicts: ConflictInfo;
   ci_status: CIStatusInfo;
   diff: string;
+  diff_availability?: DiffAvailability;
+  merge_blockers?: MergeBlocker[];
+  queue_context?: MergeQueueContext | null;
   guidelines?: string;
   commit_examples?: string;
   merge_rules?: string;

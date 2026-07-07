@@ -73,6 +73,8 @@ interface ProposedNextInput {
 interface ChildActivityInput {
   type?: string;
   summary?: string;
+  model_tier?: "fast" | "standard" | "high";
+  model_reason?: string;
   prompt_runtime_ref?: string | null;
   context_pack_refs?: string[];
   evidence_refs?: string[];
@@ -429,6 +431,7 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use this only when the current activity needs a scoped sub-context to proceed.",
       "Choose the narrowest valid activity type and include a concise summary of why it is needed.",
+      "Set model_tier to fast, standard, or high based on required reasoning quality, and explain that choice in model_reason.",
       "merge-god validates whether the child activity type is allowed under the current parent activity.",
     ],
     parameters: {
@@ -453,6 +456,15 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
           type: "string",
           description: "Why this child activity is needed and what it should accomplish.",
         },
+        model_tier: {
+          type: "string",
+          enum: ["fast", "standard", "high"],
+          description: "Recommended model quality tier for this child activity.",
+        },
+        model_reason: {
+          type: "string",
+          description: "Why this child activity needs the selected model quality tier.",
+        },
         prompt_runtime_ref: {
           type: "string",
           description: "Optional prompt runtime reference for the child activity.",
@@ -473,7 +485,7 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
           description: "Additional structured metadata.",
         },
       },
-      required: ["type", "summary"],
+      required: ["type", "summary", "model_tier", "model_reason"],
       additionalProperties: false,
     } as any,
     async execute(_toolCallId, params) {

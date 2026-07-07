@@ -1,15 +1,14 @@
 /**
  * Port of tests/test_fixes.py.
  *
- * Exercises `validateGitRef` (the git-ref safety check added to pr-loop.py).
- * The Python test shipped an inline copy of the function; here we import the
- * real implementation from pr-loop.ts so the test guards the actual code path.
+ * Exercises `validateGitRef` (the git-ref safety check).
  */
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { PR_VIEW_JSON_FIELDS, validateGitRef } from "../pr-loop";
+import { validateGitRef } from "../git_ref";
+import { PR_VIEW_JSON_FIELDS } from "../pr-loop";
 
 describe("validateGitRef", () => {
   test("accepts valid refs", () => {

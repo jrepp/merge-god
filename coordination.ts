@@ -17,7 +17,21 @@ import type { AddressInfo } from "node:net";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  buildFollowUpPrBody,
+  defaultFollowUpBranch,
+  followUpBaseBranch,
+  linkedPrNumber,
+  normalizeFollowUpPrInput,
+  stringArray,
+} from "./follow_up_pr_model";
 import { GitOps, type GitOpsObserver } from "./git_ops";
+import {
+  recordAgentRun,
+  recordPromptRendered,
+  sanitizeSpanAttributes,
+  withTelemetrySpan,
+} from "./telemetry";
 
 export interface WorkItem {
   kind?: string;
@@ -53,6 +67,8 @@ export interface CoordinationTrajectoryBridge {
   createChildActivity?(input: {
     type: string;
     summary: string;
+    model_tier?: string;
+    model_reason?: string;
     prompt_runtime_ref?: string | null;
     context_pack_refs?: string[];
     evidence_refs?: string[];
@@ -60,19 +76,7 @@ export interface CoordinationTrajectoryBridge {
   }): unknown | Promise<unknown>;
 }
 
-export interface FollowUpPrInput {
-  title: string;
-  body?: string;
-  branch?: string;
-  base?: string;
-  linked_pr_number?: number;
-  commit_message?: string;
-  draft?: boolean;
-  labels?: string[];
-  signal_refs: string[];
-  grounding_refs: string[];
-  validation_refs?: string[];
-}
+export type { FollowUpPrInput } from "./follow_up_pr_model";
 
 export interface FollowUpPrResult {
   title: string;
@@ -396,8 +400,13 @@ export class CoordinationServer {
           .then((body) => {
             const type = typeof body["type"] === "string" ? body["type"] : "";
             const summary = typeof body["summary"] === "string" ? body["summary"] : "";
-            if (!type || !summary) {
-              this._send(res, 400, { ok: false, error: "type and summary are required" });
+            const modelTier = typeof body["model_tier"] === "string" ? body["model_tier"] : "";
+            const modelReason = typeof body["model_reason"] === "string" ? body["model_reason"] : "";
+            if (!type || !summary || !modelTier || !modelReason) {
+              this._send(res, 400, {
+                ok: false,
+                error: "type, summary, model_tier, and model_reason are required",
+              });
               return;
             }
             const contextPackRefs = Array.isArray(body["context_pack_refs"])
@@ -413,6 +422,8 @@ export class CoordinationServer {
               this._trajectory!.createChildActivity!({
                 type,
                 summary,
+                model_tier: modelTier,
+                model_reason: modelReason,
                 prompt_runtime_ref: typeof body["prompt_runtime_ref"] === "string" ? body["prompt_runtime_ref"] : null,
                 context_pack_refs: contextPackRefs,
                 evidence_refs: evidenceRefs,
@@ -464,11 +475,7 @@ export class CoordinationServer {
     const repoPath = this._repoPath;
     if (!repoPath) throw new Error("no agent worktree configured");
 
-    const base =
-      input.base ??
-      (typeof work?.["base_branch"] === "string" ? work["base_branch"] : null) ??
-      (typeof work?.["baseRefName"] === "string" ? work["baseRefName"] : null) ??
-      "main";
+    const base = followUpBaseBranch(input, work);
     const branch = input.branch ?? defaultFollowUpBranch(input.title, work);
     const gitOps = new GitOps(repoPath, this._gitObserver);
 
@@ -524,62 +531,6 @@ export class CoordinationServer {
   }
 }
 
-function defaultFollowUpBranch(title: string, work: WorkItem | null): string {
-  const prefix = work?.pr_number
-    ? `pr-${work.pr_number}`
-    : work?.issue_number
-      ? `issue-${work.issue_number}`
-      : "work";
-  return `merge-god/${prefix}-${slugify(title).slice(0, 48) || "follow-up"}`;
-}
-
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function describeWorkItem(work: WorkItem | null): string {
-  if (!work) return "a merge-god work item";
-  if (work.pr_number) return `PR #${work.pr_number}`;
-  if (work.issue_number) return `issue #${work.issue_number}`;
-  return work.kind ? `merge-god ${work.kind} work` : "a merge-god work item";
-}
-
-function normalizeFollowUpPrInput(body: Record<string, unknown>): FollowUpPrInput {
-  const title = typeof body["title"] === "string" ? body["title"].trim() : "";
-  if (!title) throw new Error("title is required");
-  const labels = Array.isArray(body["labels"])
-    ? body["labels"].filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : undefined;
-  const signalRefs = stringArray(body["signal_refs"]);
-  const groundingRefs = stringArray(body["grounding_refs"]);
-  const validationRefs = stringArray(body["validation_refs"]);
-  if (signalRefs.length === 0) {
-    throw new Error("signal_refs is required before opening an automated remediation PR");
-  }
-  if (groundingRefs.length === 0) {
-    throw new Error("grounding_refs is required before opening an automated remediation PR");
-  }
-  return {
-    title,
-    body: typeof body["body"] === "string" ? body["body"] : undefined,
-    branch: typeof body["branch"] === "string" && body["branch"].trim() ? body["branch"].trim() : undefined,
-    base: typeof body["base"] === "string" && body["base"].trim() ? body["base"].trim() : undefined,
-    linked_pr_number: typeof body["linked_pr_number"] === "number" ? body["linked_pr_number"] : undefined,
-    commit_message:
-      typeof body["commit_message"] === "string" && body["commit_message"].trim()
-        ? body["commit_message"].trim()
-        : undefined,
-    draft: typeof body["draft"] === "boolean" ? body["draft"] : undefined,
-    labels,
-    signal_refs: signalRefs,
-    grounding_refs: groundingRefs,
-    validation_refs: validationRefs.length > 0 ? validationRefs : undefined,
-  };
-}
-
 function normalizeAgentObservation(body: Record<string, unknown>): AgentObservation {
   const summary = typeof body["summary"] === "string" ? body["summary"].trim() : "";
   if (!summary) throw new Error("summary is required");
@@ -605,37 +556,6 @@ function normalizeAgentObservation(body: Record<string, unknown>): AgentObservat
   };
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    : [];
-}
-
-function linkedPrNumber(work: WorkItem | null): number | null {
-  return typeof work?.pr_number === "number" ? work.pr_number : null;
-}
-
-function buildFollowUpPrBody(input: FollowUpPrInput, work: WorkItem | null): string {
-  const linked = input.linked_pr_number ?? linkedPrNumber(work);
-  const lines = [
-    input.body?.trim() || `Opened by merge-god from ${describeWorkItem(work)}.`,
-    "",
-    "## merge-god remediation evidence",
-    "",
-    linked ? `Linked PR: #${linked}` : "Linked PR: none",
-    "",
-    "Signal:",
-    ...input.signal_refs.map((ref) => `- ${ref}`),
-    "",
-    "Project grounding:",
-    ...input.grounding_refs.map((ref) => `- ${ref}`),
-  ];
-  if (input.validation_refs && input.validation_refs.length > 0) {
-    lines.push("", "Validation:", ...input.validation_refs.map((ref) => `- ${ref}`));
-  }
-  return lines.join("\n");
-}
-
 export const DEFAULT_INSTRUCTION =
   "You are operating as the merge-god PR agent.\n" +
   "1) Call the `merge_god_context` tool to load your work item from the " +
@@ -644,6 +564,9 @@ export const DEFAULT_INSTRUCTION =
   "inspect the current run/work/activity state, and use " +
   "`merge_god_trajectory_event` for meaningful checkpoints, decisions, " +
   "blockers, and evidence references.\n" +
+  "When creating child trajectory activities, include `model_tier` " +
+  "(`fast`, `standard`, or `high`) and `model_reason`; merge-god rejects " +
+  "child activities that do not propose the needed model quality.\n" +
   "3) Use `merge_god_observe` at major checkpoints so merge-god can render live " +
   "TUI signal: whether you have enough context, what evidence you found, what " +
   "you need, and what you plan next. Use `merge_god_debug_snapshot` if you are " +
@@ -749,6 +672,18 @@ export async function runPiAgent(
     agentObserver,
   } = opts;
 
+  return withTelemetrySpan(
+    "merge_god.run_pi_agent",
+    {
+      "merge_god.operation": "run_pi_agent",
+      "merge_god.work_item_kind": workItem.kind ?? "unknown",
+      "merge_god.pr_number": workItem.pr_number,
+      "merge_god.issue_number": workItem.issue_number,
+      "merge_god.mode": workItem.mode,
+      "merge_god.repo": workItem.repo,
+      "merge_god.prompt_size": workItem.prompt.length,
+    },
+    async (span) => {
   const ext = extensionPath ?? findExtension();
   const gitOps = new GitOps(repoPath, gitObserver ?? null);
   const worktree = gitOps.createDetachedWorktree();
@@ -764,6 +699,13 @@ export async function runPiAgent(
   const dotenvEnv = loadPiDotEnv(repoPath);
   const env: NodeJS.ProcessEnv = { ...dotenvEnv, ...process.env, MERGE_GOD_API: server.baseUrl };
   if (extraEnv) Object.assign(env, extraEnv);
+  const startedAt = Date.now();
+  recordPromptRendered("pi_work_item", workItem.prompt, {
+    "merge_god.work_item_kind": workItem.kind ?? "unknown",
+    "merge_god.pr_number": workItem.pr_number,
+    "merge_god.issue_number": workItem.issue_number,
+    "merge_god.mode": workItem.mode,
+  });
 
   try {
     server.setWork({
@@ -822,16 +764,44 @@ export async function runPiAgent(
     if (exit.error) {
       stderr += stderr.endsWith("\n") || stderr.length === 0 ? String(exit.error) : `\n${String(exit.error)}`;
     }
-    return {
+    const result = {
       returncode: exit.code,
       stdout,
       stderr,
       result: server.getResult(),
     };
+    const resultStatus = typeof result.result?.["status"] === "string" ? result.result["status"] : null;
+    const success = result.returncode === 0 && resultStatus === "success";
+    const duration = (Date.now() - startedAt) / 1000;
+    const resultSummary =
+      typeof result.result?.["summary"] === "string"
+        ? result.result["summary"]
+        : typeof result.result?.["error"] === "string"
+          ? result.result["error"]
+          : "";
+    span.setAttributes(sanitizeSpanAttributes({
+      "merge_god.returncode": result.returncode,
+      "merge_god.success": success,
+      "merge_god.result_status": success ? "success" : "failure",
+      "merge_god.result_summary": resultSummary,
+      "merge_god.completion_reported": result.result !== null,
+      "merge_god.duration_seconds": duration,
+      "merge_god.observation_count": server.getObservations().length,
+    }));
+    recordAgentRun("pi", success, duration, {
+      "merge_god.work_item_kind": workItem.kind ?? "unknown",
+      "merge_god.pr_number": workItem.pr_number,
+      "merge_god.issue_number": workItem.issue_number,
+      "merge_god.mode": workItem.mode,
+      "merge_god.returncode": result.returncode,
+    });
+    return result;
   } finally {
     await server.stop();
     worktree.cleanup();
   }
+    },
+  );
 }
 
 // --- CLI demo mode (mirrors `python coordination.py --demo`) ---

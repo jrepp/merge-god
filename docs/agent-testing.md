@@ -65,6 +65,33 @@ Use when:
 
 ## Testing Workflow
 
+### Promptfoo Prompt Evaluation
+
+merge-god includes a Promptfoo harness for prompt regression checks and
+optimization experiments:
+
+```bash
+# Deterministic render-contract checks for PR, issue, and review prompts
+npm run prompt:eval
+
+# Open the local Promptfoo UI for stored eval runs
+npm run prompt:view
+
+# Optimize the prompt overlay against a real upstream provider
+MERGE_GOD_PROMPTFOO_PROVIDER=openai:gpt-5-mini npm run prompt:optimize
+```
+
+Promptfoo state is stored under `.promptfoo/` so runs do not depend on a
+user-level Promptfoo database. The render-contract config is
+`evals/promptfoo/promptfooconfig.yaml` and runs without model API keys. The
+optimization config is `evals/promptfoo/pr-agent-optimization.yaml`; it composes
+the current merge-god PR prompt with `evals/promptfoo/prompts/pr-agent-overlay.md`
+and sends that composed prompt to the configured upstream provider.
+
+Use the deterministic config to catch missing prompt sections or broken fixture
+normalization. Use the optimization config when changing the overlay instructions
+or comparing model behavior across recorded PR scenarios.
+
 ### Phase 1: Database Preparation
 
 Cache PR context to database for offline testing:

@@ -154,6 +154,53 @@ describe("SyncStore", () => {
       files: [{ path: "f" }],
       conflicts: { has_conflicts: true },
       ci_status: { failed: 1 },
+      diff_availability: {
+        available: true,
+        source: "gh-pr-diff",
+        size: 22,
+        truncated: false,
+        error: null,
+      },
+      merge_blockers: [
+        {
+          kind: "ci_failed",
+          status: "blocked",
+          summary: "1 CI check failed.",
+          evidence_refs: ["github:statusCheckRollup"],
+        },
+      ],
+      queue_context: {
+        is_queue: true,
+        strategy: "title_pr_list",
+        constituent_prs: [
+          { number: 7, title: null, url: null, head_sha: null, status: "blocked", evidence_refs: ["pr:#7"] },
+        ],
+        merge_commits: [
+          {
+            sha: "abcdef123456",
+            pr_number: 7,
+            subject: "Merge PR #7",
+            conflict_files: ["packages/api/src/index.ts"],
+            evidence_refs: ["commit:abcdef123456"],
+          },
+        ],
+        validation_evidence: [
+          {
+            command: "npm run test -- api",
+            status: "failed",
+            scope: "#7",
+            evidence_ref: "https://example.com/comment-validation",
+          },
+        ],
+        unresolved_blockers: [
+          {
+            kind: "ci_failed",
+            status: "blocked",
+            summary: "Queue constituent PR #7 has 1 failed or blocked validation evidence item(s).",
+            evidence_refs: ["https://example.com/comment-validation"],
+          },
+        ],
+      },
       guidelines: "be nice",
       commit_examples: "fix: thing",
     };
@@ -169,6 +216,53 @@ describe("SyncStore", () => {
     assert.equal(ctx!["commit_examples"], "fix: thing");
     assert.deepEqual(ctx!["comments"], [{ id: 1, body: "comment" }]);
     assert.deepEqual(ctx!["conflicts"], { has_conflicts: true });
+    assert.deepEqual(ctx!["diff_availability"], {
+      available: true,
+      source: "gh-pr-diff",
+      size: 22,
+      truncated: false,
+      error: null,
+    });
+    assert.deepEqual(ctx!["merge_blockers"], [
+      {
+        kind: "ci_failed",
+        status: "blocked",
+        summary: "1 CI check failed.",
+        evidence_refs: ["github:statusCheckRollup"],
+      },
+    ]);
+    assert.deepEqual(ctx!["queue_context"], {
+      is_queue: true,
+      strategy: "title_pr_list",
+      constituent_prs: [
+        { number: 7, title: null, url: null, head_sha: null, status: "blocked", evidence_refs: ["pr:#7"] },
+      ],
+      merge_commits: [
+        {
+          sha: "abcdef123456",
+          pr_number: 7,
+          subject: "Merge PR #7",
+          conflict_files: ["packages/api/src/index.ts"],
+          evidence_refs: ["commit:abcdef123456"],
+        },
+      ],
+      validation_evidence: [
+        {
+          command: "npm run test -- api",
+          status: "failed",
+          scope: "#7",
+          evidence_ref: "https://example.com/comment-validation",
+        },
+      ],
+      unresolved_blockers: [
+        {
+          kind: "ci_failed",
+          status: "blocked",
+          summary: "Queue constituent PR #7 has 1 failed or blocked validation evidence item(s).",
+          evidence_refs: ["https://example.com/comment-validation"],
+        },
+      ],
+    });
   });
 
   test("savePrContext + getPrContextForAgent returns backfilled tuple", async () => {

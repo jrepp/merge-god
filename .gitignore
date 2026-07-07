@@ -39,6 +39,7 @@ config.yaml
 .env
 .env.local
 .env.*.local
+.promptfoo/
 
 # Node.js
 node_modules/

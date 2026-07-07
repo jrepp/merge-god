@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { type CategorizedPRs, planStackedPrMergeOrder, suggestProcessingLabel } from "../pr-loop";
+import { type CategorizedPRs, planStackedPrMergeOrder, suggestProcessingLabel } from "../pr_loop_model";
 
 function pr(number: number, headRefName: string, baseRefName = "main", title = `PR ${number}`): Record<string, unknown> {
   return {
