@@ -496,7 +496,7 @@ function ensureAgentAnnotationLabel(name: string): boolean {
   return true;
 }
 
-function applyAgentAnnotationLabels(prNumber: number, labels: string[]): boolean {
+export function applyAgentAnnotationLabels(prNumber: number, labels: string[]): boolean {
   const allowedLabels = [...new Set(labels)].filter((label) => label in AGENT_ANNOTATION_LABELS);
   if (allowedLabels.length === 0) return true;
   const ensuredLabels = allowedLabels.filter((label) => ensureAgentAnnotationLabel(label));

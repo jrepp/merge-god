@@ -33,7 +33,7 @@ import {
 import { SyncStore } from "@merge-god/github-sync";
 import { AppStore } from "./app_store";
 import { runPiAgent, type WorkItem } from "./coordination";
-import { buildPrPrompt } from "./pr-loop";
+import { agentAnnotationLabelsFromResult, applyAgentAnnotationLabels, buildPrPrompt } from "./pr-loop";
 import { TrajectoryRuntime } from "./trajectory_runtime";
 import type { CompatibilityTrajectoryIds } from "./trajectory";
 
@@ -333,6 +333,8 @@ export async function runAgentFromDb(
     const errorMessage = success
       ? null
       : (typeof piResult.result?.["error"] === "string" ? piResult.result["error"] : piResult.stderr);
+    const annotationLabels = agentAnnotationLabelsFromResult(piResult.result);
+    const annotationLabelsApplied = applyAgentAnnotationLabels(prNumber, annotationLabels);
 
     if (trajectoryIds) {
       try {
@@ -363,6 +365,8 @@ export async function runAgentFromDb(
       stdout_bytes: Buffer.byteLength(piResult.stdout),
       stderr_bytes: Buffer.byteLength(piResult.stderr),
       result: piResult.result,
+      annotation_labels: annotationLabels,
+      annotation_labels_applied: annotationLabelsApplied,
       mode,
       runtime,
     });
