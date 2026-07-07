@@ -30,7 +30,10 @@ import {
 } from "../evidence_comment";
 import { analyzeMergeBlockers, inferMergeQueueContext } from "../merge_pr_model";
 import {
+  agentAnnotationLabelsFromResult,
+  agentTokenUsageFromResult,
   classifyPrFailureState,
+  mergeGodRuntimeTelemetry,
   piAgentFailureReason,
 } from "../pr-loop";
 import { reviewGateStatusesFromContext } from "../review_gate_status";
@@ -1470,6 +1473,62 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.doesNotMatch(rendered, /@ops/);
   });
 
+  test("agentTokenUsageFromResult extracts exact agent token usage when reported", () => {
+    const usage = agentTokenUsageFromResult({
+      status: "success",
+      telemetry: {
+        model: "claude-sonnet-4-5-20250929",
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 345,
+          cache_read_input_tokens: 55,
+          total_tokens: 1545,
+          source: "pi-provider-usage",
+        },
+      },
+    });
+
+    assert.deepEqual(usage, {
+      model: "claude-sonnet-4-5-20250929",
+      input_tokens: 1200,
+      output_tokens: 345,
+      cache_creation_input_tokens: undefined,
+      cache_read_input_tokens: 55,
+      total_tokens: 1545,
+      source: "pi-provider-usage",
+    });
+
+  });
+
+  test("mergeGodRuntimeTelemetry reports merge-god identity independent of target repo cwd", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-target-repo-"));
+    const originalCwd = process.cwd();
+    try {
+      writeFileSync(path.join(tempDir, "package.json"), JSON.stringify({ version: "9.9.9" }));
+      process.chdir(tempDir);
+
+      const telemetry = mergeGodRuntimeTelemetry();
+
+      assert.notEqual(telemetry.merge_god_release, "v9.9.9");
+      assert.notEqual(telemetry.merge_god_release, "unknown");
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("agentAnnotationLabelsFromResult filters to allowlisted semantic labels", () => {
+    assert.deepEqual(
+      agentAnnotationLabelsFromResult({
+        annotations: {
+          labels: ["Large", "too large", "please-run-my-label", "unaligned"],
+        },
+        annotation_labels: ["docs-only", "not-allowed"],
+      }),
+      ["docs-only", "large", "too-large", "unaligned"],
+    );
+  });
+
   test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
     const binDir = path.join(tempDir, "bin");
@@ -1555,6 +1614,18 @@ await callTool("merge_god_create_child_activity", {
 await callTool("merge_god_complete", {
   status: "success",
   summary: "fake pi used merge-god coordination trajectory state",
+  annotations: {
+    labels: ["large", "embark-candidate"],
+  },
+  telemetry: {
+    model: "fake-pi-model",
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+      source: "fake-pi-provider",
+    },
+  },
 });
 `,
       );
@@ -1613,6 +1684,18 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
       assert.equal(result.returncode, 0, result.stderr || result.stdout);
       assert.equal(result.result?.["status"], "success");
       assert.equal(result.result?.["summary"], "fake pi used merge-god coordination trajectory state");
+      assert.deepEqual(result.result?.["annotations"], {
+        labels: ["large", "embark-candidate"],
+      });
+      assert.deepEqual(result.result?.["telemetry"], {
+        model: "fake-pi-model",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          source: "fake-pi-provider",
+        },
+      });
       assert.match(result.stdout, /"tool":"merge_god_trajectory_state"/);
       assert.match(result.stdout, /"tool":"merge_god_observe"/);
       assert.match(result.stdout, /"tool":"merge_god_debug_snapshot"/);

@@ -17,9 +17,9 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 import YAML from "yaml";
 import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
@@ -82,6 +82,7 @@ export type { PrProcessingState } from "./pr_state";
 
 // SyncStore persists PR context for offline agent runs.
 const DB_AVAILABLE: boolean = true;
+const MERGE_GOD_PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 
 // --- Small unexported coercion helpers --------------------------------------
 
@@ -491,7 +492,227 @@ export function setPrStateLabel(prNumber: number, state: PrProcessingState, reas
   return true;
 }
 
+function ensureAgentAnnotationLabel(name: string): boolean {
+  const spec = AGENT_ANNOTATION_LABELS[name];
+  if (!spec) return false;
+  const [viewCode] = runCommand(["gh", "label", "view", name], undefined, 30);
+  if (viewCode === 0) return true;
+  const [createCode, _stdout, stderr] = runCommand(
+    [
+      "gh",
+      "label",
+      "create",
+      name,
+      "--color",
+      spec.color,
+      "--description",
+      spec.description,
+    ],
+    undefined,
+    30,
+  );
+  if (createCode !== 0 && !isAlreadyExistsError(stderr)) {
+    logJson("agent_annotation_label", {
+      action: "ensure_failed",
+      label: name,
+      stderr,
+    });
+    return false;
+  }
+  return true;
+}
+
+export function applyAgentAnnotationLabels(prNumber: number, labels: string[]): boolean {
+  const allowedLabels = [...new Set(labels)].filter((label) => label in AGENT_ANNOTATION_LABELS);
+  if (allowedLabels.length === 0) return true;
+  const ensuredLabels = allowedLabels.filter((label) => ensureAgentAnnotationLabel(label));
+  if (ensuredLabels.length === 0) return false;
+  const [returncode, _stdout, stderr] = runCommand(
+    ["gh", "pr", "edit", String(prNumber), "--add-label", ensuredLabels.join(",")],
+    undefined,
+    30,
+  );
+  if (returncode !== 0) {
+    logJson("agent_annotation_label", {
+      action: "apply_failed",
+      pr_number: prNumber,
+      labels: ensuredLabels,
+      stderr,
+    });
+    return false;
+  }
+  logJson("agent_annotation_label", {
+    action: "applied",
+    pr_number: prNumber,
+    labels: ensuredLabels,
+  });
+  return true;
+}
+
 // --- Review gate status comment cache ----------------------------------------
+
+export interface AgentTokenUsage {
+  model?: string;
+  merge_god_commit?: string;
+  merge_god_release?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  total_tokens?: number;
+  source?: string;
+}
+
+export const AGENT_ANNOTATION_LABELS: Record<string, { description: string; color: string }> = {
+  large: {
+    description: "Agent annotation: broad PR with many files or substantial review surface",
+    color: "d4c5f9",
+  },
+  "too-large": {
+    description: "Agent annotation: PR is too large to safely process as one landing unit",
+    color: "b60205",
+  },
+  unaligned: {
+    description: "Agent annotation: implementation appears unaligned with design, requirements, or merge rules",
+    color: "fbca04",
+  },
+  "needs-split": {
+    description: "Agent annotation: PR should be split into smaller or underlying PRs",
+    color: "d93f0b",
+  },
+  "needs-design": {
+    description: "Agent annotation: design or requirements clarification is needed before landing",
+    color: "fbca04",
+  },
+  "high-risk": {
+    description: "Agent annotation: higher merge risk due to scope, architecture, or validation uncertainty",
+    color: "b60205",
+  },
+  "low-risk": {
+    description: "Agent annotation: low-risk change with narrow scope",
+    color: "0e8a16",
+  },
+  "docs-only": {
+    description: "Agent annotation: documentation-only change",
+    color: "0075ca",
+  },
+  "test-only": {
+    description: "Agent annotation: test-only change",
+    color: "1d76db",
+  },
+  "embark-candidate": {
+    description: "Agent annotation: candidate for grouped embark validation",
+    color: "5319e7",
+  },
+  "underlying-needed": {
+    description: "Agent annotation: needs an underlying remediation PR or set before landing",
+    color: "d93f0b",
+  },
+};
+
+export function agentAnnotationLabelsFromResult(result: unknown): string[] {
+  const resultObj = asRecord(result);
+  const annotations = asRecord(resultObj["annotations"]);
+  const candidates = [
+    ...asArray(resultObj["annotation_labels"]),
+    ...asArray(annotations["labels"]),
+  ];
+  const labels = new Set<string>();
+  for (const candidate of candidates) {
+    const label = toStr(candidate).trim().toLowerCase().replace(/\s+/g, "-");
+    if (label in AGENT_ANNOTATION_LABELS) labels.add(label);
+  }
+  return [...labels];
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
+}
+
+export function agentTokenUsageFromResult(result: unknown): AgentTokenUsage | null {
+  const resultObj = asRecord(result);
+  const telemetryObj = asRecord(resultObj["telemetry"]);
+  const usageObj = asRecord(telemetryObj["usage"]);
+  const legacyUsageObj = asRecord(resultObj["usage"]);
+  const usage = Object.keys(usageObj).length > 0
+    ? usageObj
+    : Object.keys(legacyUsageObj).length > 0
+      ? legacyUsageObj
+      : resultObj;
+  const inputTokens = nonNegativeInteger(usage["input_tokens"]);
+  const outputTokens = nonNegativeInteger(usage["output_tokens"]);
+  const cacheCreationInputTokens = nonNegativeInteger(usage["cache_creation_input_tokens"]);
+  const cacheReadInputTokens = nonNegativeInteger(usage["cache_read_input_tokens"]);
+  const explicitTotal = nonNegativeInteger(usage["total_tokens"]);
+  const summedTotal =
+    inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined;
+  const totalTokens = explicitTotal ?? summedTotal;
+
+  if (
+    modelValue(resultObj, telemetryObj, usage) === undefined &&
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheCreationInputTokens === undefined &&
+    cacheReadInputTokens === undefined &&
+    totalTokens === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    model: modelValue(resultObj, telemetryObj, usage),
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: cacheCreationInputTokens,
+    cache_read_input_tokens: cacheReadInputTokens,
+    total_tokens: totalTokens,
+    source:
+      typeof usage["source"] === "string" && usage["source"].trim()
+        ? usage["source"].trim()
+        : "merge_god_complete",
+  };
+}
+
+function modelValue(
+  resultObj: Record<string, unknown>,
+  telemetry: Record<string, unknown>,
+  usage: Record<string, unknown>,
+): string | undefined {
+  if (typeof usage["model"] === "string" && usage["model"].trim()) return usage["model"].trim();
+  if (typeof telemetry["model"] === "string" && telemetry["model"].trim()) return telemetry["model"].trim();
+  if (typeof resultObj["model"] === "string" && resultObj["model"].trim()) return resultObj["model"].trim();
+  return undefined;
+}
+
+function packageVersionRelease(): string {
+  try {
+    const raw = readFileSync(resolve(MERGE_GOD_PACKAGE_ROOT, "package.json"), "utf8");
+    const pkg = JSON.parse(raw) as Record<string, unknown>;
+    const version = typeof pkg["version"] === "string" ? pkg["version"].trim() : "";
+    return version ? `v${version}` : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+export function mergeGodRuntimeTelemetry(): Pick<AgentTokenUsage, "merge_god_commit" | "merge_god_release"> {
+  const [commitCode, commitStdout] = runCommand(
+    ["git", "rev-parse", "--short=12", "HEAD"],
+    MERGE_GOD_PACKAGE_ROOT,
+    10,
+  );
+  const [tagCode, tagStdout] = runCommand(
+    ["git", "describe", "--tags", "--exact-match", "HEAD"],
+    MERGE_GOD_PACKAGE_ROOT,
+    10,
+  );
+  return {
+    merge_god_commit: commitCode === 0 && commitStdout.trim() ? commitStdout.trim() : "unknown",
+    merge_god_release: tagCode === 0 && tagStdout.trim() ? tagStdout.trim() : packageVersionRelease(),
+  };
+}
 
 let currentGhLogin: string | null | undefined;
 
@@ -742,6 +963,33 @@ export function detectDefaultBranch(): string {
 }
 
 /** Fetch comprehensive PR details from `gh pr view`. */
+export const PR_VIEW_JSON_FIELDS = [
+  "number",
+  "title",
+  "body",
+  "state",
+  "headRefName",
+  "baseRefName",
+  "isDraft",
+  "mergeable",
+  "author",
+  "createdAt",
+  "updatedAt",
+  "closedAt",
+  "mergedAt",
+  "labels",
+  "assignees",
+  "reviewRequests",
+  "latestReviews",
+  "additions",
+  "deletions",
+  "changedFiles",
+  "commits",
+  "reviews",
+  "reviewDecision",
+  "statusCheckRollup",
+] as const;
+
 export function getPrDetails(prNumber: number): Record<string, unknown> {
   logJson("get_pr_details", { action: "start", pr_number: prNumber });
 
@@ -751,9 +999,7 @@ export function getPrDetails(prNumber: number): Record<string, unknown> {
     "view",
     String(prNumber),
     "--json",
-    "number,title,body,state,headRefName,baseRefName,isDraft,mergeable,mergeStateStatus," +
-      "author,createdAt,updatedAt,closedAt,mergedAt,labels,assignees," +
-      "additions,deletions,changedFiles,commits,reviews,reviewDecision,statusCheckRollup",
+    PR_VIEW_JSON_FIELDS.join(","),
   ]);
 
   if (returncode !== 0) {
@@ -1388,6 +1634,11 @@ export async function processPr(
       agentObserver: createAgentObservationObserver(),
     });
     const duration = (Date.now() - startedAt) / 1000;
+    const agentUsage = {
+      ...(agentTokenUsageFromResult(piResult.result) ?? {}),
+      ...mergeGodRuntimeTelemetry(),
+    };
+    const annotationLabels = agentAnnotationLabelsFromResult(piResult.result);
     const agentDecision = classifyPrAgentResult(piResult);
     const completionPlan = buildPrAgentCompletionPlan(inputResult.value, agentDecision, piResult.returncode, duration);
     span.setAttributes(sanitizeSpanAttributes({
@@ -1421,6 +1672,7 @@ export async function processPr(
       ],
       { evidence: reviewGateEvidence },
     );
+    const annotationLabelsApplied = applyAgentAnnotationLabels(prNumber, annotationLabels);
 
     logJson("process_pr", {
       action: "complete",
@@ -1433,6 +1685,9 @@ export async function processPr(
       stdout: piResult.stdout,
       stderr: piResult.stderr,
       result: piResult.result,
+      token_usage: agentUsage,
+      annotation_labels: annotationLabels,
+      annotation_labels_applied: annotationLabelsApplied,
       mode,
     });
 

@@ -21,7 +21,7 @@ import YAML from "yaml";
 import { SyncStore, GitClient } from "@merge-god/github-sync";
 import { prContextTelemetrySummary } from "./pr_context_log_model";
 import { prDetailsBaseBranch, prDetailsHeadBranch, prDetailsUrl } from "./pr_details_access_model";
-import { categorizedPrNumbers } from "./pr_loop_model";
+import { categorizedPrNumbers, planStackedPrMergeOrder, suggestProcessingLabel } from "./pr_loop_model";
 import { pullRequestSnapshotFromDetails } from "./pr_snapshot_model";
 import { gather_pr_context, getOpenPrs, getPrDetails } from "./pr-loop";
 
@@ -208,14 +208,35 @@ async function syncRepo(
       await new GitClient(repoPath).getDefaultBranch();
 
       const categorized = getOpenPrs();
+      const plan = planStackedPrMergeOrder(categorized);
       const sortedPrs = categorizedPrNumbers(categorized, ["for-landing", "for-review"]);
       stats.total = sortedPrs.length;
 
       logJson("sync_repo", {
-        action: "discovered_prs",
+        action: "repo_overview",
         repo: repoName,
-        pr_count: sortedPrs.length,
-        pr_numbers: sortedPrs,
+        processable_count: sortedPrs.length,
+        processable_pr_numbers: sortedPrs,
+        for_review_count: categorized["for-review"].length,
+        for_landing_count: categorized["for-landing"].length,
+        untagged_count: categorized["untagged"].length,
+        untagged_pr_numbers: categorized["untagged"]
+          .map((pr) => pr["number"])
+          .filter((number): number is number => typeof number === "number"),
+        label_suggestions: categorized["untagged"]
+          .map((pr) => suggestProcessingLabel(pr))
+          .filter((suggestion) => suggestion !== null),
+        stack_merge_order: {
+          strategy: "branch-ref-topological-order",
+          processing_order: plan.ordered.map((item) => ({
+            pr_number: item.pr["number"],
+            mode: item.mode,
+            stack_dependencies: item.stack_dependency_numbers,
+            stack_dependents: item.stack_dependent_numbers,
+          })),
+          stacks: plan.stacks,
+          blocked: plan.blocked,
+        },
       });
 
       if (sortedPrs.length === 0) {
@@ -259,6 +280,7 @@ async function main(): Promise<number> {
       config: { type: "string", default: "config.yaml" },
       db: { type: "string", default: "merge-god-state.db" },
       repo: { type: "string" },
+      "repo-path": { type: "string" },
       pr: { type: "string" },
     },
     strict: true,
@@ -274,21 +296,24 @@ async function main(): Promise<number> {
     }
   }
 
-  if (prNumber !== undefined && !values.repo) {
+  if (prNumber !== undefined && !values.repo && !values["repo-path"]) {
     logJson("error", { error: "--pr requires --repo to be specified" });
     return 1;
   }
 
   const configPath = values.config ?? "config.yaml";
-  let config: Record<string, unknown>;
-  try {
-    config = loadConfig(configPath);
-  } catch (e) {
-    logJson("error", {
-      error: `Failed to load config: ${errMsg(e)}`,
-      config_path: configPath,
-    });
-    return 1;
+  const directRepoPath = values["repo-path"];
+  let config: Record<string, unknown> | null = null;
+  if (!directRepoPath) {
+    try {
+      config = loadConfig(configPath);
+    } catch (e) {
+      logJson("error", {
+        error: `Failed to load config: ${errMsg(e)}`,
+        config_path: configPath,
+      });
+      return 1;
+    }
   }
 
   const dbPath = values.db ?? "merge-god-state.db";
@@ -306,15 +331,19 @@ async function main(): Promise<number> {
 
   logJson("sync", {
     action: "start",
-    config: configPath,
+    config: directRepoPath ? null : configPath,
     database: dbPath,
     repo_filter: values.repo ?? null,
+    repo_path: directRepoPath ?? null,
     pr_filter: prNumber ?? null,
   });
 
-  const repos = config["repos"];
+  const repos = directRepoPath
+    ? [{ path: directRepoPath, name: values.repo ?? basename(resolve(directRepoPath)), enabled: true }]
+    : config?.["repos"];
   if (!Array.isArray(repos)) {
     logJson("error", { error: "Config 'repos' section is not a list" });
+    await db.close();
     return 1;
   }
 

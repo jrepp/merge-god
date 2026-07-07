@@ -35,10 +35,34 @@ export interface PlannedPr {
   stack_dependent_numbers: number[];
 }
 
+export interface StackPlanEntry {
+  pr_number: number;
+  mode: ProcessingMode | null;
+  head_ref: string | null;
+  base_ref: string | null;
+  depends_on: number[];
+  dependents: number[];
+}
+
+export interface StackPlanBlockedItem {
+  pr_number: number;
+  reason: "stack_parent_without_processing_label" | "stack_dependency_cycle";
+  depends_on_pr_number?: number;
+  depends_on_head_ref?: string;
+  cycle_pr_numbers?: number[];
+}
+
 export interface StackMergeOrderPlan {
   ordered: PlannedPr[];
-  stacks: Record<string, unknown>[];
-  blocked: Record<string, unknown>[];
+  stacks: StackPlanEntry[];
+  blocked: StackPlanBlockedItem[];
+}
+
+export interface ProcessingLabelSuggestion {
+  pr_number: number;
+  suggested_label: ProcessingMode;
+  reason: string;
+  command: string;
 }
 
 export interface FilteredPrSummary {
@@ -87,6 +111,79 @@ function orderedProcessablePrs(
   return items;
 }
 
+function ensureNumberSet(map: Map<number, Set<number>>, key: number): Set<number> {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set<number>();
+    map.set(key, set);
+  }
+  return set;
+}
+
+function sortedNumbers(values: Iterable<number>): number[] {
+  return [...values].sort((a, b) => a - b);
+}
+
+function findDependencyCycle(
+  remaining: Set<number>,
+  dependencies: Map<number, Set<number>>,
+  compareNumbers: (a: number, b: number) => number,
+): number[] {
+  const visited = new Set<number>();
+  const stack: number[] = [];
+  const stackIndex = new Map<number, number>();
+
+  const visit = (number: number): number[] | null => {
+    visited.add(number);
+    stackIndex.set(number, stack.length);
+    stack.push(number);
+
+    const dependencyNumbers = [...(dependencies.get(number) ?? [])]
+      .filter((dependency) => remaining.has(dependency))
+      .sort(compareNumbers);
+    for (const dependency of dependencyNumbers) {
+      const dependencyStackIndex = stackIndex.get(dependency);
+      if (dependencyStackIndex !== undefined) return sortedNumbers(stack.slice(dependencyStackIndex));
+      if (!visited.has(dependency)) {
+        const cycle = visit(dependency);
+        if (cycle) return cycle;
+      }
+    }
+
+    stack.pop();
+    stackIndex.delete(number);
+    return null;
+  };
+
+  for (const number of [...remaining].sort(compareNumbers)) {
+    if (visited.has(number)) continue;
+    const cycle = visit(number);
+    if (cycle) return cycle;
+  }
+  return sortedNumbers(remaining);
+}
+
+export function suggestProcessingLabel(pr: Record<string, unknown>): ProcessingLabelSuggestion | null {
+  const prNumber = prDetailsNumber(pr);
+  if (prNumber === null) return null;
+  const labels = labelNames(pr);
+  if (labels.includes("for-review") || labels.includes("for-landing")) return null;
+  const title = prDetailsTitle(pr).toLowerCase();
+  const suggestedLabel: ProcessingMode =
+    labels.some((label) => label.includes("review")) || /\breview\b/.test(title)
+      ? "for-review"
+      : "for-landing";
+  return {
+    pr_number: prNumber,
+    suggested_label: suggestedLabel,
+    reason:
+      suggestedLabel === "for-review"
+        ? "PR appears review-oriented and has no merge-god processing label."
+        : "PR has no merge-god processing label; for-landing is the default landing workflow.",
+    command: `gh pr edit ${prNumber} --add-label ${suggestedLabel}`,
+  };
+}
+
 /**
  * Plan processing order for labeled PRs, honoring stacked-PR branch dependencies.
  *
@@ -114,13 +211,13 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
 
   const dependencies = new Map<number, Set<number>>();
   const dependents = new Map<number, Set<number>>();
-  const blocked: Record<string, unknown>[] = [];
+  const blocked: StackPlanBlockedItem[] = [];
 
   for (const item of processable) {
     const childNumber = prDetailsNumber(item.pr);
     if (childNumber === null) continue;
-    dependencies.set(childNumber, dependencies.get(childNumber) ?? new Set<number>());
-    dependents.set(childNumber, dependents.get(childNumber) ?? new Set<number>());
+    ensureNumberSet(dependencies, childNumber);
+    ensureNumberSet(dependents, childNumber);
 
     const baseRef = typeof item.pr["baseRefName"] === "string" ? item.pr["baseRefName"] : "";
     const parent = baseRef ? byHeadRef.get(baseRef) : undefined;
@@ -128,9 +225,8 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
     if (!parent || parentNumber === null || parentNumber === childNumber) continue;
 
     if (processableNumber.has(parentNumber)) {
-      dependencies.get(childNumber)!.add(parentNumber);
-      dependents.set(parentNumber, dependents.get(parentNumber) ?? new Set<number>());
-      dependents.get(parentNumber)!.add(childNumber);
+      ensureNumberSet(dependencies, childNumber).add(parentNumber);
+      ensureNumberSet(dependents, parentNumber).add(childNumber);
     } else {
       blocked.push({
         pr_number: childNumber,
@@ -143,6 +239,7 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
 
   const ordered: PlannedPr[] = [];
   const remaining = new Set(processable.map((item) => prDetailsNumber(item.pr)).filter((n): n is number => n !== null));
+  const cycleReportedFor = new Set<number>();
   const itemPriority = (number: number): [number, number, number] => {
     const item = processableNumber.get(number);
     if (!item) return [1, Number.MAX_SAFE_INTEGER, number];
@@ -158,7 +255,21 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
     const ready = [...remaining]
       .filter((number) => [...(dependencies.get(number) ?? [])].every((dependency) => !remaining.has(dependency)))
       .sort(compareNumbers);
-    const next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
+    const hasCycle = ready.length === 0;
+    let next = ready[0] ?? [...remaining].sort(compareNumbers)[0]!;
+    if (hasCycle) {
+      const cyclePrNumbers = findDependencyCycle(remaining, dependencies, compareNumbers);
+      const cycleRepresentative = [...cyclePrNumbers].sort(compareNumbers)[0] ?? next;
+      next = cycleRepresentative;
+      if (!cycleReportedFor.has(cycleRepresentative)) {
+        for (const number of cyclePrNumbers) cycleReportedFor.add(number);
+        blocked.push({
+          pr_number: cycleRepresentative,
+          reason: "stack_dependency_cycle",
+          cycle_pr_numbers: cyclePrNumbers,
+        });
+      }
+    }
     remaining.delete(next);
     const item = processableNumber.get(next);
     if (!item) continue;
@@ -166,8 +277,8 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
       pr: item.pr,
       mode: item.mode,
       priority: ordered.length,
-      stack_dependency_numbers: [...(dependencies.get(next) ?? [])].sort((a, b) => a - b),
-      stack_dependent_numbers: [...(dependents.get(next) ?? [])].sort((a, b) => a - b),
+      stack_dependency_numbers: sortedNumbers(dependencies.get(next) ?? []),
+      stack_dependent_numbers: sortedNumbers(dependents.get(next) ?? []),
     });
   }
 
@@ -187,8 +298,8 @@ export function planStackedPrMergeOrder(categorized: CategorizedPRs): StackMerge
         mode: item?.mode ?? null,
         head_ref: item ? prDetailsHeadBranch(item.pr) : null,
         base_ref: item && typeof item.pr["baseRefName"] === "string" ? item.pr["baseRefName"] : null,
-        depends_on: [...(dependencies.get(number) ?? [])].sort((a, b) => a - b),
-        dependents: [...(dependents.get(number) ?? [])].sort((a, b) => a - b),
+        depends_on: sortedNumbers(dependencies.get(number) ?? []),
+        dependents: sortedNumbers(dependents.get(number) ?? []),
       };
     });
 

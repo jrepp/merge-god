@@ -1,0 +1,18 @@
+# merge-god self-test configuration.
+#
+# Copy this file or pass it with --config when you want merge-god to process
+# PRs in the merge-god repository itself. Replace the path with your local
+# checkout before running.
+#
+# Short path from this repository checkout:
+#   npx tsx merge-god.ts scan --repo-path . --pr 14
+#   npx tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
+#
+# Config-driven path:
+#   npx tsx merge-god.ts --config config.merge-god-self-test.example.yaml scan --repo merge-god --pr 14
+#   npx tsx merge-god.ts --config config.merge-god-self-test.example.yaml agent --repo merge-god --pr 14 --mode for-review --repo-path .
+repos:
+  - path: .
+    name: merge-god
+    enabled: true
+    interactive: false

@@ -583,7 +583,11 @@ export const DEFAULT_INSTRUCTION =
   "the current worktree changes, push a branch, open a pull request, and notify " +
   "the coordinator.\n" +
   "6) Call the `merge_god_complete` tool with status and a concise summary of " +
-  "what you did, then stop.";
+  "what you did. Include obvious semantic PR annotations when supported by the " +
+  "evidence (large, too-large, unaligned, needs-split, needs-design, high-risk, " +
+  "low-risk, docs-only, test-only, embark-candidate, underlying-needed). " +
+  "Include a `telemetry` object with the exact model identifier and exact " +
+  "provider token usage when available; do not estimate token usage. Then stop.";
 
 export interface PiAgentResult {
   returncode: number;
