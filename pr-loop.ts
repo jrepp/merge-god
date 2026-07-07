@@ -17,9 +17,9 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 import YAML from "yaml";
 import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
@@ -28,6 +28,7 @@ import { SyncStore } from "@merge-god/github-sync";
 
 // SyncStore persists PR context for offline agent runs.
 const DB_AVAILABLE: boolean = true;
+const MERGE_GOD_PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
 
 // --- Small unexported coercion helpers --------------------------------------
 
@@ -707,7 +708,7 @@ function modelValue(
 
 function packageVersionRelease(): string {
   try {
-    const raw = readFileSync(resolve("package.json"), "utf8");
+    const raw = readFileSync(resolve(MERGE_GOD_PACKAGE_ROOT, "package.json"), "utf8");
     const pkg = JSON.parse(raw) as Record<string, unknown>;
     const version = typeof pkg["version"] === "string" ? pkg["version"].trim() : "";
     return version ? `v${version}` : "unknown";
@@ -716,9 +717,17 @@ function packageVersionRelease(): string {
   }
 }
 
-function mergeGodRuntimeTelemetry(): Pick<AgentTokenUsage, "merge_god_commit" | "merge_god_release"> {
-  const [commitCode, commitStdout] = runCommand(["git", "rev-parse", "--short=12", "HEAD"], undefined, 10);
-  const [tagCode, tagStdout] = runCommand(["git", "describe", "--tags", "--exact-match", "HEAD"], undefined, 10);
+export function mergeGodRuntimeTelemetry(): Pick<AgentTokenUsage, "merge_god_commit" | "merge_god_release"> {
+  const [commitCode, commitStdout] = runCommand(
+    ["git", "rev-parse", "--short=12", "HEAD"],
+    MERGE_GOD_PACKAGE_ROOT,
+    10,
+  );
+  const [tagCode, tagStdout] = runCommand(
+    ["git", "describe", "--tags", "--exact-match", "HEAD"],
+    MERGE_GOD_PACKAGE_ROOT,
+    10,
+  );
   return {
     merge_god_commit: commitCode === 0 && commitStdout.trim() ? commitStdout.trim() : "unknown",
     merge_god_release: tagCode === 0 && tagStdout.trim() ? tagStdout.trim() : packageVersionRelease(),

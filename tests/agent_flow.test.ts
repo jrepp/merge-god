@@ -22,6 +22,7 @@ import {
   agentAnnotationLabelsFromResult,
   agentTokenUsageFromResult,
   classifyPrFailureState,
+  mergeGodRuntimeTelemetry,
   piAgentFailureReason,
   renderReviewGateStatusComment,
 } from "../pr-loop";
@@ -340,6 +341,23 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.match(rendered, /\| Model \| pi-model \|/);
     assert.match(rendered, /\| merge-god commit \| abc123def456 \|/);
     assert.match(rendered, /\| merge-god release \| v0.1.0 \|/);
+  });
+
+  test("mergeGodRuntimeTelemetry reports merge-god identity independent of target repo cwd", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-target-repo-"));
+    const originalCwd = process.cwd();
+    try {
+      writeFileSync(path.join(tempDir, "package.json"), JSON.stringify({ version: "9.9.9" }));
+      process.chdir(tempDir);
+
+      const telemetry = mergeGodRuntimeTelemetry();
+
+      assert.notEqual(telemetry.merge_god_release, "v9.9.9");
+      assert.notEqual(telemetry.merge_god_release, "unknown");
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test("agentAnnotationLabelsFromResult filters to allowlisted semantic labels", () => {
