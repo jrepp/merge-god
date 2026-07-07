@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { AppStore } from "../app_store";
-import { CoordinationServer, findExtension, runPiAgent, type PiAgentResult } from "../coordination";
+import { CoordinationServer, findExtension, loadPiDotEnv, runPiAgent, type PiAgentResult } from "../coordination";
 import {
   agentAnnotationLabelsFromResult,
   agentTokenUsageFromResult,
@@ -372,6 +372,27 @@ describe("agent flow: runPiAgent result contract", () => {
     );
   });
 
+  test("loadPiDotEnv only loads pi runtime secrets", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-env-"));
+    try {
+      writeFileSync(
+        path.join(tempDir, ".env"),
+        [
+          "# local developer secrets",
+          "ZAI_API_KEY='fake-zai-key'",
+          "ANTHROPIC_API_KEY=ignored",
+          "export ALSO_IGNORED=value",
+        ].join("\n"),
+      );
+
+      assert.deepEqual(loadPiDotEnv(tempDir), {
+        ZAI_API_KEY: "fake-zai-key",
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
     const binDir = path.join(tempDir, "bin");
@@ -386,6 +407,7 @@ describe("agent flow: runPiAgent result contract", () => {
       mkdirSync(binDir);
       mkdirSync(repoDir);
       writeFileSync(path.join(repoDir, "README.md"), "# fake repo\n");
+      writeFileSync(path.join(repoDir, ".env"), "ZAI_API_KEY=fake-zai-key\nANTHROPIC_API_KEY=ignored\n");
       for (const args of [
         ["init"],
         ["config", "user.email", "merge-god@example.test"],
@@ -407,6 +429,7 @@ if (extensionIndex === -1 || !process.argv[extensionIndex + 1]) {
 
 const extensionModule = await import(process.argv[extensionIndex + 1]);
 const tools = new Map();
+console.log(JSON.stringify({ zaiApiKeyLoaded: process.env.ZAI_API_KEY === "fake-zai-key" }));
 extensionModule.default({
   registerTool(tool) {
     tools.set(tool.name, tool);
@@ -523,6 +546,8 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
       );
 
       assert.equal(result.returncode, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /"zaiApiKeyLoaded":true/);
+      assert.doesNotMatch(result.stdout, /fake-zai-key/);
       assert.equal(result.result?.["status"], "success");
       assert.equal(result.result?.["summary"], "fake pi used merge-god coordination trajectory state");
       assert.deepEqual(result.result?.["annotations"], {
