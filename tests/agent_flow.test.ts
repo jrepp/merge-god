@@ -1559,6 +1559,20 @@ describe("agent flow: runPiAgent result contract", () => {
     );
   });
 
+  test("agentAnnotationLabelsForCompletion does not infer failure labels from success summaries", () => {
+    assert.deepEqual(
+      agentAnnotationLabelsForCompletion(
+        {
+          status: "success",
+          summary: "Local validation passed with npm run ci and GitHub checks passed before merge.",
+          annotation_labels: ["low-risk"],
+        },
+        null,
+      ),
+      ["low-risk"],
+    );
+  });
+
   test("loadPiDotEnv only loads pi runtime secrets", () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-env-"));
     try {

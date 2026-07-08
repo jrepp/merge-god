@@ -673,6 +673,38 @@ function agentFailureText(result: unknown, failureReason: string | null = null):
     .toLowerCase();
 }
 
+function agentResultHasFailureSignal(result: unknown, failureReason: string | null = null): boolean {
+  if (failureReason && failureReason.trim()) return true;
+
+  const resultObj = asRecord(result);
+  const statusText = [
+    resultObj["status"],
+    resultObj["state"],
+    resultObj["outcome"],
+    resultObj["conclusion"],
+  ]
+    .map((value) => toStr(value).trim().toLowerCase())
+    .filter(Boolean);
+
+  if (statusText.some((value) => /^(?:blocked|error|failed|failure|timed[-\s]?out|timeout|cancelled)$/i.test(value))) {
+    return true;
+  }
+
+  return [
+    resultObj["error"],
+    resultObj["error_message"],
+    resultObj["errorMessage"],
+    resultObj["failure_reason"],
+    resultObj["failureReason"],
+    resultObj["required_action"],
+    resultObj["requiredAction"],
+    resultObj["next_action"],
+    resultObj["nextAction"],
+    ...asArray(resultObj["needs"]),
+    ...asArray(resultObj["requirements"]),
+  ].some((value) => Boolean(toStr(value).trim()));
+}
+
 export function inferredAgentAnnotationLabelsFromFailure(
   result: unknown,
   failureReason: string | null = null,
@@ -708,10 +740,13 @@ export function agentAnnotationLabelsForCompletion(
   result: unknown,
   failureReason: string | null = null,
 ): string[] {
+  const inferredLabels = agentResultHasFailureSignal(result, failureReason)
+    ? inferredAgentAnnotationLabelsFromFailure(result, failureReason)
+    : [];
   return [
     ...new Set([
       ...agentAnnotationLabelsFromResult(result),
-      ...inferredAgentAnnotationLabelsFromFailure(result, failureReason),
+      ...inferredLabels,
     ]),
   ];
 }
