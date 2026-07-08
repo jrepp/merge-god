@@ -50,12 +50,13 @@ function errMsg(e: unknown): string {
 export function validateDatabaseSchema(db: SyncStore): [boolean, string[]] {
   const errors: string[] = [];
   const tables = [
+    "schema_meta",
     "repositories",
     "pull_requests",
-    "processing_history",
-    "dashboard_state",
     "branch_states",
     "pr_context", // Critical for process isolation
+    "sync_history",
+    "project_metadata",
   ];
 
   let conn: DatabaseSync;
