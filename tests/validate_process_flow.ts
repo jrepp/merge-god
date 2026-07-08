@@ -149,6 +149,7 @@ export async function validatePrContextCompleteness(
 export async function validateProcessOutputs(
   db: SyncStore,
   repoName: string,
+  specificPrNumber: number | null = null,
 ): Promise<ProcessValidationResults> {
   const results: ProcessValidationResults = {
     process_1: { name: "PR/Branch Scanning", valid: false, errors: [] },
@@ -189,8 +190,8 @@ export async function validateProcessOutputs(
   // Process 2: data can be loaded and transformed.
   try {
     const prs = await db.getActivePrs(repoName);
-    if (prs.length > 0) {
-      const prNumber = prs[0]!["pr_number"] as number;
+    const prNumber = specificPrNumber ?? (prs[0]?.["pr_number"] as number | undefined);
+    if (prNumber !== undefined) {
       const [valid, errors] = await validatePrContextCompleteness(repoName, prNumber, db);
       if (valid) results.process_2.valid = true;
       else results.process_2.errors = errors;
@@ -204,8 +205,8 @@ export async function validateProcessOutputs(
   // Process 3: agent can accept the data (structure check only).
   try {
     const prs = await db.getActivePrs(repoName);
-    if (prs.length > 0) {
-      const prNumber = prs[0]!["pr_number"] as number;
+    const prNumber = specificPrNumber ?? (prs[0]?.["pr_number"] as number | undefined);
+    if (prNumber !== undefined) {
       const result = await db.getPrContextForAgent(repoName, prNumber);
       if (result) {
         const [prDetails, prContext] = result;
@@ -279,11 +280,13 @@ async function main(): Promise<void> {
     options: {
       db: { type: "string", default: "merge-god-state.db" },
       repo: { type: "string" },
+      pr: { type: "string" },
     },
   });
 
   const dbPath = values.db;
   const repo = values.repo;
+  const pr = values.pr === undefined ? null : Number(values.pr);
 
   if (!repo) {
     console.error("Error: --repo is required");
@@ -291,6 +294,10 @@ async function main(): Promise<void> {
   }
   if (dbPath === undefined) {
     console.error("Error: --db path is required");
+    process.exit(1);
+  }
+  if (pr !== null && (!Number.isInteger(pr) || pr <= 0)) {
+    console.error("Error: --pr must be a positive integer");
     process.exit(1);
   }
   if (!existsSync(dbPath)) {
@@ -322,8 +329,8 @@ async function main(): Promise<void> {
 
   console.log("\u2713 Database schema is valid\n");
 
-  console.log(`Validating process outputs for repo: ${repo}...`);
-  const results = await validateProcessOutputs(db, repo);
+  console.log(`Validating process outputs for repo: ${repo}${pr === null ? "" : ` PR #${pr}`}...`);
+  const results = await validateProcessOutputs(db, repo, pr);
   printValidationResults(results);
 
   await db.close();

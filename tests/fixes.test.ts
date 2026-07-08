@@ -47,6 +47,7 @@ describe("validateGitRef", () => {
 describe("GitHub CLI field compatibility", () => {
   test("PR detail fields avoid removed reviewers field", () => {
     assert.equal(PR_VIEW_JSON_FIELDS.includes("reviewers" as never), false);
+    assert.equal(PR_VIEW_JSON_FIELDS.includes("url"), true);
     assert.equal(PR_VIEW_JSON_FIELDS.includes("reviewRequests"), true);
     assert.equal(PR_VIEW_JSON_FIELDS.includes("latestReviews"), true);
   });

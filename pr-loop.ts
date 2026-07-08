@@ -1056,6 +1056,7 @@ export function detectDefaultBranch(): string {
 /** Fetch comprehensive PR details from `gh pr view`. */
 export const PR_VIEW_JSON_FIELDS = [
   "number",
+  "url",
   "title",
   "body",
   "state",
