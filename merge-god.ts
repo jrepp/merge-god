@@ -197,6 +197,20 @@ function cmdAgent(g: GlobalArgs): number {
   return rc;
 }
 
+function cmdPrLoop(g: GlobalArgs): number {
+  const repoPathIndex = g.rest.findIndex((arg) => !arg.startsWith("-"));
+  const repoPath = repoPathIndex >= 0 ? g.rest[repoPathIndex] : undefined;
+  if (!repoPath) {
+    logText("repo_path is required for pr-loop command", "error");
+    return 1;
+  }
+  return runChild("pr-loop.ts", [
+    repoPath,
+    ...g.rest.slice(0, repoPathIndex),
+    ...g.rest.slice(repoPathIndex + 1),
+  ]);
+}
+
 function cmdValidate(g: GlobalArgs): number {
   logText("Validating process isolation and data flow...");
   const parsed = parseArgs({
@@ -350,12 +364,14 @@ COMMANDS:
   validate    Validate process boundaries and data flow.
   test        Run test suite (--type all|isolation|db|agent).
   status      Show system status and statistics.
+  pr-loop     Run bounded or continuous PR processing loop.
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
 Quick self-test:
   tsx merge-god.ts scan --repo-path . --pr 14
   tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
+  tsx merge-god.ts pr-loop . --once --dry-run
 Run 'tsx merge-god.ts help' for details.
 `;
 
@@ -388,6 +404,7 @@ function main(): number {
     validate: () => cmdValidate(g),
     test: () => cmdTest(g),
     status: () => cmdStatus(g),
+    "pr-loop": () => cmdPrLoop(g),
     help: () => cmdHelp(),
   };
 

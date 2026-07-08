@@ -250,13 +250,17 @@ function cmdValidate(g: GlobalArgs): number {
 }
 
 function cmdPrLoop(g: GlobalArgs): number {
-  const parsed = parseArgs({ args: g.rest, options: {}, allowPositionals: true });
-  const repoPath = parsed.positionals[0];
+  const repoPathIndex = g.rest.findIndex((arg) => !arg.startsWith("-"));
+  const repoPath = repoPathIndex >= 0 ? g.rest[repoPathIndex] : undefined;
   if (!repoPath) {
     logText("repo_path is required for pr-loop command", "error");
     return 1;
   }
-  return runChild("pr-loop.ts", [repoPath]);
+  return runChild("pr-loop.ts", [
+    repoPath,
+    ...g.rest.slice(0, repoPathIndex),
+    ...g.rest.slice(repoPathIndex + 1),
+  ]);
 }
 
 function cmdSendApproval(): number {
@@ -571,9 +575,14 @@ OVERVIEW:
       --db PATH              Database file (default: merge-god-state.db)
 
   pr-loop
-    Run the legacy PR processing loop.
+    Run the PR processing loop.
     Args:
       repo_path              Repository path (required)
+    Options:
+      --once                 Run one iteration and exit
+      --max-iterations N     Run at most N iterations
+      --dry-run              Plan the iteration without invoking agents or changing PR labels
+      --idle-sleep-seconds N Sleep between idle iterations (default: 300)
 
   send-approval
     Send approval to a running pr-loop process.

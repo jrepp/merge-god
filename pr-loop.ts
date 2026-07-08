@@ -2081,31 +2081,62 @@ interface CliArgs {
   repoPath: string;
   watchIssues: boolean;
   interactive: boolean;
+  once: boolean;
+  dryRun: boolean;
+  maxIterations: number | null;
+  idleSleepSeconds: number;
+  syncFailureSleepSeconds: number;
+  betweenItemsSleepSeconds: number;
+}
+
+function positiveIntegerOption(value: unknown, optionName: string): number | null {
+  if (value === undefined) return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`${optionName} must be a positive integer`);
+  }
+  return number;
 }
 
 /** Parse command line arguments. */
-export function parseCliArgs(): CliArgs {
+export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
   const parsed = parseArgs({
-    args: process.argv.slice(2),
+    args: argv,
     options: {
       "watch-issues": { type: "boolean", default: false },
       interactive: { type: "boolean", default: false },
+      once: { type: "boolean", default: false },
+      "dry-run": { type: "boolean", default: false },
+      "max-iterations": { type: "string" },
+      "idle-sleep-seconds": { type: "string" },
+      "sync-failure-sleep-seconds": { type: "string" },
+      "between-items-sleep-seconds": { type: "string" },
     },
     allowPositionals: true,
   });
 
   const repoPath = parsed.positionals[0];
   if (!repoPath) {
-    console.error("Error: repo_path is required");
-    console.error("Usage: pr-loop <repo_path> [--watch-issues] [--interactive]");
-    process.exit(2);
+    throw new Error("repo_path is required");
   }
 
+  const explicitMaxIterations = positiveIntegerOption(parsed.values["max-iterations"], "--max-iterations");
+  const once = !!parsed.values.once;
   return {
     repoPath,
     watchIssues: !!parsed.values["watch-issues"],
     interactive: !!parsed.values.interactive,
+    once,
+    dryRun: !!parsed.values["dry-run"],
+    maxIterations: once ? 1 : explicitMaxIterations,
+    idleSleepSeconds: positiveIntegerOption(parsed.values["idle-sleep-seconds"], "--idle-sleep-seconds") ?? 300,
+    syncFailureSleepSeconds: positiveIntegerOption(parsed.values["sync-failure-sleep-seconds"], "--sync-failure-sleep-seconds") ?? 60,
+    betweenItemsSleepSeconds: positiveIntegerOption(parsed.values["between-items-sleep-seconds"], "--between-items-sleep-seconds") ?? 10,
   };
+}
+
+function shouldStopLoop(iteration: number, args: CliArgs): boolean {
+  return args.maxIterations !== null && iteration >= args.maxIterations;
 }
 
 /** Main loop — process PRs (and optionally issues) forever. */
@@ -2116,7 +2147,16 @@ export async function main(): Promise<void> {
   });
 
   initializeTelemetry(undefined, logJson);
-  const args = parseCliArgs();
+  let args: CliArgs;
+  try {
+    args = parseCliArgs();
+  } catch (e) {
+    console.error(`Error: ${errMsg(e)}`);
+    console.error(
+      "Usage: pr-loop <repo_path> [--watch-issues] [--interactive] [--once|--max-iterations N] [--dry-run]",
+    );
+    process.exit(2);
+  }
   const repoPath = resolve(args.repoPath);
 
   if (!validateRepository(repoPath)) {
@@ -2129,6 +2169,12 @@ export async function main(): Promise<void> {
     repo_path: repoPath,
     cwd: process.cwd(),
     node_version: process.version,
+    once: args.once,
+    dry_run: args.dryRun,
+    max_iterations: args.maxIterations,
+    idle_sleep_seconds: args.idleSleepSeconds,
+    sync_failure_sleep_seconds: args.syncFailureSleepSeconds,
+    between_items_sleep_seconds: args.betweenItemsSleepSeconds,
   });
 
   let db: SyncStore | null = null;
@@ -2176,8 +2222,12 @@ export async function main(): Promise<void> {
     logJson("iteration", { number: iteration, action: "start" });
 
     if (!syncRepo(defaultBranch)) {
-      logJson("iteration", { number: iteration, action: "sync_failed", sleep_seconds: 60 });
-      await sleep(60_000);
+      logJson("iteration", { number: iteration, action: "sync_failed", sleep_seconds: args.syncFailureSleepSeconds });
+      if (shouldStopLoop(iteration, args)) {
+        logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });
+        break;
+      }
+      await sleep(args.syncFailureSleepSeconds * 1000);
       continue;
     }
 
@@ -2222,7 +2272,7 @@ export async function main(): Promise<void> {
             if (issueNumber) processingIssues.delete(issueNumber);
           }
 
-          await sleep(10_000);
+          await sleep(args.betweenItemsSleepSeconds * 1000);
         }
       } else {
         logJson("iteration", { number: iteration, action: "no_issues_found" });
@@ -2238,10 +2288,14 @@ export async function main(): Promise<void> {
         number: iteration,
         action: "no_processable_prs",
         untagged_count: categorizedPrs["untagged"].length,
-        sleep_seconds: 300,
+        sleep_seconds: args.idleSleepSeconds,
       });
       processingPrs.clear();
-      await sleep(300_000);
+      if (shouldStopLoop(iteration, args)) {
+        logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });
+        break;
+      }
+      await sleep(args.idleSleepSeconds * 1000);
       continue;
     }
 
@@ -2273,44 +2327,57 @@ export async function main(): Promise<void> {
     });
 
     let totalProcessed = 0;
-    for (const planned of stackMergeOrderPlan.ordered) {
-      const pr = planned.pr;
-      const mode = planned.mode;
-      const prNumber = prDetailsNumber(pr) ?? undefined;
+    if (args.dryRun) {
+      logJson("iteration", {
+        number: iteration,
+        action: "dry_run",
+        planned_prs: stackMergeOrderPlan.ordered.map((item) => ({
+          pr_number: prDetailsNumber(item.pr),
+          mode: item.mode,
+          stack_dependencies: item.stack_dependency_numbers,
+          stack_dependents: item.stack_dependent_numbers,
+        })),
+      });
+    } else {
+      for (const planned of stackMergeOrderPlan.ordered) {
+        const pr = planned.pr;
+        const mode = planned.mode;
+        const prNumber = prDetailsNumber(pr) ?? undefined;
 
-      if (prNumber && processingPrs.has(prNumber)) {
-        logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
-        continue;
+        if (prNumber && processingPrs.has(prNumber)) {
+          logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
+          continue;
+        }
+
+        if (prNumber) processingPrs.add(prNumber);
+
+        try {
+          const success = await processPr(
+            pr,
+            guidelines,
+            commitExamples,
+            defaultBranch,
+            mode,
+            args.interactive,
+            db,
+            repoName,
+            mergeRules,
+          );
+          if (success && prNumber) processingPrs.delete(prNumber);
+          totalProcessed++;
+        } catch (e) {
+          const reason = errMsg(e);
+          logJson("process_pr", {
+            action: "exception",
+            pr_number: prNumber,
+            mode,
+            error: reason,
+          });
+          if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
+          if (prNumber) processingPrs.delete(prNumber);
+        }
+        await sleep(args.betweenItemsSleepSeconds * 1000);
       }
-
-      if (prNumber) processingPrs.add(prNumber);
-
-      try {
-        const success = await processPr(
-          pr,
-          guidelines,
-          commitExamples,
-          defaultBranch,
-          mode,
-          args.interactive,
-          db,
-          repoName,
-          mergeRules,
-        );
-        if (success && prNumber) processingPrs.delete(prNumber);
-        totalProcessed++;
-      } catch (e) {
-        const reason = errMsg(e);
-        logJson("process_pr", {
-          action: "exception",
-          pr_number: prNumber,
-          mode,
-          error: reason,
-        });
-        if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
-        if (prNumber) processingPrs.delete(prNumber);
-      }
-      await sleep(10_000);
     }
 
     logJson("iteration", {
@@ -2318,10 +2385,15 @@ export async function main(): Promise<void> {
       action: "complete",
       issues_processed: issuesProcessed,
       prs_processed: totalProcessed,
-      sleep_seconds: 300,
+      sleep_seconds: args.idleSleepSeconds,
     });
 
-    await sleep(300_000);
+    if (shouldStopLoop(iteration, args)) {
+      logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });
+      break;
+    }
+
+    await sleep(args.idleSleepSeconds * 1000);
   }
 }
 
