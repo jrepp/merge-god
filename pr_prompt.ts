@@ -336,7 +336,7 @@ export function buildPrPrompt(
 
   let taskNum = tasks.length + 1;
   tasks.push(`${taskNum}. Checkout the PR branch: \`${headBranch}\``);
-  tasks.push(`${taskNum + 1}. Sync with \`${baseBranch}\` (fetch and merge/rebase)`);
+  tasks.push(`${taskNum + 1}. Sync with \`${baseBranch}\` using a merge commit; do not rebase unless repository rules explicitly require it`);
   taskNum += 2;
 
   if (reviewComments.length > 0) {
@@ -392,6 +392,7 @@ export function buildPrPrompt(
     "- ❌ **NO assistant branding** in commits, comments, or code",
     "- ✅ Write clear, professional commit messages matching project style",
     "- ✅ Make focused, minimal changes addressing specific issues only",
+    "- ✅ Prefer merge commits over rebasing so original commit hashes and stack ordering are preserved",
     "- ✅ Test thoroughly before pushing",
     "- ✅ Respond to review comments on GitHub when appropriate",
     "- ✅ If blocked, clearly document the issue and what's needed",

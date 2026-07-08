@@ -580,6 +580,22 @@ export const AGENT_ANNOTATION_LABELS: Record<string, { description: string; colo
     description: "Agent annotation: PR should be split into smaller or underlying PRs",
     color: "d93f0b",
   },
+  "needs-ci": {
+    description: "Agent annotation: CI or validation failures need remediation",
+    color: "d93f0b",
+  },
+  "needs-rebase": {
+    description: "Agent annotation: PR needs to be updated from its base branch",
+    color: "fbca04",
+  },
+  "needs-conflict-resolution": {
+    description: "Agent annotation: PR needs merge conflict resolution",
+    color: "d93f0b",
+  },
+  "needs-review": {
+    description: "Agent annotation: PR needs review feedback addressed or approval",
+    color: "fbca04",
+  },
   "needs-design": {
     description: "Agent annotation: design or requirements clarification is needed before landing",
     color: "fbca04",
@@ -623,6 +639,81 @@ export function agentAnnotationLabelsFromResult(result: unknown): string[] {
     if (label in AGENT_ANNOTATION_LABELS) labels.add(label);
   }
   return [...labels];
+}
+
+function agentFailureText(result: unknown, failureReason: string | null = null): string {
+  const resultObj = asRecord(result);
+  const annotations = asRecord(resultObj["annotations"]);
+  return [
+    failureReason,
+    resultObj["status"],
+    resultObj["state"],
+    resultObj["outcome"],
+    resultObj["conclusion"],
+    resultObj["error"],
+    resultObj["error_message"],
+    resultObj["errorMessage"],
+    resultObj["failure_reason"],
+    resultObj["failureReason"],
+    resultObj["summary"],
+    resultObj["message"],
+    resultObj["detail"],
+    resultObj["details"],
+    resultObj["required_action"],
+    resultObj["requiredAction"],
+    resultObj["next_action"],
+    resultObj["nextAction"],
+    ...asArray(resultObj["needs"]),
+    ...asArray(resultObj["requirements"]),
+    ...asArray(annotations["labels"]),
+  ]
+    .map((value) => toStr(value).trim())
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+export function inferredAgentAnnotationLabelsFromFailure(
+  result: unknown,
+  failureReason: string | null = null,
+): string[] {
+  const text = agentFailureText(result, failureReason);
+  if (!text) return [];
+  const labels = new Set<string>();
+  if (/\b(?:too\s+large|oversized|large\s+diff|split|smaller\s+prs?|separate\s+prs?)\b/.test(text)) {
+    labels.add("needs-split");
+  }
+  if (/\b(?:ci|check|checks|status|workflow|action|actions|build|test|tests|lint|typecheck|validation)\b/.test(text)) {
+    labels.add("needs-ci");
+  }
+  if (/\b(?:rebase|behind|out[-\s]+of[-\s]+date|update(?:d)?\s+from\s+(?:base|main|master)|base\s+branch)\b/.test(text)) {
+    labels.add("needs-rebase");
+  }
+  if (/\b(?:conflict|conflicts|merge\s+conflict|dirty|not\s+mergeable)\b/.test(text)) {
+    labels.add("needs-conflict-resolution");
+  }
+  if (/\b(?:review|changes?\s+requested|approval|approve|approved|required\s+review)\b/.test(text)) {
+    labels.add("needs-review");
+  }
+  if (/\b(?:design|requirements?|spec|architecture|clarification|unclear|unaligned)\b/.test(text)) {
+    labels.add("needs-design");
+  }
+  if (/\b(?:underlying|dependency|dependencies|parent\s+pr|base\s+pr|stack\s+parent|remediation\s+pr)\b/.test(text)) {
+    labels.add("underlying-needed");
+  }
+  return [...labels].filter((label) => label in AGENT_ANNOTATION_LABELS);
+}
+
+export function agentAnnotationLabelsForCompletion(
+  result: unknown,
+  failureReason: string | null = null,
+): string[] {
+  return [
+    ...new Set([
+      ...agentAnnotationLabelsFromResult(result),
+      ...inferredAgentAnnotationLabelsFromFailure(result, failureReason),
+    ]),
+  ];
 }
 
 function nonNegativeInteger(value: unknown): number | undefined {
@@ -1638,8 +1729,8 @@ export async function processPr(
       ...(agentTokenUsageFromResult(piResult.result) ?? {}),
       ...mergeGodRuntimeTelemetry(),
     };
-    const annotationLabels = agentAnnotationLabelsFromResult(piResult.result);
     const agentDecision = classifyPrAgentResult(piResult);
+    const annotationLabels = agentAnnotationLabelsForCompletion(piResult.result, agentDecision.failure_reason);
     const completionPlan = buildPrAgentCompletionPlan(inputResult.value, agentDecision, piResult.returncode, duration);
     span.setAttributes(sanitizeSpanAttributes({
       "merge_god.success": agentDecision.success,

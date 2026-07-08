@@ -44,10 +44,10 @@ describe("PR state model", () => {
     ]);
   });
 
-  test("maps agent decisions to final processing states", () => {
+  test("maps agent decisions to labels that keep retryable gate failures processable", () => {
     assert.equal(prStateFromAgentDecision({ success: true, failure_state: "failed" }), "complete");
     assert.equal(prStateFromAgentDecision({ success: false, failure_state: "blocked" }), "blocked");
-    assert.equal(prStateFromAgentDecision({ success: false, failure_state: "failed" }), "failed");
-    assert.equal(prStateFromAgentDecision({ success: false, failure_state: null }), "failed");
+    assert.equal(prStateFromAgentDecision({ success: false, failure_state: "failed" }), "ready");
+    assert.equal(prStateFromAgentDecision({ success: false, failure_state: null }), "ready");
   });
 });

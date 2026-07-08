@@ -420,11 +420,12 @@ validation rows, and unresolved blockers.
 Current PR labels can also block landing when they explicitly describe a hold,
 for example `do-not-merge`, `blocked-by-dependency`, `needs approval`,
 `waiting-on-security`, `human gate`, `needs-rebase`, `merge conflicts`,
-`ci failing`, or `failing tests`. These labels are modeled as `external_gate`
-blockers with stable `github:label:...` evidence refs.
+`needs-conflict-resolution`, `ci failing`, `needs-ci`, `failing tests`, or
+`needs-review`. These labels are modeled as `external_gate` blockers with stable
+`github:label:...` evidence refs.
 Processing labels such as `for-review` and `for-landing`, merge-god state labels
-such as `merge:blocked`, and ordinary review labels such as `needs review` do
-not create merge blockers by themselves.
+such as `merge:blocked`, and ordinary topical labels such as `security review`
+do not create merge blockers by themselves.
 Visible authoritative comments can also create manual merge blockers. Explicit
 hold lines such as `Do not merge: release approval is required`,
 `Human gate: product approval is required`, `External gate: release owner

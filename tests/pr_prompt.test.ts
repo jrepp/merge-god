@@ -61,6 +61,8 @@ describe("PR prompt model", () => {
     assert.match(prompt, /## Diff Availability/);
     assert.match(prompt, /\*\*Constituent PRs\*\*: #201, #202/);
     assert.match(prompt, /RESOLVE MERGE CONFLICTS/);
+    assert.match(prompt, /Sync with `main` using a merge commit/);
+    assert.match(prompt, /Prefer merge commits over rebasing/);
     assert.match(prompt, /Address ALL 1 code review comments/);
     assert.match(prompt, /Fix ALL 1 failing CI checks/);
     assert.match(prompt, /Run npm test before pushing\./);

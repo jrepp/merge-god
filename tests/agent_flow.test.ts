@@ -31,9 +31,11 @@ import {
 } from "../evidence_comment";
 import { analyzeMergeBlockers, inferMergeQueueContext } from "../merge_pr_model";
 import {
+  agentAnnotationLabelsForCompletion,
   agentAnnotationLabelsFromResult,
   agentTokenUsageFromResult,
   classifyPrFailureState,
+  inferredAgentAnnotationLabelsFromFailure,
   mergeGodRuntimeTelemetry,
   piAgentFailureReason,
 } from "../pr-loop";
@@ -1522,11 +1524,38 @@ describe("agent flow: runPiAgent result contract", () => {
     assert.deepEqual(
       agentAnnotationLabelsFromResult({
         annotations: {
-          labels: ["Large", "too large", "please-run-my-label", "unaligned"],
+          labels: ["Large", "too large", "please-run-my-label", "unaligned", "needs ci"],
         },
-        annotation_labels: ["docs-only", "not-allowed"],
+        annotation_labels: ["docs-only", "needs-rebase", "not-allowed"],
       }),
-      ["docs-only", "large", "too-large", "unaligned"],
+      ["docs-only", "needs-rebase", "large", "too-large", "unaligned", "needs-ci"],
+    );
+  });
+
+  test("inferredAgentAnnotationLabelsFromFailure turns gate failures into next-action labels", () => {
+    assert.deepEqual(
+      inferredAgentAnnotationLabelsFromFailure(
+        { status: "failure", summary: "CI workflow failed after branch fell behind main" },
+        "Required status checks failed",
+      ),
+      ["needs-ci", "needs-rebase"],
+    );
+    assert.deepEqual(
+      inferredAgentAnnotationLabelsFromFailure(
+        { error: "merge conflicts remain; this PR is too large and should be split" },
+        null,
+      ),
+      ["needs-split", "needs-conflict-resolution"],
+    );
+  });
+
+  test("agentAnnotationLabelsForCompletion combines explicit and inferred labels", () => {
+    assert.deepEqual(
+      agentAnnotationLabelsForCompletion(
+        { annotations: { labels: ["high-risk"] }, error: "review approval required before merge" },
+        "changes requested",
+      ),
+      ["high-risk", "needs-review"],
     );
   });
 

@@ -11,6 +11,9 @@ describe("label gate model", () => {
     assert.equal(isBlockingMergeLabel("do-not-merge"), true);
     assert.equal(isBlockingMergeLabel("blocked-by-dependency"), true);
     assert.equal(isBlockingMergeLabel("needs-rebase"), true);
+    assert.equal(isBlockingMergeLabel("needs-ci"), true);
+    assert.equal(isBlockingMergeLabel("needs-conflict-resolution"), true);
+    assert.equal(isBlockingMergeLabel("needs review"), true);
     assert.equal(isBlockingMergeLabel("merge conflicts"), true);
     assert.equal(isBlockingMergeLabel("ci failing"), true);
     assert.equal(isBlockingMergeLabel("failing tests"), true);
@@ -20,7 +23,6 @@ describe("label gate model", () => {
     assert.equal(isBlockingMergeLabel("for-landing"), false);
     assert.equal(isBlockingMergeLabel("for-review"), false);
     assert.equal(isBlockingMergeLabel("merge:blocked"), false);
-    assert.equal(isBlockingMergeLabel("needs review"), false);
     assert.equal(isBlockingMergeLabel("security review"), false);
   });
 
@@ -30,6 +32,7 @@ describe("label gate model", () => {
         "for-landing",
         "Do Not Merge",
         "needs-rebase",
+        "needs-ci",
         "ci failing",
         "do-not-merge",
         "needs approval",
@@ -52,6 +55,12 @@ describe("label gate model", () => {
         {
           kind: "external_gate",
           status: "blocked",
+          summary: "Label 'needs-ci' marks this PR as blocked for landing.",
+          evidence_refs: ["github:label:needs-ci"],
+        },
+        {
+          kind: "external_gate",
+          status: "blocked",
           summary: "Label 'ci failing' marks this PR as blocked for landing.",
           evidence_refs: ["github:label:ci-failing"],
         },
@@ -60,6 +69,12 @@ describe("label gate model", () => {
           status: "blocked",
           summary: "Label 'needs approval' marks this PR as blocked for landing.",
           evidence_refs: ["github:label:needs-approval"],
+        },
+        {
+          kind: "external_gate",
+          status: "blocked",
+          summary: "Label 'needs review' marks this PR as blocked for landing.",
+          evidence_refs: ["github:label:needs-review"],
         },
       ],
     );
