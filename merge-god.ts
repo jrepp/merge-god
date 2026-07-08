@@ -197,18 +197,36 @@ function cmdAgent(g: GlobalArgs): number {
   return rc;
 }
 
+const PR_LOOP_VALUE_OPTIONS = new Set([
+  "--max-iterations",
+  "--idle-sleep-seconds",
+  "--sync-failure-sleep-seconds",
+  "--between-items-sleep-seconds",
+]);
+
+export function prLoopChildArgs(rest: string[]): string[] | null {
+  let repoPathIndex = -1;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg.startsWith("-")) {
+      const optionName = arg.split("=", 1)[0]!;
+      if (!arg.includes("=") && PR_LOOP_VALUE_OPTIONS.has(optionName) && i + 1 < rest.length) i++;
+      continue;
+    }
+    repoPathIndex = i;
+    break;
+  }
+  if (repoPathIndex < 0) return null;
+  return [rest[repoPathIndex]!, ...rest.slice(0, repoPathIndex), ...rest.slice(repoPathIndex + 1)];
+}
+
 function cmdPrLoop(g: GlobalArgs): number {
-  const repoPathIndex = g.rest.findIndex((arg) => !arg.startsWith("-"));
-  const repoPath = repoPathIndex >= 0 ? g.rest[repoPathIndex] : undefined;
-  if (!repoPath) {
+  const args = prLoopChildArgs(g.rest);
+  if (!args) {
     logText("repo_path is required for pr-loop command", "error");
     return 1;
   }
-  return runChild("pr-loop.ts", [
-    repoPath,
-    ...g.rest.slice(0, repoPathIndex),
-    ...g.rest.slice(repoPathIndex + 1),
-  ]);
+  return runChild("pr-loop.ts", args);
 }
 
 function cmdValidate(g: GlobalArgs): number {
