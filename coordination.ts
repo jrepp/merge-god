@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -573,7 +573,10 @@ export const DEFAULT_INSTRUCTION =
   "unsure what coordination state or tools are available.\n" +
   "4) Carry out the work described there in this repository using your file " +
   "and shell tools. You are running inside an isolated git worktree created " +
-  "for this invocation.\n" +
+  "for this invocation. For general repository validation, unset ambient " +
+  "`ZAI_API_KEY` unless the validation explicitly checks pi runtime secret " +
+  "loading. When merging a PR, use a GitHub remote merge commit path that does " +
+  "not require checking out the base branch in this local worktree.\n" +
   "5) If you discover a separate issue that should be fixed in its own branch, " +
   "open a remediation PR only when you have concrete underlying signal " +
   "(for example failing tests, CI logs, review comments, issue text, runtime " +
@@ -597,6 +600,14 @@ export interface PiAgentResult {
 }
 
 const PI_DOTENV_KEYS = new Set(["ZAI_API_KEY"]);
+
+export function linkNodeModulesIntoWorktree(sourceRepoPath: string, worktreePath: string): boolean {
+  const sourceNodeModules = path.join(sourceRepoPath, "node_modules");
+  const targetNodeModules = path.join(worktreePath, "node_modules");
+  if (!existsSync(sourceNodeModules) || existsSync(targetNodeModules)) return false;
+  symlinkSync(sourceNodeModules, targetNodeModules, "dir");
+  return true;
+}
 
 function parseDotEnvLine(line: string): [string, string] | null {
   const trimmed = line.trim();
@@ -687,6 +698,7 @@ export async function runPiAgent(
   const ext = extensionPath ?? findExtension();
   const gitOps = new GitOps(repoPath, gitObserver ?? null);
   const worktree = gitOps.createDetachedWorktree();
+  linkNodeModulesIntoWorktree(repoPath, worktree.path);
   const server = new CoordinationServer(
     "127.0.0.1",
     0,
@@ -697,7 +709,7 @@ export async function runPiAgent(
   );
   await server.start();
   const dotenvEnv = loadPiDotEnv(repoPath);
-  const env: NodeJS.ProcessEnv = { ...dotenvEnv, ...process.env, MERGE_GOD_API: server.baseUrl };
+  const env: NodeJS.ProcessEnv = { ...process.env, ...dotenvEnv, MERGE_GOD_API: server.baseUrl };
   if (extraEnv) Object.assign(env, extraEnv);
   const startedAt = Date.now();
   recordPromptRendered("pi_work_item", workItem.prompt, {

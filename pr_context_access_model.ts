@@ -34,6 +34,7 @@ import {
   firstNormalizedQueueBoolean,
   QUEUE_CONTEXT_KEYS,
   QUEUE_FLAG_KEYS,
+  QUEUE_MERGE_COMMIT_KEYS,
   QUEUE_STRATEGY_KEYS,
   recognizedQueueStrategy,
   queueContextConstituentPrs,
@@ -245,13 +246,21 @@ function flatBlockersAreQueueScoped(context: Record<string, unknown>): boolean {
 function hasFlatQueueContextPayload(context: Record<string, unknown>): boolean {
   return recognizedQueueStrategy(queueContextStrategy(context)) ||
     queueContextConstituentPrs(context).length > 0 ||
-    queueContextMergeCommits(context).length > 0 ||
+    flatQueueMergeCommits(context).length > 0 ||
     queueContextValidationEvidence(context).length > 0 ||
     queueContextQueueBlockers(context).length > 0;
 }
 
 function hasQueueContextRecordSignal(context: Record<string, unknown>): boolean {
   return firstNormalizedQueueBoolean(context) !== null || hasFlatQueueContextPayload(context);
+}
+
+function flatQueueMergeCommits(context: Record<string, unknown>): unknown[] {
+  return firstPresentRecordCollectionBy(
+    context,
+    QUEUE_MERGE_COMMIT_KEYS,
+    (items) => items.some(hasMeaningfulRecordValue),
+  );
 }
 
 function hasMeaningfulRecordValue(record: Record<string, unknown>): boolean {
