@@ -92,5 +92,6 @@ export interface PrAgentStateDecisionLike {
 
 export function prStateFromAgentDecision(decision: PrAgentStateDecisionLike): PrProcessingState {
   if (decision.success) return "complete";
-  return decision.failure_state ?? "failed";
+  if (decision.failure_state === "blocked") return "blocked";
+  return "ready";
 }

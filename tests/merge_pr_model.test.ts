@@ -919,6 +919,12 @@ describe("merge PR model", () => {
           "Label 'needs approval' marks this PR as blocked for landing.",
           ["github:label:needs-approval"],
         ],
+        [
+          "external_gate",
+          "blocked",
+          "Label 'needs review' marks this PR as blocked for landing.",
+          ["github:label:needs-review"],
+        ],
       ],
     );
   });

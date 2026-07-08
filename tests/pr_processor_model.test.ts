@@ -225,7 +225,7 @@ describe("PR processor model", () => {
       ),
       {
         success: false,
-        state: "failed",
+        state: "ready",
         gate: {
           rule: "pi-agent",
           status: "failed",

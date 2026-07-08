@@ -123,7 +123,7 @@ Get this PR merged successfully by completing ALL of the following:
 
 1. **RESOLVE MERGE CONFLICTS** - This is CRITICAL and must be done first
 2. Checkout the PR branch: `feature/user-auth`
-3. Sync with `main` (fetch and merge/rebase)
+3. Sync with `main` using a merge commit; do not rebase unless repository rules explicitly require it
 4. Address ALL 3 code review comments with appropriate changes
 5. Fix ALL 2 failing CI checks
 6. Run tests and checks locally to verify everything passes

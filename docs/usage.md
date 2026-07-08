@@ -87,6 +87,26 @@ The comment is **not** a source of truth. Merge decisions must use the durable
 trajectory/database state and validation evidence. If the comment update fails,
 processing continues and the failure is logged.
 
+## Bounded loop runs
+
+Use bounded controls when testing merge-god against a whole repository without
+starting a long-running daemon:
+
+```bash
+npx tsx pr-loop.ts /path/to/repo --once --dry-run
+npx tsx merge-god.ts pr-loop /path/to/repo --max-iterations 3 --idle-sleep-seconds 30
+```
+
+- `--once` runs one loop iteration and exits.
+- `--max-iterations N` runs at most `N` loop iterations.
+- `--dry-run` still syncs the repo, discovers PRs, and plans stack order, but
+  does not invoke agents or change PR state labels.
+- `--idle-sleep-seconds N`, `--sync-failure-sleep-seconds N`, and
+  `--between-items-sleep-seconds N` tune loop pacing for CI, local testing, or
+  daemon operation.
+
+The normal loop still runs continuously when no bound is supplied.
+
 ## Issue watching
 
 Enable per-repo with `watch_issues: true`. merge-god then watches for issues

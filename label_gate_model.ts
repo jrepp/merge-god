@@ -42,6 +42,8 @@ export function isBlockingMergeLabel(label: string): boolean {
   if (/\b(?:blocked|blocking|blocker)\b/.test(normalized)) return true;
   if (/\b(?:on hold|hold merge|merge hold)\b/.test(normalized)) return true;
   if (/\b(?:needs rebase|rebase required|must rebase|merge conflicts?|has conflicts?|conflicts?)\b/.test(normalized)) return true;
+  if (/\b(?:needs ci|ci remediation|remediate ci|validation remediation|needs validation)\b/.test(normalized)) return true;
+  if (/\b(?:needs review|review required|requires review|changes requested|address review)\b/.test(normalized)) return true;
   if (/\b(?:ci failing|failing ci|tests? failing|failing tests?|checks? failing|failing checks?)\b/.test(normalized)) return true;
   if (/\b(?:manual|human|external)\s+(?:gate|approval|signoff|required)\b/.test(normalized)) return true;
   if (/\b(?:needs|requires|awaiting|waiting(?: on)?)\s+(?:human|approval|signoff|release|security|legal|product|dependency|dependencies|credentials?)\b/.test(normalized)) {

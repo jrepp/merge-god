@@ -197,6 +197,38 @@ function cmdAgent(g: GlobalArgs): number {
   return rc;
 }
 
+const PR_LOOP_VALUE_OPTIONS = new Set([
+  "--max-iterations",
+  "--idle-sleep-seconds",
+  "--sync-failure-sleep-seconds",
+  "--between-items-sleep-seconds",
+]);
+
+export function prLoopChildArgs(rest: string[]): string[] | null {
+  let repoPathIndex = -1;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg.startsWith("-")) {
+      const optionName = arg.split("=", 1)[0]!;
+      if (!arg.includes("=") && PR_LOOP_VALUE_OPTIONS.has(optionName) && i + 1 < rest.length) i++;
+      continue;
+    }
+    repoPathIndex = i;
+    break;
+  }
+  if (repoPathIndex < 0) return null;
+  return [rest[repoPathIndex]!, ...rest.slice(0, repoPathIndex), ...rest.slice(repoPathIndex + 1)];
+}
+
+function cmdPrLoop(g: GlobalArgs): number {
+  const args = prLoopChildArgs(g.rest);
+  if (!args) {
+    logText("repo_path is required for pr-loop command", "error");
+    return 1;
+  }
+  return runChild("pr-loop.ts", args);
+}
+
 function cmdValidate(g: GlobalArgs): number {
   logText("Validating process isolation and data flow...");
   const parsed = parseArgs({
@@ -350,12 +382,14 @@ COMMANDS:
   validate    Validate process boundaries and data flow.
   test        Run test suite (--type all|isolation|db|agent).
   status      Show system status and statistics.
+  pr-loop     Run bounded or continuous PR processing loop.
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
 Quick self-test:
   tsx merge-god.ts scan --repo-path . --pr 14
   tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
+  tsx merge-god.ts pr-loop . --once --dry-run
 Run 'tsx merge-god.ts help' for details.
 `;
 
@@ -388,6 +422,7 @@ function main(): number {
     validate: () => cmdValidate(g),
     test: () => cmdTest(g),
     status: () => cmdStatus(g),
+    "pr-loop": () => cmdPrLoop(g),
     help: () => cmdHelp(),
   };
 

@@ -249,14 +249,36 @@ function cmdValidate(g: GlobalArgs): number {
   return runChild(args[0]!, args.slice(1));
 }
 
+const PR_LOOP_VALUE_OPTIONS = new Set([
+  "--max-iterations",
+  "--idle-sleep-seconds",
+  "--sync-failure-sleep-seconds",
+  "--between-items-sleep-seconds",
+]);
+
+function prLoopChildArgs(rest: string[]): string[] | null {
+  let repoPathIndex = -1;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg.startsWith("-")) {
+      const optionName = arg.split("=", 1)[0]!;
+      if (!arg.includes("=") && PR_LOOP_VALUE_OPTIONS.has(optionName) && i + 1 < rest.length) i++;
+      continue;
+    }
+    repoPathIndex = i;
+    break;
+  }
+  if (repoPathIndex < 0) return null;
+  return [rest[repoPathIndex]!, ...rest.slice(0, repoPathIndex), ...rest.slice(repoPathIndex + 1)];
+}
+
 function cmdPrLoop(g: GlobalArgs): number {
-  const parsed = parseArgs({ args: g.rest, options: {}, allowPositionals: true });
-  const repoPath = parsed.positionals[0];
-  if (!repoPath) {
+  const args = prLoopChildArgs(g.rest);
+  if (!args) {
     logText("repo_path is required for pr-loop command", "error");
     return 1;
   }
-  return runChild("pr-loop.ts", [repoPath]);
+  return runChild("pr-loop.ts", args);
 }
 
 function cmdSendApproval(): number {
@@ -571,9 +593,14 @@ OVERVIEW:
       --db PATH              Database file (default: merge-god-state.db)
 
   pr-loop
-    Run the legacy PR processing loop.
+    Run the PR processing loop.
     Args:
       repo_path              Repository path (required)
+    Options:
+      --once                 Run one iteration and exit
+      --max-iterations N     Run at most N iterations
+      --dry-run              Plan the iteration without invoking agents or changing PR labels
+      --idle-sleep-seconds N Sleep between idle iterations (default: 300)
 
   send-approval
     Send approval to a running pr-loop process.
