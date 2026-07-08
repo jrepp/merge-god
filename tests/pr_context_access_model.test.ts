@@ -438,6 +438,33 @@ describe("PR context access model", () => {
     });
   });
 
+  test("does not synthesize queue context from ordinary top-level PR commits", () => {
+    assert.deepEqual(
+      prContextQueueContext({
+        commits: [
+          {
+            oid: "61a9070",
+            messageHeadline: "fix(pr-loop): avoid success-derived blocker labels",
+          },
+        ],
+      }),
+      {},
+    );
+    assert.deepEqual(
+      prContextQueueContext({
+        mergeCommits: [
+          {
+            oid: "merge201",
+            prNumber: 201,
+          },
+        ],
+      }),
+      {
+        merge_commits: [{ oid: "merge201", prNumber: 201 }],
+      },
+    );
+  });
+
   test("falls back past non-decisive canonical queue context records to useful aliases", () => {
     assert.deepEqual(
       prContextQueueContext({

@@ -63,6 +63,8 @@ describe("PR prompt model", () => {
     assert.match(prompt, /RESOLVE MERGE CONFLICTS/);
     assert.match(prompt, /Sync with `main` using a merge commit/);
     assert.match(prompt, /Prefer merge commits over rebasing/);
+    assert.match(prompt, /Merge through GitHub with a merge commit/);
+    assert.match(prompt, /unset ambient `ZAI_API_KEY`/);
     assert.match(prompt, /Address ALL 1 code review comments/);
     assert.match(prompt, /Fix ALL 1 failing CI checks/);
     assert.match(prompt, /Run npm test before pushing\./);

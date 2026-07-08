@@ -47,7 +47,7 @@
     "prompt:optimize": "PROMPTFOO_CONFIG_DIR=.promptfoo PROMPTFOO_DISABLE_TELEMETRY=true promptfoo optimize -c evals/promptfoo/pr-agent-optimization.yaml",
     "prompt:view": "PROMPTFOO_CONFIG_DIR=.promptfoo PROMPTFOO_DISABLE_TELEMETRY=true promptfoo view",
     "lint": "npm run markdownlint",
-    "markdownlint": "markdownlint --config .markdownlintrc --ignore node_modules --ignore .venv --ignore site '**/*.md'"
+    "markdownlint": "markdownlint --config .markdownlintrc --ignore node_modules --ignore 'node_modules/**' --ignore .venv --ignore site '**/*.md'"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

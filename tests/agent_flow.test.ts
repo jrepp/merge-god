@@ -12,7 +12,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -20,6 +20,7 @@ import { AppStore } from "../app_store";
 import {
   CoordinationServer,
   findExtension,
+  linkNodeModulesIntoWorktree,
   loadPiDotEnv,
   runPiAgent,
   type CoordinationTrajectoryBridge,
@@ -1589,6 +1590,22 @@ describe("agent flow: runPiAgent result contract", () => {
       assert.deepEqual(loadPiDotEnv(tempDir), {
         ZAI_API_KEY: "fake-zai-key",
       });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("linkNodeModulesIntoWorktree reuses installed dependencies when available", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-node-modules-"));
+    const sourceRepo = path.join(tempDir, "repo");
+    const worktree = path.join(tempDir, "worktree");
+    try {
+      mkdirSync(path.join(sourceRepo, "node_modules"), { recursive: true });
+      mkdirSync(worktree);
+
+      assert.equal(linkNodeModulesIntoWorktree(sourceRepo, worktree), true);
+      assert.equal(lstatSync(path.join(worktree, "node_modules")).isSymbolicLink(), true);
+      assert.equal(linkNodeModulesIntoWorktree(sourceRepo, worktree), false);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
