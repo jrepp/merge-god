@@ -1464,6 +1464,8 @@ export function getCommitHistoryExamples(defaultBranch = "main"): string {
 }
 
 const MERGE_RULE_FILES = [
+  "merge-rules.yaml",
+  "merge-rules.yml",
   ".merge-rules.yaml",
   ".merge-rules.yml",
   ".commandments.yaml",
@@ -1501,8 +1503,8 @@ export function getMergeRules(repoPath = process.cwd()): string {
         "This repo-local merge rule specification is authoritative for this repository.",
         "Gate definitions describe the evidence required before merge, push, or approval.",
         "Collect all feasible gate evidence before producing a final gate decision.",
-        "Failed gates may trigger bounded remediation when the configured thresholds allow it.",
-        "Workflow-IR references define preferred executable gate workflows; run supported refs and report unsupported refs as skipped evidence.",
+        "Failed gates may trigger remediation when the configured mode allows it.",
+        "Workflow-IR references define preferred executable gate workflows; run supported local refs and remote Git refs pinned to immutable commit hashes, and report unsupported or unpinned refs as skipped evidence.",
         "",
         "```yaml",
         raw,
