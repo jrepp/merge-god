@@ -39,3 +39,32 @@ test("merge-god doctor reports missing config", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("root dispatcher exposes doctor command", () => {
+  const dir = mkdtempSync(join(tmpdir(), "merge-god-cli-"));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "merge-god.ts", "doctor", "--config", join(dir, "missing.yaml")],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Config missing/);
+    assert.doesNotMatch(result.stderr, /Unknown command: doctor/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard dry-run does not require executable pr-loop script", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "dashboard.ts", "config.merge-god-self-test.example.yaml", "--dry-run"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Found pr-loop\.ts/);
+  assert.doesNotMatch(result.stdout + result.stderr, /chmod \+x pr-loop\.ts/);
+});
