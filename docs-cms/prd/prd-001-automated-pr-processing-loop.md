@@ -3,6 +3,7 @@ title: Automated PR Processing Loop
 status: Completed
 author: Jacob Repp
 created: 2025-11-20T00:00:00Z
+updated: 2026-07-09T00:00:00Z
 target_release: Released
 tags: [feature, merge-god]
 id: prd-001
@@ -26,7 +27,7 @@ Automated PR Processing Loop for the merge-god PR automation system.
 - [x] Sync repository before processing
 - [x] Use `pi` (via the merge-god extension + coordination API) for PR fixes
 - [x] Structured JSON logging for all operations
-- [x] Modern Python 3.12+ with uv shebang support
+- [x] TypeScript / Node.js ESM runtime with npm-managed dependencies
 
 # Success Criteria
 
