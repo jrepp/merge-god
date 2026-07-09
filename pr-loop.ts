@@ -302,6 +302,7 @@ export function runCommand(
       cwd,
       encoding: "utf8",
       timeout: timeout * 1000,
+      maxBuffer: maxOutputSize + Math.max(1024 * 1024, Math.floor(maxOutputSize / 10)),
     });
 
     if (result.error) {
