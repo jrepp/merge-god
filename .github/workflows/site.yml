@@ -3,10 +3,6 @@ name: Deploy Site
 on:
   push:
     branches: [main]
-    paths:
-      - "site/**"
-      - "docs/**"
-      - ".github/workflows/site.yml"
   pull_request:
     branches: [main]
     paths:
