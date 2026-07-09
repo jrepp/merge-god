@@ -120,7 +120,7 @@ Key metrics:
 
 ## Merge rules
 
-Each repository can define root-level merge policy in `.merge-rules.yaml`.
+Each repository can define root-level merge policy in `commandments.yaml`.
 Keep this file small: use it for plain-language rules, a remediation threshold,
 and Workflow-IR references. Put detailed gate graphs, evidence requirements,
 check selection, retries, and remediation routing in Workflow-IR.
@@ -150,8 +150,8 @@ definitions; merge-god should run supported refs, collect all feasible evidence,
 remediate failed gates within threshold, rerun affected gates, and report
 unsupported refs as skipped evidence.
 
-`.commandments.yaml` is accepted as an optional alias for the same schema, but
-`.merge-rules.yaml` is the documented name.
+Legacy `.merge-rules.yaml` and `.commandments.yaml` files are still accepted as
+aliases for the same schema, but `commandments.yaml` is the documented name.
 
 Supported fields:
 

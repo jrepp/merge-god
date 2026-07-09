@@ -7,10 +7,10 @@ import { tmpdir } from "node:os";
 import { getMergeRules } from "../pr-loop";
 
 describe("merge rules", () => {
-  test("loads the canonical root-level merge rules file", () => {
+  test("loads the canonical root-level commandments file", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(
-      join(dir, ".merge-rules.yaml"),
+      join(dir, "commandments.yaml"),
       [
         "version: 1",
         "rules:",
@@ -24,13 +24,13 @@ describe("merge rules", () => {
 
     const rules = getMergeRules(dir);
 
-    assert.match(rules, /Source: `.merge-rules.yaml`/);
+    assert.match(rules, /Source: `commandments.yaml`/);
     assert.match(rules, /Run as many applicable gates as possible/);
     assert.match(rules, /threshold: bounded/);
     assert.match(rules, /wf\.merge-god\.pr-merge-gate/);
   });
 
-  test("accepts the optional commandments alias", () => {
+  test("accepts the optional hidden commandments alias", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(join(dir, ".commandments.yaml"), "version: 1\nrules:\n  - Keep the merge gate honest.\n");
 
@@ -43,12 +43,14 @@ describe("merge rules", () => {
   test("prefers the canonical file over aliases", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(join(dir, ".commandments.yaml"), "version: 1\nrules:\n  - Alias rule.\n");
-    writeFileSync(join(dir, ".merge-rules.yaml"), "version: 1\nrules:\n  - Canonical rule.\n");
+    writeFileSync(join(dir, ".merge-rules.yaml"), "version: 1\nrules:\n  - Legacy rule.\n");
+    writeFileSync(join(dir, "commandments.yaml"), "version: 1\nrules:\n  - Canonical rule.\n");
 
     const rules = getMergeRules(dir);
 
-    assert.match(rules, /Source: `.merge-rules.yaml`/);
+    assert.match(rules, /Source: `commandments.yaml`/);
     assert.match(rules, /Canonical rule/);
+    assert.doesNotMatch(rules, /Legacy rule/);
     assert.doesNotMatch(rules, /Alias rule/);
   });
 });

@@ -28,7 +28,7 @@ tests:
       prompt_kind: pr
       guidelines: "Run npm test before pushing."
       commit_examples: "docs: add landing checklist fixture"
-      merge_rules: "Source: `.merge-rules.yaml`"
+      merge_rules: "Source: `commandments.yaml`"
       pr_details:
         number: 1
         title: "docs: add landing checklist fixture"
@@ -62,7 +62,7 @@ tests:
       prompt_kind: pr
       guidelines: "Run npm test before pushing."
       commit_examples: "feat: add average helper fixture"
-      merge_rules: "Source: `.merge-rules.yaml`"
+      merge_rules: "Source: `commandments.yaml`"
       pr_details:
         number: 2
         title: "feat: add average helper fixture"
@@ -102,7 +102,7 @@ tests:
       prompt_kind: pr
       guidelines: "Run npm test before pushing."
       commit_examples: "test: add failing ci fixture"
-      merge_rules: "Source: `.merge-rules.yaml`"
+      merge_rules: "Source: `commandments.yaml`"
       pr_details:
         number: 3
         title: "test: add failing ci fixture"
@@ -141,7 +141,7 @@ tests:
       prompt_kind: pr
       guidelines: "Run npm test before pushing."
       commit_examples: "test: create conflicting branch fixture"
-      merge_rules: "Source: `.merge-rules.yaml`"
+      merge_rules: "Source: `commandments.yaml`"
       pr_details:
         number: 4
         title: "test: create conflicting branch fixture"

@@ -50,7 +50,7 @@ describe("PR prompt model", () => {
       },
       "Run npm test before pushing.",
       "feat: prior commit",
-      "Source: `.merge-rules.yaml`",
+      "Source: `commandments.yaml`",
     );
 
     assert.match(prompt, /^# PR #183: Agent-managed queue/);
@@ -68,7 +68,7 @@ describe("PR prompt model", () => {
     assert.match(prompt, /Address ALL 1 code review comments/);
     assert.match(prompt, /Fix ALL 1 failing CI checks/);
     assert.match(prompt, /Run npm test before pushing\./);
-    assert.match(prompt, /Source: `\.merge-rules\.yaml`/);
+    assert.match(prompt, /Source: `commandments\.yaml`/);
   });
 
   test("infers missing queue context before rendering PR prompts", () => {

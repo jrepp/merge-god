@@ -1464,10 +1464,12 @@ export function getCommitHistoryExamples(defaultBranch = "main"): string {
 }
 
 const MERGE_RULE_FILES = [
-  ".merge-rules.yaml",
-  ".merge-rules.yml",
+  "commandments.yaml",
+  "commandments.yml",
   ".commandments.yaml",
   ".commandments.yml",
+  ".merge-rules.yaml",
+  ".merge-rules.yml",
 ];
 
 /** Load repo-local merge rules, if the repository defines them. */
