@@ -9,8 +9,28 @@ import {
   mergeConflictSummary,
   normalizeMergeConflictEvidence,
 } from "../conflict_model";
+import { parseMergeTreeConflicts } from "../merge_tree_conflict_model";
 
 describe("merge conflict evidence normalization", () => {
+  test("parses two-argument merge-tree conflict output", () => {
+    const output = [
+      "d4c3c78310ab3936b39cb67f3f3655a8c513db71",
+      "100644 78981922613b2afb6025042ff6bd878ac1994e85 1\tf",
+      "100644 45cf141ba67d59203f02a54f03162f3fcef57830 2\tf",
+      "100644 c376d892e8b105bd712d06ec5162b5f31ce949c3 3\tf",
+      "",
+      "Auto-merging f",
+      "CONFLICT (content): Merge conflict in f",
+      "",
+    ].join("\n");
+
+    assert.deepEqual(parseMergeTreeConflicts(1, output), {
+      has_conflicts: true,
+      conflicting_files: ["f"],
+      conflict_count: 1,
+    });
+  });
+
   test("exports the default active conflict file summary limit", () => {
     assert.equal(ACTIVE_MERGE_CONFLICT_SUMMARY_FILE_LIMIT, 8);
   });

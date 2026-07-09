@@ -32,6 +32,7 @@ import {
 import type { GitOpsObserver } from "./git_ops";
 import { SyncStore } from "@merge-god/github-sync";
 import type { DiffAvailability } from "./merge_pr_model";
+import { parseMergeTreeConflicts } from "./merge_tree_conflict_model";
 import { createSpawnCommandRunner } from "./command_runner";
 import { validateGitRef } from "./git_ref";
 import { analyzeCiStatus, gatherPrContextFromSource } from "./pr_context_gatherer";
@@ -1304,42 +1305,7 @@ export function checkMergeConflicts(
     120,
   );
 
-  let hasConflicts = false;
-  if (returncode === 0 && stdout) {
-    const lines = stdout.split("\n");
-    let conflictMarkerCount = 0;
-    for (const line of lines) {
-      if (line.startsWith("<<<<<<<")) conflictMarkerCount++;
-    }
-    hasConflicts = conflictMarkerCount > 0;
-  }
-
-  const conflictingFiles: string[] = [];
-  if (hasConflicts) {
-    const lines = stdout.split("\n");
-    let currentFile: string | null = null;
-    for (const line of lines) {
-      if (line.startsWith("+++") || line.startsWith("---")) {
-        const parts = line.split(" ");
-        if (parts.length > 1 && parts[1] !== "/dev/null") {
-          const filePath = (parts[1] ?? "").replace(/^[ab/]+/, "");
-          if (filePath && !conflictingFiles.includes(filePath)) {
-            currentFile = filePath;
-          }
-        }
-      } else if (line.startsWith("<<<<<<<") && currentFile) {
-        if (!conflictingFiles.includes(currentFile)) {
-          conflictingFiles.push(currentFile);
-        }
-      }
-    }
-  }
-
-  const result: Record<string, unknown> = {
-    has_conflicts: hasConflicts,
-    conflicting_files: conflictingFiles,
-    conflict_count: conflictingFiles.length,
-  };
+  const result = parseMergeTreeConflicts(returncode, stdout);
 
   logJson("check_merge_conflicts", {
     action: "complete",
