@@ -8,17 +8,17 @@ const features = [
   {
     icon: "loop",
     title: "It watches the PR queue",
-    body: "merge-god scans each configured repo, finds PRs with the right labels, and processes them one at a time instead of relying on a human to keep checking GitHub.",
+    body: "merge-god scans each configured repo, finds PRs with the right labels, and keeps the last mile moving without a maintainer refreshing GitHub all afternoon.",
   },
   {
     icon: "context",
     title: "It builds the agent brief",
-    body: "Before the agent acts, merge-god gathers the PR body, changed files, commits, review comments, CI state, conflicts, labels, and local repo state into one prompt.",
+    body: "Before pi acts, merge-god gathers the PR body, changed files, commits, review comments, CI state, conflicts, labels, and local repo state into one grounded work item.",
   },
   {
     icon: "label",
     title: "Labels are the control plane",
-    body: "No label means no action. `for-landing` means resolve blockers and land it. `for-review` means inspect and improve it before landing.",
+    body: "No label means no action. `for-landing` says get it shipped. `for-review` asks for the quality pass before the merge button gets pressed.",
   },
   {
     icon: "grid",
@@ -28,7 +28,7 @@ const features = [
   {
     icon: "issue",
     title: "It can start from issues",
-    body: "Issues labeled `for-impl` can be turned into branches and PRs before the PR loop starts landing existing work.",
+    body: "Issues labeled `for-impl` can become branches and PRs before the PR loop gets back to clearing existing work.",
   },
   {
     icon: "bell",
@@ -60,7 +60,7 @@ node --version
 gh --version
 pi --version
 
-# 2. Create config.yaml
+# 2. Create config.yaml from the built-in template
 npx merge-god@latest init --repo /path/to/repo
 
 # 3. Verify auth, pi, and repo paths
@@ -76,11 +76,11 @@ npx merge-god@latest dashboard`;
     <div class="container hero-grid">
       <div class="hero-copy">
         <span class="pill"><span class="dot"></span> Label-driven PR automation</span>
-        <h1>An autonomous loop for <span class="gradient-text">landing pull requests</span>.</h1>
+        <h1>The tiny merge deity for <span class="gradient-text">tired PR queues</span>.</h1>
         <p class="lead">
-          merge-god is for repos where PRs pile up because the last mile is tedious:
+          merge-god is for repos where good work piles up behind boring last-mile chores:
           rebase conflicts, review follow-ups, failing checks, and merge-button babysitting.
-          Label a PR, and merge-god gives an agent the full context needed to get it landed.
+          Label a PR, and merge-god gives pi the grounded context needed to finish the ritual.
         </p>
         <div class="hero-cta">
           <a class="btn btn-primary" href={`${base}docs/quickstart/`}>
@@ -91,7 +91,7 @@ npx merge-god@latest dashboard`;
         </div>
         <ul class="hero-meta">
           <li><span class="check"></span> TypeScript + Node 22</li>
-          <li><span class="check"></span> pi agent + gh CLI</li>
+          <li><span class="check"></span> pi extension + coordination API</li>
           <li><span class="check"></span> MIT licensed</li>
         </ul>
       </div>
@@ -114,8 +114,8 @@ npx merge-god@latest dashboard`;
     <div class="container">
       <div class="section-head">
         <span class="eyebrow">Why it exists</span>
-        <h2>Most PR work is not writing new code. It is coordination.</h2>
-        <p class="lead">merge-god automates the repeatable part: picking the next eligible PR, preparing the checkout, collecting context, asking the agent to handle blockers, and recording the outcome.</p>
+        <h2>Most stuck PR work is not genius. It is coordination.</h2>
+        <p class="lead">merge-god automates the repeatable part: picking the next eligible PR, preparing the checkout, collecting context, asking pi to handle blockers, and recording the outcome.</p>
       </div>
       <div class="feature-grid">
         {features.map((f) => (
@@ -162,7 +162,7 @@ npx merge-god@latest dashboard`;
       <div class="section-head">
         <span class="eyebrow">Quickstart</span>
         <h2>Try it against a repo you control.</h2>
-        <p class="lead">Install dependencies, list repos in <code>config.yaml</code>, then label PRs with <code>for-landing</code> or <code>for-review</code>. Unlabeled PRs are ignored.</p>
+        <p class="lead">Generate a working <code>config.yaml</code> from the packaged template, then label PRs with <code>for-landing</code> or <code>for-review</code>. Unlabeled PRs are ignored.</p>
       </div>
       <div class="qs-shell">
         <div class="terminal-bar">
@@ -176,6 +176,7 @@ npx merge-god@latest dashboard`;
       <div class="qs-foot">
         <a class="btn btn-ghost" href={`${base}docs/`}>Read the docs</a>
         <a class="btn btn-ghost" href={`${base}docs/configuration/`}>Configuration reference</a>
+        <a class="btn btn-ghost" href={`${base}docs/scenarios/`}>Scenario configs</a>
       </div>
     </div>
   </section>
@@ -186,7 +187,7 @@ npx merge-god@latest dashboard`;
       <div class="cta card">
         <div>
           <h2>Use it when the merge queue is human-bound.</h2>
-          <p class="lead">If the work is approved but stuck behind conflicts, review nits, or flaky red checks, merge-god gives the agent enough context to finish the job.</p>
+          <p class="lead">If the work is approved but stuck behind conflicts, review nits, or flaky red checks, merge-god gives pi enough context to finish the job and leave an audit trail.</p>
         </div>
         <div class="cta-actions">
           <a class="btn btn-primary" href={`${base}docs/quickstart/`}>Get started</a>
@@ -298,7 +299,6 @@ npx merge-god@latest dashboard`;
     border-radius: var(--radius-lg);
     position: relative;
     overflow: visible;
-    animation: floatHero 7s ease-in-out infinite;
   }
   .hero-visual::after {
     content: "";
@@ -314,6 +314,7 @@ npx merge-god@latest dashboard`;
     opacity: 0.72;
     pointer-events: none;
     z-index: 2;
+    animation: heroLight 9s ease-in-out infinite;
   }
   .hero-visual::before {
     content: "";
@@ -343,9 +344,9 @@ npx merge-god@latest dashboard`;
     z-index: 1;
   }
 
-  @keyframes floatHero {
-    0%, 100% { transform: translateY(-10px) rotate(-1.5deg); }
-    50% { transform: translateY(10px) rotate(1deg); }
+  @keyframes heroLight {
+    0%, 100% { opacity: 0.58; filter: saturate(1); }
+    50% { opacity: 0.82; filter: saturate(1.18); }
   }
 
   /* Section heads */

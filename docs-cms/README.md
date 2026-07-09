@@ -42,7 +42,9 @@ Product requirements and feature specifications.
 
 ## Publishing Boundary
 
-`docs-cms` is the source of truth for publishable project documentation. Root-level markdown is reserved for operational guides such as the README, installation, testing, and changelog. The `docs/` directory is for historical or vendored reference material unless explicitly promoted into `docs-cms`.
+`docs/` is the source of truth for public user and contributor documentation.
+The Astro website renders those files directly. `docs-cms/` is the design and
+governance knowledge base for ADRs, RFCs, PRDs, and technical memos.
 
 ## Getting Started
 
