@@ -2,7 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { prLoopChildArgs } from "../merge-god";
-import { parseCliArgs } from "../pr-loop";
+import { parseCliArgs, runCommand } from "../pr-loop";
 
 describe("PR loop controls", () => {
   test("parses bounded dry-run controls", () => {
@@ -65,5 +65,19 @@ describe("PR loop controls", () => {
       ["/repo", "--max-iterations=3", "--between-items-sleep-seconds", "1"],
     );
     assert.equal(prLoopChildArgs(["--once"]), null);
+  });
+
+  test("runCommand allows output above Node's default sync buffer", () => {
+    const size = 1200 * 1024;
+    const [returncode, stdout, stderr] = runCommand(
+      [process.execPath, "-e", `process.stdout.write("x".repeat(${size}))`],
+      undefined,
+      10,
+      2 * 1024 * 1024,
+    );
+
+    assert.equal(returncode, 0);
+    assert.equal(stderr, "");
+    assert.equal(stdout.length, size);
   });
 });
