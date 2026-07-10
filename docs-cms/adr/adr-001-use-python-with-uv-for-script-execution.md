@@ -1,15 +1,20 @@
 ---
-title: Use Python with uv for Script Execution
-status: Accepted
+title: Superseded Python uv Script Execution
+status: Superseded
 created: 2025-11-20T00:00:00Z
+updated: 2026-07-09T00:00:00Z
 deciders: System Designer
-tags: [architecture, merge-god]
+tags: [architecture, merge-god, superseded]
 id: adr-001
 project_id: merge-god
 doc_uuid: b8f46e9c-8a8f-4ef1-a483-d9efe329e1e0
 ---
 
-# Use Python with uv for Script Execution
+# Superseded Python uv Script Execution
+
+> Superseded: merge-god is now a TypeScript / Node.js ESM application. Runtime
+> scripts are `.ts` files executed with Node and `tsx`; package management and
+> CI use npm. This ADR remains as historical context for the pre-port design.
 
 # Context
 
@@ -55,3 +60,5 @@ Use Python 3.12+ with uv (PEP 723 inline script metadata) for all scripts.
 # References
 
 - Migrated from legacy `ADR.md` (ADR-001)
+- Superseded by the TypeScript port documented in `docs/development.md`,
+  `docs/uv-guide.md`, and root `package.json`.

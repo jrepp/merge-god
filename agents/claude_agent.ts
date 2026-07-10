@@ -898,7 +898,7 @@ ${changedFilesStr}
 
 ## Quality Checks to Run
 
-Before finalizing any changes, follow the merge rules when present, including referenced Workflow-IR gates and remediation thresholds, then run these general quality tools:
+Before finalizing any changes, follow the merge rules when present, including referenced Workflow-IR gates and remediation modes. Run local refs and remote Git refs pinned to immutable commit hashes; report unpinned or unsupported refs as skipped evidence. Then run these general quality tools:
 
 \`\`\`bash
 # Type check and test
@@ -935,9 +935,9 @@ Review the code systematically and make targeted improvements.
 ## Your Task
 Final validation before marking PR ready:
 
-1. Follow the merge rules when present, including referenced Workflow-IR gates and remediation thresholds.
+1. Follow the merge rules when present, including referenced Workflow-IR gates and remediation modes. Run local refs and remote Git refs pinned to immutable commit hashes; report unpinned or unsupported refs as skipped evidence.
 2. Collect as much validation evidence as feasible before making a final gate decision.
-3. If a gate fails, attempt remediation only within the configured threshold and then rerun affected validation.
+3. If a gate fails, attempt remediation only within the configured remediation mode and then rerun affected validation.
 4. Run all general quality checks:
    - \`npm run typecheck\` - TypeScript checks
    - \`npm test\` - All tests

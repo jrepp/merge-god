@@ -63,8 +63,11 @@ Draft PRs are appropriate while validation, review, or scope confirmation is sti
 
 Run checks that match the changed surface:
 
-- Documentation: `docuchango validate --verbose`
-- Python formatting/linting: `ruff format .` and `ruff check .`
-- Tests: `pytest`
+- App: `npm run ci`
+- Typecheck only: `npm run typecheck`
+- Tests only: `npm test`
+- Public docs markdown: `npm run markdownlint`
+- Site: `cd site && npm run build`
+- Design docs: `docuchango validate --verbose`
 
 If a relevant check cannot be run, mention that in the PR description with the reason.

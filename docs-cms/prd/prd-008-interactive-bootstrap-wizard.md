@@ -3,6 +3,7 @@ title: Interactive Bootstrap Wizard
 status: Completed
 author: Jacob Repp
 created: 2025-11-21T00:00:00Z
+updated: 2026-07-09T00:00:00Z
 target_release: Released
 tags: [feature, merge-god]
 id: prd-008
@@ -34,7 +35,8 @@ Interactive Bootstrap Wizard for the merge-god PR automation system.
 
 # Success Criteria
 
-- New users can run `./dashboard.py` without any config file
+- New users can run `npx tsx dashboard.ts` or `npx merge-god@latest dashboard`
+  without an existing config file
 - Wizard validates inputs as they're entered
 - Generated config file is properly formatted
 - User can opt out and create config manually

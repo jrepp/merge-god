@@ -16,6 +16,13 @@ npx tsx dashboard.ts my-config.yaml  # alternate config
 npx tsx dashboard.ts --dry-run       # validate, don't start
 ```
 
+The published CLI uses the same default:
+
+```bash
+npx merge-god@latest dashboard
+npx merge-god@latest --config my-config.yaml dashboard
+```
+
 Run it inside `tmux` or `screen` so it survives a disconnected session. When
 there's no TTY (CI, background), it automatically drops into non-interactive
 logging mode.
@@ -33,6 +40,12 @@ If `config.yaml` is missing, the dashboard offers to create one:
 - Verifies each is a real git repo
 - Shows a summary before saving
 - Optionally runs `--dry-run` afterward
+
+You can also start from the packaged template:
+
+```bash
+cp config.example.yaml config.yaml
+```
 
 ## How PRs get selected
 

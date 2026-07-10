@@ -9,7 +9,8 @@ Make sure Node.js 22+, `gh`, and `pi` are on your `PATH`.
 
 ## 1. Initialize
 
-Create `config.yaml` in the current directory:
+Create `config.yaml` in the current directory. The CLI writes the runtime file
+from the same shape documented in `config.example.yaml`:
 
 ```bash
 npx merge-god@latest init

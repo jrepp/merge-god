@@ -302,6 +302,7 @@ export function runCommand(
       cwd,
       encoding: "utf8",
       timeout: timeout * 1000,
+      maxBuffer: maxOutputSize + Math.max(1024 * 1024, Math.floor(maxOutputSize / 10)),
     });
 
     if (result.error) {
@@ -1466,6 +1467,8 @@ export function getCommitHistoryExamples(defaultBranch = "main"): string {
 const MERGE_RULE_FILES = [
   "commandments.yaml",
   "commandments.yml",
+  "merge-rules.yaml",
+  "merge-rules.yml",
   ".commandments.yaml",
   ".commandments.yml",
   ".merge-rules.yaml",
@@ -1503,8 +1506,8 @@ export function getMergeRules(repoPath = process.cwd()): string {
         "This repo-local merge rule specification is authoritative for this repository.",
         "Gate definitions describe the evidence required before merge, push, or approval.",
         "Collect all feasible gate evidence before producing a final gate decision.",
-        "Failed gates may trigger bounded remediation when the configured thresholds allow it.",
-        "Workflow-IR references define preferred executable gate workflows; run supported refs and report unsupported refs as skipped evidence.",
+        "Failed gates may trigger remediation when the configured mode allows it.",
+        "Workflow-IR references define preferred executable gate workflows; run supported local refs and remote Git refs pinned to immutable commit hashes, and report unsupported or unpinned refs as skipped evidence.",
         "",
         "```yaml",
         raw,
@@ -2316,6 +2319,7 @@ export async function main(): Promise<void> {
         logJson("iteration", { number: iteration, action: "no_issues_found" });
       }
     }
+    processingIssues.clear();
 
     const categorizedPrs = getOpenPrs();
 
@@ -2417,6 +2421,7 @@ export async function main(): Promise<void> {
         await sleep(args.betweenItemsSleepSeconds * 1000);
       }
     }
+    processingPrs.clear();
 
     logJson("iteration", {
       number: iteration,
