@@ -68,6 +68,7 @@ rendered under `/design/rfcs/<slug>/`.
 
 ## Deployment
 
-`.github/workflows/site.yml` builds and deploys on every push to `main` that
-touches `site/**`. Pull requests run the build only (no deploy). GitHub Pages
-must be set to deploy from **GitHub Actions** in the repo settings.
+`.github/workflows/site.yml` builds and deploys on every push to `main`. Pull
+requests that touch `site/**`, `docs/**`, or the site workflow run the build
+only (no deploy). GitHub Pages must be set to deploy from **GitHub Actions** in
+the repo settings.
