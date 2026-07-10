@@ -1,7 +1,7 @@
 project:
   id: merge-god
   name: Merge God
-  description: Documentation for Merge God
+  description: TypeScript/Node.js PR automation system driven by GitHub labels and the pi coding agent
 
 structure:
   adr_dir: adr
@@ -20,8 +20,8 @@ structure:
 metadata:
   created: "2026-06-26"
   maintainers:
-    - Your Team
-  purpose: Project documentation hub for architecture decisions, RFCs, memos, and PRDs
+    - Jacob Repp
+  purpose: Design and governance hub for merge-god ADRs, RFCs, memos, and PRDs. Public user docs live in ../docs and are rendered by the Astro site.
 
 readability:
   # Enable/disable readability analysis

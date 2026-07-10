@@ -303,6 +303,7 @@ export function runCommand(
       cwd,
       encoding: "utf8",
       timeout: timeout * 1000,
+      maxBuffer: maxOutputSize + Math.max(1024 * 1024, Math.floor(maxOutputSize / 10)),
     });
 
     if (result.error) {
@@ -2280,6 +2281,7 @@ export async function main(): Promise<void> {
         logJson("iteration", { number: iteration, action: "no_issues_found" });
       }
     }
+    processingIssues.clear();
 
     const categorizedPrs = getOpenPrs();
 
@@ -2381,6 +2383,7 @@ export async function main(): Promise<void> {
         await sleep(args.betweenItemsSleepSeconds * 1000);
       }
     }
+    processingPrs.clear();
 
     logJson("iteration", {
       number: iteration,

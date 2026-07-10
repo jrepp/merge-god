@@ -1,15 +1,29 @@
 ---
 title: Configuration
-description: The complete reference for config.yaml — repositories, labels, issue watching, and doormat.
+description: The complete reference for config.yaml, the runtime config created from config.example.yaml.
 group: Guides
 order: 10
 ---
 
-merge-god is configured through a single YAML file (`config.yaml` by default).
-Point the dashboard at any file with `npx tsx dashboard.ts path/to/config.yaml`.
+merge-god reads `config.yaml` by default. The repository ships
+`config.example.yaml` as the commented template; copy it or run `init` to create
+your local `config.yaml`.
+
+Point the dashboard at any other YAML file with
+`npx tsx dashboard.ts path/to/config.yaml` or
+`npx merge-god@latest --config path/to/config.yaml dashboard`.
 
 You can also bootstrap one interactively: run `npx tsx dashboard.ts` with no
 config present and it will walk you through adding repos with live validation.
+
+```bash
+# from the published package
+npx merge-god@latest init --repo /Users/you/dev/my-project
+
+# from a source checkout
+cp config.example.yaml config.yaml
+npx tsx dashboard.ts --dry-run
+```
 
 ## Repositories
 
@@ -194,3 +208,6 @@ npx tsx dashboard.ts --dry-run
 It verifies that every `path` exists and is a valid git repo, that
 `pr-loop.ts` is present, and summarizes what would launch — then exits
 without starting anything.
+
+Need a starting shape? See [Scenarios](./scenarios/) for complete example
+configs.
