@@ -643,7 +643,7 @@ export default function mergeGodPiExtension(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use this only for a separate bug fix or remediation discovered while doing assigned merge-god work.",
       "Provide signal_refs such as failing command output, CI check URLs, review comments, issue URLs, stack traces, or repro artifacts.",
-      "Provide grounding_refs from project docs, AGENTS.md, .merge-rules.yaml, or Workflow-IR docs that justify the remediation scope.",
+      "Provide grounding_refs from project docs, AGENTS.md, merge-rules.yaml, or Workflow-IR docs that justify the remediation scope. Use remote Workflow-IR refs only when they are pinned to immutable commit hashes.",
       "Keep the change narrowly scoped and include validation_refs when you ran checks.",
     ],
     parameters: {

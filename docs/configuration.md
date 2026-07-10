@@ -134,10 +134,10 @@ Key metrics:
 
 ## Merge rules
 
-Each repository can define root-level merge policy in `.merge-rules.yaml`.
-Keep this file small: use it for plain-language rules, a remediation threshold,
-and Workflow-IR references. Put detailed gate graphs, evidence requirements,
-check selection, retries, and remediation routing in Workflow-IR.
+Each repository can define root-level merge policy in `merge-rules.yaml`. Keep
+this file small: use it for plain-language rules, a human-readable remediation
+mode, and portable Workflow-IR references. Put detailed gate graphs, evidence
+requirements, check selection, retries, and remediation routing in Workflow-IR.
 
 ```yaml
 version: 1
@@ -145,27 +145,33 @@ title: Merge God local merge rules
 
 rules:
   - Run as many applicable gates as possible before making a final merge decision.
-  - A failed gate should trigger remediation when the fix remains within the configured threshold.
+  - A failed gate should trigger remediation when the fix remains within the configured mode.
   - Final decisions must include evidence for skipped, failed, remediated, and passing gates.
   - Underlying bug-fix PRs must link back to the PR that exposed the problem and cite signal, grounding, and validation evidence.
 
 remediation:
-  threshold: bounded
+  mode: bounded-fixes
 
 workflow_ir:
-  - docs-cms/rfcs/rfc-001-workflow-ir-extraction.md#wf.merge-god.pr-merge-gate
   - docs/workflow-ir/review-workflows/underlying-remediation-pr.workflow-ir.md
+  - git+https://github.com/acme/workflow-policies.git@3f4b1f7e2d6c9a8b0e1d2c3a4f5b6c7d8e9f0123//review/pre-landing.workflow-ir.md#wf.acme.pre-landing
 ```
 
 `rules` are natural-language policy for prompt-driven judgment.
-`remediation.threshold` names the maximum remediation autonomy allowed before
-the run should stop or escalate. `workflow_ir` points at executable gate
-definitions; merge-god should run supported refs, collect all feasible evidence,
-remediate failed gates within threshold, rerun affected gates, and report
-unsupported refs as skipped evidence.
+`remediation.mode` names how much fixing merge-god may do before it should stop
+or escalate. `workflow_ir` points at executable gate definitions. Plain refs are
+repo-relative, so they migrate cleanly only when the referenced files move with
+the policy. Remote Git refs are supported when they are pinned to an immutable
+commit hash. If a referenced Workflow-IR file is missing, unpinned, or
+unsupported in the new repo, merge-god should report that ref as skipped
+evidence rather than treating it as a passing gate.
 
-`.commandments.yaml` is accepted as an optional alias for the same schema, but
-`.merge-rules.yaml` is the documented name.
+For compatibility, `remediation.threshold` is still accepted as an alias for
+`remediation.mode`; existing values such as `bounded` continue to work. Hidden
+file names are also still accepted as aliases, but `merge-rules.yaml` is the
+documented name. File precedence is `merge-rules.yaml`, `merge-rules.yml`,
+`.merge-rules.yaml`, `.merge-rules.yml`, `.commandments.yaml`,
+`.commandments.yml`.
 
 Supported fields:
 
@@ -174,28 +180,42 @@ Supported fields:
 | `version` | number | Schema version. Use `1`. |
 | `title` | string | Human-readable name for the rule set. |
 | `rules` | string[] | Natural-language merge requirements. |
-| `remediation.threshold` | string | Maximum autonomy before stopping or escalating. |
-| `workflow_ir` | string[] | Repo-relative Workflow-IR refs that define executable gates. |
+| `remediation.mode` | string | Human-readable fixing level before stopping or escalating. |
+| `remediation.threshold` | string | Compatibility alias for `remediation.mode`. |
+| `workflow_ir` | string[] | Repo-relative or pinned remote Git Workflow-IR refs that define executable gates. |
+
+Workflow-IR ref examples:
+
+| Ref type | Example | Portability |
+| --- | --- | --- |
+| Repo-relative file | `docs/workflow-ir/review-workflows/underlying-remediation-pr.workflow-ir.md` | Requires that file to exist in each target repo. |
+| Repo-relative file plus workflow id | `docs/workflow-ir/review-workflows/pre-landing-review.workflow-ir.md#wf.merge-god.pre-landing-review` | Requires that file and workflow id to exist in each target repo. |
+| Pinned Git repository ref | `git+https://github.com/acme/workflow-policies.git@3f4b1f7e2d6c9a8b0e1d2c3a4f5b6c7d8e9f0123//review/pre-landing.workflow-ir.md#wf.acme.pre-landing` | Portable across repos because the policy source is external and immutable. |
+| GitHub blob permalink | `https://github.com/acme/workflow-policies/blob/3f4b1f7e2d6c9a8b0e1d2c3a4f5b6c7d8e9f0123/review/pre-landing.workflow-ir.md#wf.acme.pre-landing` | Portable when the URL uses a commit SHA, not a branch or tag. |
+
+Do not use branch names such as `main`, moving tags, or unpinned raw URLs for
+merge policy. Unpinned remote refs are mutable and should be reported as skipped
+evidence.
 
 Rule examples:
 
 | Rule type | Example |
 | --- | --- |
 | Evidence breadth | `Run as many applicable gates as possible before making a final merge decision.` |
-| Failed-gate remediation | `A failed gate should trigger remediation when the fix remains within the configured threshold.` |
+| Failed-gate remediation | `A failed gate should trigger remediation when the fix remains within the configured mode.` |
 | Scope control | `Remediation must preserve the PR's retained scope and stop before unrelated redesign.` |
 | Final evidence | `Final decisions must include evidence for skipped, failed, remediated, and passing gates.` |
-| Human escalation | `Escalate when remediation would exceed the configured threshold or require product judgment.` |
+| Human escalation | `Escalate when remediation would exceed the configured mode or require product judgment.` |
 
-Threshold examples:
+Remediation mode examples:
 
-| Threshold | Meaning |
+| Mode | Compatibility value | Meaning |
 | --- | --- |
-| `observe` | Gather evidence only; do not mutate the branch. |
-| `validate` | Run gates and report findings; do not apply fixes. |
-| `mechanical` | Apply generated or mechanical fixes, then rerun affected gates. |
-| `bounded` | Fix conflicts or CI failures when retained scope stays unchanged. |
-| `maintainer-approved` | Allow broader remediation only when a human-approved gate says so. |
+| `observe-only` | `observe` | Gather evidence only; do not mutate the branch. |
+| `validate-only` | `validate` | Run gates and report findings; do not apply fixes. |
+| `mechanical-fixes` | `mechanical` | Apply generated or mechanical fixes, then rerun affected gates. |
+| `bounded-fixes` | `bounded` | Fix conflicts or CI failures when retained scope stays unchanged. |
+| `maintainer-approved` | `maintainer-approved` | Allow broader remediation only when a human-approved gate says so. |
 
 ## Validating your config
 
