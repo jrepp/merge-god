@@ -12,6 +12,11 @@
 
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import {
+  remediationModeAllowsMutation,
+  resolveRemediationPolicy,
+  type RemediationPolicyDecision,
+} from "./remediation_policy_model";
 import type {
   ActivityRecord,
   ActivityClaim,
@@ -69,6 +74,16 @@ function strOrNull(value: unknown): string | null {
 
 function numOrNull(value: unknown): number | null {
   return typeof value === "number" ? value : null;
+}
+
+function remediationBlockers(decision: RemediationPolicyDecision): JsonObject[] {
+  return decision.blocked
+    ? [{
+        kind: "remediation_policy",
+        status: "blocked",
+        summary: decision.reasons.join(" "),
+      }]
+    : [];
 }
 
 /**
@@ -1012,7 +1027,11 @@ export class AppStore {
           now,
           now,
           input.objective ?? `Process ${input.items.length} queued PR(s)`,
-          stringifyJson({ labels_required: ["for-review", "for-landing"] }),
+          stringifyJson({
+            labels_required: ["for-review", "for-landing"],
+            repository_remediation_mode: input.repository_remediation_mode ?? "bounded-fixes",
+            global_remediation_ceiling: input.global_remediation_ceiling ?? "maintainer-approved",
+          }),
           stringifyJson({}),
           stringifyJson({ runtime_path: "pr_queue" }),
         );
@@ -1049,6 +1068,14 @@ export class AppStore {
         workItemIds.push(workItemId);
         activityIds.push(activityId);
         const activityType: ActivityType = item.mode === "for-review" ? "review_workflow" : "merge_gate";
+        const remediationDecision = resolveRemediationPolicy({
+          labels: item.labels,
+          work_item_mode: item.disposition_setting,
+          repository_mode: input.repository_remediation_mode,
+          risk_ceiling: item.risk_remediation_ceiling,
+          global_ceiling: input.global_remediation_ceiling,
+          maintainer_approval_verified: item.maintainer_approval_verified,
+        });
 
         this.db
           .prepare(
@@ -1076,12 +1103,15 @@ export class AppStore {
             item.current_sha ?? null,
             item.current_sha ?? null,
             "queued",
-            item.disposition_setting ?? null,
+            remediationDecision.effective_mode,
             item.priority ?? i,
             item.model_tier ?? null,
             "claim_activity",
-            stringifyJson([]),
-            stringifyJson({ label_contract_checked: true }),
+            stringifyJson(remediationBlockers(remediationDecision)),
+            stringifyJson({
+              label_contract_checked: true,
+              remediation_policy: remediationDecision,
+            }),
             stringifyJson([]),
             now,
             now,
@@ -1107,7 +1137,9 @@ export class AppStore {
             "ready",
             stringifyJson({ model_tier: item.model_tier ?? null }),
             stringifyJson({
-              mutating_allowed: item.disposition_setting !== "observe" && item.disposition_setting !== "validate",
+              remediation_mode: remediationDecision.effective_mode,
+              mutating_allowed: remediationModeAllowsMutation(remediationDecision.effective_mode) && !remediationDecision.blocked,
+              budget: remediationDecision.budget,
             }),
             null,
             stringifyJson([]),
@@ -1675,6 +1707,14 @@ export class AppStore {
     const now = nowIso();
     const title = input.title ?? `PR #${input.pr_number}`;
     const activityType: ActivityType = input.mode === "for-review" ? "review_workflow" : "merge_gate";
+    const remediationDecision = resolveRemediationPolicy({
+      labels: input.labels,
+      work_item_mode: input.disposition_setting,
+      repository_mode: input.repository_remediation_mode,
+      risk_ceiling: input.risk_remediation_ceiling,
+      global_ceiling: input.global_remediation_ceiling,
+      maintainer_approval_verified: input.maintainer_approval_verified,
+    });
 
     try {
       this.db.exec("BEGIN");
@@ -1700,7 +1740,10 @@ export class AppStore {
           now,
           now,
           `Process ${input.repo_name} PR #${input.pr_number}`,
-          stringifyJson({ mode: input.mode }),
+          stringifyJson({
+            mode: input.mode,
+            remediation_policy: remediationDecision,
+          }),
           stringifyJson({ model: input.model ?? null }),
           stringifyJson({ compatibility_path: "run_agent_from_db" }),
         );
@@ -1733,9 +1776,9 @@ export class AppStore {
           INSERT INTO work_items (
               work_item_id, workset_id, source_kind, repo_name, number, title,
               url, mode, labels, base_ref, head_ref, start_sha, current_sha,
-              status, priority, model_tier, next_action, blockers,
+              status, disposition_setting, priority, model_tier, next_action, blockers,
               risk_signals, context_pack_refs, created_at, updated_at, metadata
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
         )
         .run(
@@ -1753,11 +1796,15 @@ export class AppStore {
           input.current_sha ?? null,
           input.current_sha ?? null,
           "running",
+          remediationDecision.effective_mode,
           0,
           input.model ?? null,
           "run_agent",
-          stringifyJson([]),
-          stringifyJson({ compatibility_path: true }),
+          stringifyJson(remediationBlockers(remediationDecision)),
+          stringifyJson({
+            compatibility_path: true,
+            remediation_policy: remediationDecision,
+          }),
           stringifyJson([]),
           now,
           now,
@@ -1782,7 +1829,12 @@ export class AppStore {
           activityType,
           "running",
           stringifyJson({ model: input.model ?? null }),
-          stringifyJson({ compatibility_path: true }),
+          stringifyJson({
+            compatibility_path: true,
+            remediation_mode: remediationDecision.effective_mode,
+            mutating_allowed: remediationModeAllowsMutation(remediationDecision.effective_mode) && !remediationDecision.blocked,
+            budget: remediationDecision.budget,
+          }),
           null,
           stringifyJson([]),
           stringifyJson([]),

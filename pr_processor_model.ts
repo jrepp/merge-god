@@ -15,6 +15,7 @@ import {
 } from "./pr_details_access_model";
 import { prStateFromAgentDecision, type PrProcessingState } from "./pr_state";
 import type { ReviewGateStatus } from "./review_gate_model";
+import type { RemediationPolicyDecision } from "./remediation_policy_model";
 
 export type PrProcessingMode = "for-review" | "for-landing" | string;
 export type PrProcessingFailureState = "blocked" | "failed";
@@ -414,6 +415,7 @@ export function buildPrAgentWorkItemPlan(
   prompt: string,
   repoPath: string,
   repoName: string | null = null,
+  remediationPolicy: RemediationPolicyDecision | null = null,
 ): PrAgentWorkItemPlan {
   return {
     kind: "pr",
@@ -426,5 +428,11 @@ export function buildPrAgentWorkItemPlan(
     head_branch: input.head_branch,
     base_branch: input.base_branch,
     prompt,
+    ...(remediationPolicy
+      ? {
+          disposition_setting: remediationPolicy.effective_mode,
+          remediation_policy: remediationPolicy,
+        }
+      : {}),
   };
 }

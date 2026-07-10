@@ -198,6 +198,11 @@ export interface CompatibilityTrajectoryInput {
   current_sha?: string | null;
   session_id?: string | null;
   model?: string | null;
+  disposition_setting?: string | null;
+  repository_remediation_mode?: string | null;
+  risk_remediation_ceiling?: string | null;
+  global_remediation_ceiling?: string | null;
+  maintainer_approval_verified?: boolean;
 }
 
 export interface CompatibilityTrajectoryIds {
@@ -221,6 +226,8 @@ export interface TrajectoryWorkItemInput {
   priority?: number | null;
   model_tier?: string | null;
   disposition_setting?: string | null;
+  risk_remediation_ceiling?: string | null;
+  maintainer_approval_verified?: boolean;
 }
 
 export interface PrQueueTrajectoryInput {
@@ -229,6 +236,8 @@ export interface PrQueueTrajectoryInput {
   base_branch?: string | null;
   objective?: string | null;
   strategy?: string | null;
+  repository_remediation_mode?: string | null;
+  global_remediation_ceiling?: string | null;
   items: TrajectoryWorkItemInput[];
 }
 

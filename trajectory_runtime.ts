@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { remediationPolicyDecisionFromValue } from "./remediation_policy_model";
 import type { AppStore } from "./app_store";
 import { runPiAgent, type AgentObservation, type CoordinationTrajectoryBridge, type PiAgentResult, type WorkItem } from "./coordination";
 import type { GitOpsObserver } from "./git_ops";
@@ -236,6 +237,9 @@ export class TrajectoryRuntime {
     const labels = new Set(claim.work_item?.labels ?? []);
     const mode = claim.work_item?.mode ?? null;
     const isChildActivity = claim.activity.parent_activity_id !== null;
+    const remediationPolicy = remediationPolicyDecisionFromValue(
+      claim.work_item?.risk_signals["remediation_policy"],
+    );
     const checks = [
       {
         name: "label_contract",
@@ -256,9 +260,18 @@ export class TrajectoryRuntime {
         summary: "Top-level activity type must match the work item's requested mode.",
       },
       {
+        name: "remediation_policy",
+        passed: remediationPolicy !== null && !remediationPolicy.blocked,
+        summary: remediationPolicy === null
+          ? "Work item must have a resolved remediation policy."
+          : remediationPolicy.reasons.join(" "),
+      },
+      {
         name: "disposition_cap",
-        passed: claim.work_item?.disposition_setting !== "observe",
-        summary: "Observe-only work items cannot be handed to a mutating pi activity.",
+        passed: remediationPolicy?.budget.mutating_allowed === true,
+        summary: remediationPolicy?.budget.mutating_allowed === true
+          ? `${remediationPolicy.effective_mode} permits bounded mutation.`
+          : `${remediationPolicy?.effective_mode ?? "unknown"} cannot be handed to a mutating pi activity.`,
       },
     ];
     const result = { passed: checks.every((check) => check.passed), checks };
