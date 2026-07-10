@@ -581,7 +581,7 @@ export const DEFAULT_INSTRUCTION =
   "open a remediation PR only when you have concrete underlying signal " +
   "(for example failing tests, CI logs, review comments, issue text, runtime " +
   "errors, or reproducible command output) and project-doc grounding " +
-  "(AGENTS.md, docs/, merge-rules.yaml, or referenced Workflow-IR). Use " +
+  "(AGENTS.md, docs/, commandments.yaml, or referenced Workflow-IR). Use " +
   "`merge_god_open_follow_up_pr` with signal_refs and grounding_refs to commit " +
   "the current worktree changes, push a branch, open a pull request, and notify " +
   "the coordinator.\n" +

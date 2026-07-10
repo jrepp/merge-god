@@ -134,6 +134,12 @@ function cmdDashboard(g: GlobalArgs): number {
   }
 }
 
+function cmdDoctor(g: GlobalArgs): number {
+  const args = ["doctor", ...g.rest];
+  if (g.config) args.push("--config", g.config);
+  return runChild("merge_god/cli.ts", args);
+}
+
 function cmdScan(g: GlobalArgs): number {
   logText("Scanning and caching PR context...");
   const parsed = parseArgs({
@@ -383,6 +389,7 @@ COMMANDS:
   test        Run test suite (--type all|isolation|db|agent).
   status      Show system status and statistics.
   pr-loop     Run bounded or continuous PR processing loop.
+  doctor      Check local prerequisites and config paths.
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
@@ -423,6 +430,7 @@ function main(): number {
     test: () => cmdTest(g),
     status: () => cmdStatus(g),
     "pr-loop": () => cmdPrLoop(g),
+    doctor: () => cmdDoctor(g),
     help: () => cmdHelp(),
   };
 

@@ -66,7 +66,7 @@ graph:
         accepted_grounding_refs:
           - AGENTS.md
           - docs/
-          - merge-rules.yaml
+          - commandments.yaml
           - docs/workflow-ir/
       on_error:
         strategy: fail_workflow

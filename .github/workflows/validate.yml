@@ -73,8 +73,8 @@ jobs:
           npm pack --dry-run --workspace @merge-god/github-sync
           npm pack --dry-run --workspace @merge-god/workflow-ir-core
 
-  merge-rules-policy:
-    name: merge rules policy
+  commandments-policy:
+    name: commandments policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,10 +88,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate merge rules policy
+      - name: Validate commandments policy
         run: node --import tsx --test tests/merge_rules.test.ts
 
-      - name: Verify package includes public merge rules file
+      - name: Verify package includes public commandments file
         shell: bash
         run: |
           set -euo pipefail
@@ -100,8 +100,8 @@ jobs:
           const fs = require('node:fs');
           const pack = JSON.parse(fs.readFileSync('pack.json', 'utf8'));
           const files = new Set(pack[0].files.map((file) => file.path));
-          if (!files.has('merge-rules.yaml')) {
-            throw new Error('package is missing merge-rules.yaml');
+          if (!files.has('commandments.yaml')) {
+            throw new Error('package is missing commandments.yaml');
           }
           if (files.has('.merge-rules.yaml')) {
             throw new Error('package still includes legacy .merge-rules.yaml');

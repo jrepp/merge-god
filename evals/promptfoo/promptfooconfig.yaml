@@ -20,7 +20,7 @@ tests:
       prompt_kind: pr
       guidelines: "Run npm test before pushing."
       commit_examples: "feat: prior commit"
-      merge_rules: "Source: `merge-rules.yaml`"
+      merge_rules: "Source: `commandments.yaml`"
       pr_details:
         number: 183
         title: Agent-managed queue
@@ -99,7 +99,7 @@ tests:
       - type: contains
         value: "Fix ALL 1 failing CI checks"
       - type: contains
-        value: "Source: `merge-rules.yaml`"
+        value: "Source: `commandments.yaml`"
 
   - description: Issue prompt includes implementation workflow and PR creation command
     vars:

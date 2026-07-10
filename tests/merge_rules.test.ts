@@ -10,16 +10,16 @@ describe("merge rules", () => {
   test("loads the repository policy with pinned Workflow-IR refs", () => {
     const rules = getMergeRules(resolve("."));
 
-    assert.match(rules, /Source: `merge-rules.yaml`/);
+    assert.match(rules, /Source: `commandments.yaml`/);
     assert.match(rules, /mode: bounded-fixes/);
     assert.match(rules, /git\+https:\/\/github\.com\/jrepp\/merge-god\.git@4fd39b7d4592eec5bf3e1b969b3246f863779a41/);
     assert.match(rules, /wf\.merge-god\.pr-merge-gate/);
   });
 
-  test("loads the canonical root-level merge rules file", () => {
+  test("loads the canonical root-level commandments file", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(
-      join(dir, "merge-rules.yaml"),
+      join(dir, "commandments.yaml"),
       [
         "version: 1",
         "rules:",
@@ -34,7 +34,7 @@ describe("merge rules", () => {
 
     const rules = getMergeRules(dir);
 
-    assert.match(rules, /Source: `merge-rules.yaml`/);
+    assert.match(rules, /Source: `commandments.yaml`/);
     assert.match(rules, /Run as many applicable gates as possible/);
     assert.match(rules, /mode: bounded-fixes/);
     assert.match(rules, /underlying-remediation-pr\.workflow-ir/);
@@ -42,7 +42,7 @@ describe("merge rules", () => {
     assert.match(rules, /git\+https:\/\/github\.com\/acme\/workflow-policies\.git@3f4b1f7e2d6c9a8b0e1d2c3a4f5b6c7d8e9f0123\/\/review\/pre-landing\.workflow-ir\.md#wf\.acme\.pre-landing/);
   });
 
-  test("accepts the optional hidden-file aliases", () => {
+  test("accepts the legacy hidden merge-rules alias", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(join(dir, ".merge-rules.yaml"), "version: 1\nrules:\n  - Keep the merge gate honest.\n");
 
@@ -52,7 +52,7 @@ describe("merge rules", () => {
     assert.match(rules, /Keep the merge gate honest/);
   });
 
-  test("accepts the optional commandments alias", () => {
+  test("accepts the optional hidden commandments alias", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(join(dir, ".commandments.yaml"), "version: 1\nrules:\n  - Keep the merge gate honest.\n");
 
@@ -65,14 +65,16 @@ describe("merge rules", () => {
   test("prefers the canonical file over aliases", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-god-merge-rules-"));
     writeFileSync(join(dir, ".commandments.yaml"), "version: 1\nrules:\n  - Alias rule.\n");
-    writeFileSync(join(dir, ".merge-rules.yaml"), "version: 1\nrules:\n  - Canonical rule.\n");
-    writeFileSync(join(dir, "merge-rules.yaml"), "version: 1\nrules:\n  - Public canonical rule.\n");
+    writeFileSync(join(dir, ".merge-rules.yaml"), "version: 1\nrules:\n  - Legacy hidden rule.\n");
+    writeFileSync(join(dir, "merge-rules.yaml"), "version: 1\nrules:\n  - Legacy public rule.\n");
+    writeFileSync(join(dir, "commandments.yaml"), "version: 1\nrules:\n  - Public canonical rule.\n");
 
     const rules = getMergeRules(dir);
 
-    assert.match(rules, /Source: `merge-rules.yaml`/);
+    assert.match(rules, /Source: `commandments.yaml`/);
     assert.match(rules, /Public canonical rule/);
-    assert.doesNotMatch(rules, /Canonical rule/);
+    assert.doesNotMatch(rules, /Legacy public rule/);
+    assert.doesNotMatch(rules, /Legacy hidden rule/);
     assert.doesNotMatch(rules, /Alias rule/);
   });
 });

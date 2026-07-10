@@ -2647,11 +2647,10 @@ class Dashboard {
       return false;
     }
     try {
-      accessSync(this.scriptPath, fsConstants.X_OK);
+      accessSync(this.scriptPath, fsConstants.R_OK);
     } catch {
-      this.consolePrint(
-        chalk.yellow(`⚠ ${this.scriptPath} is not executable (run: chmod +x pr-loop.ts)`),
-      );
+      this.consolePrint(chalk.red(`✗ ${this.scriptPath} is not readable`));
+      return false;
     }
     this.consolePrint(chalk.green(`✓ Found pr-loop.ts at ${this.scriptPath}\n`));
 
