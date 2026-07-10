@@ -5,6 +5,7 @@
 import type { CommandLogger, CommandRunner } from "./command_runner";
 import { validateGitRef } from "./git_ref";
 import type { DiffAvailability } from "./merge_pr_model";
+import { parseMergeTreeConflicts } from "./merge_tree_conflict_model";
 
 export interface BranchRefs {
   head_branch: string;
@@ -179,32 +180,7 @@ export class GhCliPullRequestContextSource implements PullRequestContextSource {
       undefined,
       120,
     );
-    let hasConflicts = false;
-    if (mergeTreeCode === 0 && mergeTreeStdout) {
-      hasConflicts = mergeTreeStdout.split("\n").some((line) => line.startsWith("<<<<<<<"));
-    }
-
-    const conflictingFiles: string[] = [];
-    if (hasConflicts) {
-      let currentFile: string | null = null;
-      for (const line of mergeTreeStdout.split("\n")) {
-        if (line.startsWith("+++") || line.startsWith("---")) {
-          const parts = line.split(" ");
-          if (parts.length > 1 && parts[1] !== "/dev/null") {
-            const filePath = (parts[1] ?? "").replace(/^[ab/]+/, "");
-            if (filePath && !conflictingFiles.includes(filePath)) currentFile = filePath;
-          }
-        } else if (line.startsWith("<<<<<<<") && currentFile && !conflictingFiles.includes(currentFile)) {
-          conflictingFiles.push(currentFile);
-        }
-      }
-    }
-
-    const result = {
-      has_conflicts: hasConflicts,
-      conflicting_files: conflictingFiles,
-      conflict_count: conflictingFiles.length,
-    };
+    const result = parseMergeTreeConflicts(mergeTreeCode, mergeTreeStdout);
     this.log("check_merge_conflicts", { action: "complete", pr_number: prNumber, ...result });
     return result;
   }
