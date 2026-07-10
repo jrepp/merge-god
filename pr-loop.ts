@@ -2314,6 +2314,7 @@ export async function main(): Promise<void> {
         logJson("iteration", { number: iteration, action: "no_issues_found" });
       }
     }
+    processingIssues.clear();
 
     const categorizedPrs = getOpenPrs();
 
@@ -2415,6 +2416,7 @@ export async function main(): Promise<void> {
         await sleep(args.betweenItemsSleepSeconds * 1000);
       }
     }
+    processingPrs.clear();
 
     logJson("iteration", {
       number: iteration,
