@@ -31,6 +31,19 @@ describe("merge conflict evidence normalization", () => {
     });
   });
 
+  test("extracts the file path from modify-delete conflict prose", () => {
+    const output = [
+      "Auto-merging src/worker.ts",
+      "CONFLICT (modify/delete): src/worker.ts deleted in main and modified in feature. Version feature of src/worker.ts left in tree.",
+    ].join("\n");
+
+    assert.deepEqual(parseMergeTreeConflicts(1, output), {
+      has_conflicts: true,
+      conflicting_files: ["src/worker.ts"],
+      conflict_count: 1,
+    });
+  });
+
   test("exports the default active conflict file summary limit", () => {
     assert.equal(ACTIVE_MERGE_CONFLICT_SUMMARY_FILE_LIMIT, 8);
   });

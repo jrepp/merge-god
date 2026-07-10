@@ -7,8 +7,11 @@ function normalizePath(value: string): string {
 }
 
 function conflictPathFromLine(line: string): string | null {
-  const inMatch = /\bin\s+(.+)$/.exec(line);
-  if (inMatch?.[1]) return normalizePath(inMatch[1]);
+  const mergeConflictMatch = /\bMerge conflict in\s+(.+)$/.exec(line);
+  if (mergeConflictMatch?.[1]) return normalizePath(mergeConflictMatch[1]);
+
+  const deleteModifyMatch = /^CONFLICT\s+\((?:modify\/delete|delete\/modify)\):\s*(.+?)\s+deleted in\b/.exec(line);
+  if (deleteModifyMatch?.[1]) return normalizePath(deleteModifyMatch[1]);
 
   const colonMatch = /^CONFLICT\s+\([^)]+\):\s*(.+)$/.exec(line);
   if (colonMatch?.[1]) return normalizePath(colonMatch[1]);
