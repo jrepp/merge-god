@@ -235,6 +235,27 @@ function cmdPrLoop(g: GlobalArgs): number {
   return runChild("pr-loop.ts", args);
 }
 
+function cmdProfile(g: GlobalArgs): number {
+  const parsed = parseArgs({
+    args: g.rest,
+    options: {
+      input: { type: "string" },
+      repo: { type: "string" },
+      limit: { type: "string" },
+      "deepening-limit": { type: "string" },
+      "sample-limit": { type: "string" },
+      now: { type: "string" },
+    },
+    allowPositionals: true,
+  });
+  const args = ["profile_operations.ts"];
+  for (const option of ["input", "repo", "limit", "deepening-limit", "sample-limit", "now"] as const) {
+    const value = parsed.values[option];
+    if (value) args.push(`--${option}`, value);
+  }
+  return runChild(args[0]!, args.slice(1));
+}
+
 function cmdValidate(g: GlobalArgs): number {
   logText("Validating process isolation and data flow...");
   const parsed = parseArgs({
@@ -390,6 +411,7 @@ COMMANDS:
   status      Show system status and statistics.
   pr-loop     Run bounded or continuous PR processing loop.
   doctor      Check local prerequisites and config paths.
+  profile     Profile a shallow PR inventory without agent or mutation calls.
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
@@ -431,6 +453,7 @@ function main(): number {
     status: () => cmdStatus(g),
     "pr-loop": () => cmdPrLoop(g),
     doctor: () => cmdDoctor(g),
+    profile: () => cmdProfile(g),
     help: () => cmdHelp(),
   };
 
