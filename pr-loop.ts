@@ -52,7 +52,7 @@ import {
   stalePrStateLabelNames,
   type PrProcessingState,
 } from "./pr_state";
-import { prDetailsNumber } from "./pr_details_access_model";
+import { prDetailsLabels, prDetailsNumber } from "./pr_details_access_model";
 import { prQueueInfoFromRecord } from "./pr_queue_display_model";
 import {
   buildPrAgentCompletionPlan,
@@ -66,6 +66,13 @@ import {
 } from "./pr_processor_model";
 import { buildIssuePrompt, buildPrPrompt } from "./pr_prompt";
 import { reviewGateStatusesFromContext } from "./review_gate_status";
+import {
+  REMEDIATION_MODE_LABELS,
+  repositoryRemediationModeFromPolicy,
+  resolveRemediationPolicy,
+  remediationPolicySummary,
+  type RemediationMode,
+} from "./remediation_policy_model";
 import {
   addTelemetryEvent,
   initializeTelemetry,
@@ -392,6 +399,7 @@ function createDefaultPrContextSource(): GhCliPullRequestContextSource {
 // --- PR state labels ---------------------------------------------------------
 
 const ensuredPrStateLabels = new Set<string>();
+const ensuredRemediationModeLabels = new Set<string>();
 
 function isAlreadyExistsError(stderr: string): boolean {
   return /already exists|name already exists/i.test(stderr);
@@ -401,6 +409,40 @@ function ensurePrStateLabels(): boolean {
   let ok = true;
   for (const state of Object.keys(PR_STATE_LABELS) as PrProcessingState[]) {
     ok = ensurePrStateLabel(state) && ok;
+  }
+  return ok;
+}
+
+export function ensureRemediationModeLabels(): boolean {
+  let ok = true;
+  for (const mode of Object.keys(REMEDIATION_MODE_LABELS) as RemediationMode[]) {
+    const label = REMEDIATION_MODE_LABELS[mode];
+    if (ensuredRemediationModeLabels.has(label.name)) continue;
+    const [returncode, _stdout, stderr] = runCommand(
+      [
+        "gh",
+        "label",
+        "create",
+        label.name,
+        "--color",
+        label.color,
+        "--description",
+        label.description,
+      ],
+      undefined,
+      30,
+    );
+    if (returncode !== 0 && !isAlreadyExistsError(stderr)) {
+      logJson("remediation_mode_label", {
+        action: "ensure_failed",
+        mode,
+        label: label.name,
+        stderr,
+      });
+      ok = false;
+      continue;
+    }
+    ensuredRemediationModeLabels.add(label.name);
   }
   return ok;
 }
@@ -1678,7 +1720,24 @@ export async function processPr(
     return false;
   }
 
+  const remediationPolicy = resolveRemediationPolicy({
+    labels: prDetailsLabels(prDetails),
+    repository_mode: repositoryRemediationModeFromPolicy(mergeRules),
+  });
+  prContextDict["remediation_policy"] = remediationPolicy;
   reviewGateStatuses = reviewGateStatusesFromContext(prDetails, prContextDict, mergeRules);
+  const remediationRuntimeReason = remediationPolicy.blocked
+    ? remediationPolicy.reasons.join(" ")
+    : remediationPolicy.budget.mutating_allowed
+      ? null
+      : `${remediationPolicy.effective_mode} is read-only; the current one-shot PR agent requires mutation permission.`;
+  if (remediationRuntimeReason) {
+    reviewGateStatuses.push({
+      rule: "remediation-runtime",
+      status: "blocked",
+      explanation: remediationRuntimeReason,
+    });
+  }
   const reviewGateEvidence = evidenceSummaryFromPrDetailsAndContext(prDetails, prContextDict);
   await updateReviewGateStatusCommentAsync(prNumber, reviewGateStatuses, { evidence: reviewGateEvidence });
 
@@ -1698,6 +1757,18 @@ export async function processPr(
         hint: "PR processing will continue, but context won't be cached for replay",
       });
     }
+  }
+
+  if (remediationRuntimeReason) {
+    logJson("process_pr", {
+      action: "remediation_policy_blocked",
+      pr_number: prNumber,
+      remediation_mode: remediationPolicy.effective_mode,
+      remediation_policy: remediationPolicySummary(remediationPolicy),
+      reason: remediationRuntimeReason,
+    });
+    setPrStateLabel(prNumber, "blocked", remediationRuntimeReason);
+    return false;
   }
 
   const prompt = buildPrPrompt(prDetails, prContextDict, guidelines, commitExamples, mergeRules);
@@ -1722,7 +1793,13 @@ export async function processPr(
     mode,
   });
 
-  const workItem: WorkItem = buildPrAgentWorkItemPlan(inputResult.value, prompt, process.cwd(), repoName);
+  const workItem: WorkItem = buildPrAgentWorkItemPlan(
+    inputResult.value,
+    prompt,
+    process.cwd(),
+    repoName,
+    remediationPolicy,
+  );
 
   try {
     const startedAt = Date.now();
@@ -2171,6 +2248,12 @@ export async function main(): Promise<void> {
   }
 
   process.chdir(repoPath);
+
+  if (!args.dryRun && !ensureRemediationModeLabels()) {
+    logJson("startup", {
+      warning: "One or more remediation mode labels could not be ensured",
+    });
+  }
 
   logJson("startup", {
     repo_path: repoPath,

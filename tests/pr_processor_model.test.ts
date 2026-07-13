@@ -14,6 +14,7 @@ import {
   prAgentResultStatus,
   piAgentFailureReason,
 } from "../pr_processor_model";
+import { resolveRemediationPolicy } from "../remediation_policy_model";
 
 describe("PR processor model", () => {
   test("normalizes valid PR inputs and defaults the base branch", () => {
@@ -135,6 +136,35 @@ describe("PR processor model", () => {
       base_branch: "develop",
       prompt: "prompt text",
     });
+  });
+
+  test("includes the resolved remediation control in the agent work item", () => {
+    const result = normalizePrProcessingInput(
+      {
+        number: 186,
+        title: "Mechanical repair",
+        headRefName: "repair/mechanical",
+        baseRefName: "main",
+        url: "https://example.test/pr/186",
+      },
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const remediationPolicy = resolveRemediationPolicy({
+      labels: ["remediation:mechanical-fixes"],
+      repository_mode: "bounded-fixes",
+    });
+
+    const workItem = buildPrAgentWorkItemPlan(
+      result.value,
+      "prompt text",
+      "/repo",
+      "repo",
+      remediationPolicy,
+    );
+
+    assert.equal(workItem["disposition_setting"], "mechanical-fixes");
+    assert.deepEqual(workItem["remediation_policy"], remediationPolicy);
   });
 
   test("builds pure notification and gate plans for PR processing lifecycle events", () => {

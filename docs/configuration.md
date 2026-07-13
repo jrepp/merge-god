@@ -217,6 +217,44 @@ Remediation mode examples:
 | `bounded-fixes` | `bounded` | Fix conflicts or CI failures when retained scope stays unchanged. |
 | `maintainer-approved` | `maintainer-approved` | Allow broader remediation only when a human-approved gate says so. |
 
+### PR remediation labels
+
+A pull request may lower its remediation autonomy with one visible label. The
+label is a cap, not a request that the model may exceed. The repository mode,
+risk policy, and global operations budget remain ceilings.
+Merge God ensures these labels exist when a non-dry-run PR loop starts.
+
+| Label | Effect |
+| --- | --- |
+| `remediation:observe-only` | Gather evidence only. Do not launch a mutating PR agent. |
+| `remediation:validate-only` | Run validation and report findings without branch changes. |
+| `remediation:mechanical-fixes` | Permit generated, formatting, and other mechanical fixes within the mechanical budget. |
+| `remediation:bounded-fixes` | Permit scoped conflict, review, and CI fixes that preserve retained PR scope. |
+| `remediation:maintainer-approved` | Request broader remediation. The label event must be attributed to an authorized maintainer. |
+
+The effective mode is the least permissive of the PR label, repository mode,
+risk ceiling, and global ceiling. With no threshold label, the repository mode
+is used. Merge God never lets a model increase its own threshold.
+
+Multiple remediation labels are ambiguous and fail closed to `observe-only`.
+An unverified `remediation:maintainer-approved` label also fails closed. The
+review-gate status comment records the requested mode, source, effective mode,
+downgrade reasons, and budget so operators can inspect the decision on the PR.
+
+| Effective mode | Fix attempts | Files | Changed lines | Duration | Input tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `observe-only` | 0 | 0 | 0 | 10 minutes | 8,000 |
+| `validate-only` | 0 | 0 | 0 | 20 minutes | 16,000 |
+| `mechanical-fixes` | 2 | 10 | 500 | 30 minutes | 32,000 |
+| `bounded-fixes` | 3 | 25 | 1,500 | 60 minutes | 64,000 |
+| `maintainer-approved` | 5 | 50 | 5,000 | 120 minutes | 128,000 |
+
+Budgets are deterministic guardrail inputs. A model prompt may describe them,
+but mutation permission is enforced by the trajectory tool policy before a
+mutating pi activity starts. The current one-shot PR agent is mutation-oriented,
+so `observe-only` and `validate-only` stop after context and gate collection
+until a dedicated read-only activity is selected.
+
 ## Validating your config
 
 Always dry-run after editing:

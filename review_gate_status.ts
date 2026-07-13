@@ -33,6 +33,10 @@ import {
   prContextMergeBlockers,
 } from "./pr_context_access_model";
 import { prDetailsHasMetadata, prDetailsReviewDecision } from "./pr_details_access_model";
+import {
+  remediationPolicyDecisionFromValue,
+  remediationPolicySummary,
+} from "./remediation_policy_model";
 
 function modeledBlockerStatus(blockers: unknown[]): ReviewGateStatusValue {
   return aggregateMergeBlockerStatus(blockers);
@@ -64,7 +68,8 @@ export function reviewGateStatusesFromContext(
   const hasConflicts = hasActiveMergeConflicts(conflicts);
   const mergeRulesLoaded = hasRepoMergeRules(mergeRules);
   const detailsLoaded = prDetailsHasMetadata(prDetails);
-  return [
+  const remediationPolicy = remediationPolicyDecisionFromValue(prContext["remediation_policy"]);
+  const gates: ReviewGateStatus[] = [
     {
       rule: "context-gathered",
       status: detailsLoaded ? "pass" : "blocked",
@@ -102,4 +107,12 @@ export function reviewGateStatusesFromContext(
         : "No repository merge rules were loaded.",
     },
   ];
+  if (remediationPolicy) {
+    gates.push({
+      rule: "remediation-policy",
+      status: remediationPolicy.blocked ? "blocked" : "pass",
+      explanation: remediationPolicySummary(remediationPolicy),
+    });
+  }
+  return gates;
 }
