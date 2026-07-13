@@ -43,6 +43,7 @@
     "agent": "tsx merge-god.ts",
     "validate": "tsx merge_god/validate.ts",
     "status": "tsx merge-god.ts status",
+    "profile": "tsx profile_operations.ts",
     "prompt:eval": "PROMPTFOO_CONFIG_DIR=.promptfoo PROMPTFOO_DISABLE_TELEMETRY=true promptfoo eval -c evals/promptfoo/promptfooconfig.yaml",
     "prompt:optimize": "PROMPTFOO_CONFIG_DIR=.promptfoo PROMPTFOO_DISABLE_TELEMETRY=true promptfoo optimize -c evals/promptfoo/pr-agent-optimization.yaml",
     "prompt:view": "PROMPTFOO_CONFIG_DIR=.promptfoo PROMPTFOO_DISABLE_TELEMETRY=true promptfoo view",
