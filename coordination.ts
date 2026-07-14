@@ -154,6 +154,7 @@ export class CoordinationServer {
   private _repoPath: string | null;
   private _gitObserver: GitOpsObserver | null;
   private _agentObserver: ((observation: AgentObservation) => void) | null;
+  private _resultListeners = new Set<(result: Record<string, unknown>) => void>();
   host: string;
   port: number;
 
@@ -210,10 +211,17 @@ export class CoordinationServer {
 
   setResult(result: Record<string, unknown>): void {
     this._result = result;
+    for (const listener of this._resultListeners) listener(result);
   }
 
   getResult(): JsonResult {
     return this._result;
+  }
+
+  onResult(listener: (result: Record<string, unknown>) => void): () => void {
+    this._resultListeners.add(listener);
+    if (this._result !== null) queueMicrotask(() => listener(this._result!));
+    return () => this._resultListeners.delete(listener);
   }
 
   setTrajectoryBridge(trajectory: CoordinationTrajectoryBridge | null): void {
@@ -671,6 +679,7 @@ export async function runPiAgent(
     trajectory?: CoordinationTrajectoryBridge;
     gitObserver?: GitOpsObserver;
     agentObserver?: (observation: AgentObservation) => void;
+    completionGraceMs?: number;
   } = {},
 ): Promise<PiAgentResult> {
   const {
@@ -681,6 +690,7 @@ export async function runPiAgent(
     trajectory,
     gitObserver,
     agentObserver,
+    completionGraceMs = 1000,
   } = opts;
 
   return withTelemetrySpan(
@@ -697,7 +707,16 @@ export async function runPiAgent(
     async (span) => {
   const ext = extensionPath ?? findExtension();
   const gitOps = new GitOps(repoPath, gitObserver ?? null);
-  const worktree = gitOps.createDetachedWorktree();
+  let worktreeRef = "HEAD";
+  if (workItem.kind === "pr" && Number.isInteger(workItem.pr_number) && (workItem.pr_number ?? 0) > 0) {
+    worktreeRef = `refs/merge-god/pr-${workItem.pr_number}-agent-head`;
+    gitOps.runGit([
+      "fetch",
+      "origin",
+      `+refs/pull/${workItem.pr_number}/head:${worktreeRef}`,
+    ], { timeout: 120 });
+  }
+  const worktree = gitOps.createDetachedWorktree(worktreeRef);
   linkNodeModulesIntoWorktree(repoPath, worktree.path);
   const server = new CoordinationServer(
     "127.0.0.1",
@@ -751,11 +770,24 @@ export async function runPiAgent(
     });
 
     let timedOut = false;
-    let killTimer: NodeJS.Timeout | null = null;
+    let terminationRequestedAfterCompletion = false;
+    let processClosed = false;
+    let completionTimer: NodeJS.Timeout | null = null;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+    const unsubscribeResult = server.onResult(() => {
+      if (completionTimer !== null || processClosed) return;
+      clearTimeout(timer);
+      completionTimer = setTimeout(() => {
+        if (processClosed) return;
+        terminationRequestedAfterCompletion = true;
+        proc.kill("SIGTERM");
+        forceKillTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
+      }, Math.max(0, completionGraceMs));
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill("SIGTERM");
-      killTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
+      forceKillTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
     }, timeout * 1000);
 
     const exit = await new Promise<{ code: number; error?: unknown }>((resolve) => {
@@ -763,12 +795,17 @@ export async function runPiAgent(
       const settle = (result: { code: number; error?: unknown }) => {
         if (settled) return;
         settled = true;
+        processClosed = true;
         clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
+        if (completionTimer) clearTimeout(completionTimer);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        unsubscribeResult();
         resolve(result);
       };
       proc.on("error", (error) => settle({ code: -1, error }));
-      proc.on("close", (code) => settle({ code: code ?? -1 }));
+      proc.on("close", (code) => settle({
+        code: terminationRequestedAfterCompletion ? 0 : (code ?? -1),
+      }));
     });
     if (timedOut) {
       stderr += stderr.endsWith("\n") || stderr.length === 0 ? "pi process timed out\n" : "\npi process timed out\n";

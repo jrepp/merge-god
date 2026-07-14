@@ -688,27 +688,36 @@ export function agentAnnotationLabelsFromResult(result: unknown): string[] {
 function agentFailureText(result: unknown, failureReason: string | null = null): string {
   const resultObj = asRecord(result);
   const annotations = asRecord(resultObj["annotations"]);
-  return [
-    failureReason,
+  const statusValues = [
     resultObj["status"],
     resultObj["state"],
     resultObj["outcome"],
     resultObj["conclusion"],
+  ];
+  const statusIsFailure = statusValues.some((value) =>
+    /^(?:blocked|error|failed|failure|timed[-\s]?out|timeout|cancelled)$/i.test(toStr(value).trim())
+  );
+  const explicitFailureValues = [
     resultObj["error"],
     resultObj["error_message"],
     resultObj["errorMessage"],
     resultObj["failure_reason"],
     resultObj["failureReason"],
-    resultObj["summary"],
-    resultObj["message"],
-    resultObj["detail"],
-    resultObj["details"],
     resultObj["required_action"],
     resultObj["requiredAction"],
     resultObj["next_action"],
     resultObj["nextAction"],
     ...asArray(resultObj["needs"]),
     ...asArray(resultObj["requirements"]),
+  ];
+  const includeNarrative = statusIsFailure || explicitFailureValues.some((value) => Boolean(toStr(value).trim()));
+  return [
+    failureReason,
+    ...(statusIsFailure ? statusValues : []),
+    ...explicitFailureValues,
+    ...(includeNarrative
+      ? [resultObj["summary"], resultObj["message"], resultObj["detail"], resultObj["details"]]
+      : []),
     ...asArray(annotations["labels"]),
   ]
     .map((value) => toStr(value).trim())
@@ -1813,7 +1822,21 @@ export async function processPr(
       ...(agentTokenUsageFromResult(piResult.result) ?? {}),
       ...mergeGodRuntimeTelemetry(),
     };
-    const agentDecision = classifyPrAgentResult(piResult);
+    const preliminaryAgentDecision = classifyPrAgentResult(piResult);
+    const prDetailsAfterCompletion = preliminaryAgentDecision.success
+      ? getPrDetails(prNumber)
+      : undefined;
+    const agentDecision = classifyPrAgentResult(piResult, prDetailsAfterCompletion);
+    if (preliminaryAgentDecision.success) {
+      logJson("verify_pr_merge", {
+        action: agentDecision.success ? "verified" : "not_merged",
+        pr_number: prNumber,
+        success: agentDecision.success,
+        state: prDetailsAfterCompletion?.["state"],
+        merged_at: prDetailsAfterCompletion?.["mergedAt"],
+        reason: agentDecision.failure_reason,
+      });
+    }
     const annotationLabels = agentAnnotationLabelsForCompletion(piResult.result, agentDecision.failure_reason);
     const completionPlan = buildPrAgentCompletionPlan(inputResult.value, agentDecision, piResult.returncode, duration);
     span.setAttributes(sanitizeSpanAttributes({
