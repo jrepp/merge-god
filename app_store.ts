@@ -27,6 +27,9 @@ import type {
   CompatibilityTrajectoryInput,
   EmbarkCohortTrajectoryIds,
   EmbarkCohortTrajectoryInput,
+  EmbarkCohortApprovalResult,
+  EmbarkCohortRecoveryInput,
+  EmbarkCohortRecoveryResult,
   JsonObject,
   OrchestrationRunRecord,
   PrQueueTrajectoryIds,
@@ -40,6 +43,7 @@ import type {
   WorkItemRecord,
   WorksetRecord,
 } from "./trajectory";
+import { planEmbarkRecovery } from "./embark_recovery_model";
 
 export class DatabaseError extends Error {}
 
@@ -1381,6 +1385,197 @@ export class AppStore {
     }
   }
 
+  /** Approve a capture-first embark cohort for grouped validation. */
+  approveEmbarkCohort(
+    runId: string,
+    actor = "operator",
+    reason = "Operator approved cohort continuation",
+  ): EmbarkCohortApprovalResult {
+    const now = nowIso();
+    try {
+      this.db.exec("BEGIN");
+      const workset = this.db
+        .prepare("SELECT workset_id, approval_state FROM worksets WHERE run_id = ? AND kind = 'embark_cohort'")
+        .get(runId) as { workset_id: string; approval_state: string } | undefined;
+      if (!workset) throw new DatabaseError(`embark cohort not found for run ${runId}`);
+      if (workset.approval_state === "rejected") {
+        throw new DatabaseError("rejected embark cohort cannot be approved");
+      }
+      if (workset.approval_state !== "approved") {
+        this.db
+          .prepare("UPDATE worksets SET approval_state = 'approved', status = 'active', updated_at = ? WHERE workset_id = ?")
+          .run(now, workset.workset_id);
+        this.db
+          .prepare("UPDATE orchestration_runs SET status = 'executing', current_phase = 'embark_validation', heartbeat_at = ?, completed_at = NULL WHERE run_id = ?")
+          .run(now, runId);
+        this.insertTrajectoryEvent({
+          run_id: runId,
+          workset_id: workset.workset_id,
+          event_type: "runtime.embark_cohort.approved",
+          actor,
+          payload: { reason },
+        });
+      }
+      this.db.exec("COMMIT");
+      return {
+        run_id: runId,
+        workset_id: workset.workset_id,
+        approval_state: "approved",
+      };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to approve embark cohort: ${String(e)}`);
+    }
+  }
+
+  /** Reopen a failed embark gate as an evidence-driven split/replan activity. */
+  recoverEmbarkCohort(input: EmbarkCohortRecoveryInput): EmbarkCohortRecoveryResult {
+    const now = nowIso();
+    const continuationActivityId = randomUUID();
+    try {
+      this.db.exec("BEGIN");
+      const workset = this.db
+        .prepare("SELECT workset_id, approval_state FROM worksets WHERE run_id = ? AND kind = 'embark_cohort'")
+        .get(input.run_id) as { workset_id: string; approval_state: string } | undefined;
+      if (!workset) throw new DatabaseError(`embark cohort not found for run ${input.run_id}`);
+      if (workset.approval_state !== "approved") {
+        throw new DatabaseError("embark cohort must be approved before recovery");
+      }
+
+      const failedActivity = this.db
+        .prepare("SELECT * FROM activities WHERE activity_id = ? AND run_id = ? AND workset_id = ?")
+        .get(input.failed_activity_id, input.run_id, workset.workset_id) as Record<string, unknown> | undefined;
+      if (!failedActivity) throw new DatabaseError(`failed activity not found: ${input.failed_activity_id}`);
+      if (failedActivity["type"] !== "merge_gate") {
+        throw new DatabaseError("cohort recovery requires a failed merge_gate activity");
+      }
+      if (!["failed", "blocked"].includes(String(failedActivity["status"]))) {
+        throw new DatabaseError("cohort recovery requires a failed or blocked activity");
+      }
+      const existingContinuation = this.db
+        .prepare("SELECT activity_id FROM activities WHERE parent_activity_id = ? AND type = 'embark_planning' AND status IN ('ready', 'claimed', 'running')")
+        .get(input.failed_activity_id) as { activity_id: string } | undefined;
+      if (existingContinuation) {
+        throw new DatabaseError(`cohort recovery already active as ${existingContinuation.activity_id}`);
+      }
+
+      const itemRows = this.db
+        .prepare("SELECT number, priority FROM work_items WHERE workset_id = ? ORDER BY priority, number")
+        .all(workset.workset_id) as Array<{ number: number; priority: number | null }>;
+      const plan = planEmbarkRecovery({
+        members: itemRows.map((row, index) => ({
+          pr_number: Number(row.number),
+          priority: row.priority ?? index,
+        })),
+        validated_pr_numbers: input.validated_pr_numbers,
+        failure: input.failure,
+      });
+      const blocker = {
+        kind: "merge_failure",
+        summary: plan.summary,
+        conflict_files: plan.conflict_files,
+        evidence_refs: plan.evidence_refs,
+        disposition: plan.disposition,
+      };
+
+      for (const number of plan.validated_pr_numbers) {
+        this.db
+          .prepare("UPDATE work_items SET status = 'validated', next_action = 'operator_handoff', blockers = '[]', updated_at = ? WHERE workset_id = ? AND number = ?")
+          .run(now, workset.workset_id, number);
+      }
+      this.db
+        .prepare("UPDATE work_items SET status = 'blocked', next_action = 'replan', blockers = ?, updated_at = ? WHERE workset_id = ? AND number = ?")
+        .run(stringifyJson([blocker]), now, workset.workset_id, plan.failed_pr_number);
+      for (const number of plan.deferred_pr_numbers) {
+        this.db
+          .prepare("UPDATE work_items SET status = 'ready', next_action = 'await_replan', blockers = ?, updated_at = ? WHERE workset_id = ? AND number = ?")
+          .run(
+            stringifyJson([{
+              kind: "cohort_dependency",
+              depends_on_pr_number: plan.failed_pr_number,
+              evidence_refs: plan.evidence_refs,
+            }]),
+            now,
+            workset.workset_id,
+            number,
+          );
+      }
+
+      const failedMetadata = parseJsonObject(failedActivity["metadata"]);
+      failedMetadata["recovery_plan"] = plan;
+      this.db
+        .prepare("UPDATE activities SET status = 'blocked', evidence_refs = ?, metadata = ?, updated_at = ? WHERE activity_id = ?")
+        .run(stringifyJson(plan.evidence_refs), stringifyJson(failedMetadata), now, input.failed_activity_id);
+      this.db
+        .prepare(
+          `
+          INSERT INTO activities (
+              activity_id, run_id, workset_id, work_item_id, parent_activity_id,
+              type, status, model_profile, tool_policy, prompt_runtime_ref,
+              context_pack_refs, evidence_refs, created_at, updated_at, metadata
+          ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+          `,
+        )
+        .run(
+          continuationActivityId,
+          input.run_id,
+          workset.workset_id,
+          input.failed_activity_id,
+          "embark_planning",
+          "ready",
+          stringifyJson({
+            model_tier: "high",
+            model_reason: "Failed-cohort recovery must preserve merge evidence and dependency order.",
+          }),
+          stringifyJson({ mutating_allowed: false, evidence_driven_recovery: true }),
+          stringifyJson([]),
+          stringifyJson(plan.evidence_refs),
+          now,
+          now,
+          stringifyJson({ recovery_plan: plan, failed_activity_id: input.failed_activity_id }),
+        );
+      this.db
+        .prepare("UPDATE worksets SET status = 'active', strategy = ?, updated_at = ? WHERE workset_id = ?")
+        .run(`evidence-guided-${plan.strategy}`, now, workset.workset_id);
+      this.db
+        .prepare("UPDATE orchestration_runs SET status = 'executing', current_phase = 'embark_replanning', heartbeat_at = ?, completed_at = NULL WHERE run_id = ?")
+        .run(now, input.run_id);
+      this.insertTrajectoryEvent({
+        run_id: input.run_id,
+        workset_id: workset.workset_id,
+        activity_id: continuationActivityId,
+        event_type: "runtime.embark_cohort.recovered",
+        actor: input.actor ?? "operator",
+        payload: {
+          ...plan,
+          failed_activity_id: input.failed_activity_id,
+          continuation_activity_id: continuationActivityId,
+        },
+      });
+      this.db.exec("COMMIT");
+      return {
+        run_id: input.run_id,
+        workset_id: workset.workset_id,
+        continuation_activity_id: continuationActivityId,
+        strategy: plan.strategy,
+        validated_pr_numbers: plan.validated_pr_numbers,
+        failed_pr_number: plan.failed_pr_number,
+        deferred_pr_numbers: plan.deferred_pr_numbers,
+      };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to recover embark cohort: ${String(e)}`);
+    }
+  }
+
   /** Claim the next ready activity for a run according to work item priority. */
   claimNextActivity(runId: string): ActivityClaim | null {
     const now = nowIso();
@@ -1563,12 +1758,24 @@ export class AppStore {
           .prepare("SELECT COUNT(*) AS count FROM activities WHERE run_id = ? AND status = 'failed'")
           .get(ids.run_id) as { count: number } | undefined;
         const hasFailures = (failed?.count ?? 0) > 0;
+        const workset = this.db
+          .prepare("SELECT kind FROM worksets WHERE workset_id = ?")
+          .get(ids.workset_id) as { kind: string } | undefined;
+        const unresolvedCohortItems = workset?.kind === "embark_cohort"
+          ? this.db
+              .prepare("SELECT COUNT(*) AS count FROM work_items WHERE workset_id = ? AND status IN ('queued', 'ready', 'syncing', 'conflicted', 'validating', 'embarked', 'running', 'blocked', 'failed')")
+              .get(ids.workset_id) as { count: number } | undefined
+          : undefined;
+        const cohortNeedsHandoff = (unresolvedCohortItems?.count ?? 0) > 0;
+        const worksetStatus = hasFailures ? "blocked" : (cohortNeedsHandoff ? "paused" : "completed");
+        const runStatus = hasFailures ? "blocked" : (cohortNeedsHandoff ? "waiting" : "completed");
+        const phase = hasFailures ? "blocked" : (cohortNeedsHandoff ? "embark_operator_handoff" : "completed");
         this.db
           .prepare("UPDATE worksets SET status = ?, updated_at = ? WHERE workset_id = ?")
-          .run(hasFailures ? "blocked" : "completed", now, ids.workset_id);
+          .run(worksetStatus, now, ids.workset_id);
         this.db
           .prepare("UPDATE orchestration_runs SET status = ?, current_phase = ?, heartbeat_at = ?, completed_at = ? WHERE run_id = ?")
-          .run(hasFailures ? "blocked" : "completed", hasFailures ? "blocked" : "completed", now, now, ids.run_id);
+          .run(runStatus, phase, now, runStatus === "completed" || runStatus === "blocked" ? now : null, ids.run_id);
       }
 
       this.db.exec("COMMIT");

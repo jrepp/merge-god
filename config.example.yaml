@@ -15,7 +15,7 @@
 # Workflow-IR refs for gate execution details.
 repos:
   # Example repository 1
-  - path: /Users/jrepp/dev/my-project
+  - path: /path/to/my-project
     name: "My Project"
     enabled: true
     watch_issues: true  # Monitor issues with "for-impl" label (default: false)
@@ -25,12 +25,12 @@ repos:
     # notifications: true  # send notifications for this repo
 
   # Example repository 2
-  - path: /Users/jrepp/dev/another-repo
+  - path: /path/to/another-repo
     name: "Another Repo"
     enabled: true
 
   # Example disabled repository
-  - path: /Users/jrepp/dev/disabled-repo
+  - path: /path/to/disabled-repo
     name: "Disabled Project"
     enabled: false  # Set to false to skip this repo
 

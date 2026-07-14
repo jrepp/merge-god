@@ -174,7 +174,7 @@ npx tsx merge-god.ts agent \
     --pr 134 \
     --mode for-landing \
     --db merge-god-state.db \
-    --repo-path /Users/jrepp/dev/data-access-2
+    --repo-path /path/to/repository
 
 # Comprehensive mode test
 npx tsx merge-god.ts agent \
@@ -182,7 +182,7 @@ npx tsx merge-god.ts agent \
     --pr 134 \
     --mode for-review \
     --db merge-god-state.db \
-    --repo-path /Users/jrepp/dev/data-access-2
+    --repo-path /path/to/repository
 ```
 
 **What happens:**

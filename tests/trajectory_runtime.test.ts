@@ -361,4 +361,124 @@ describe("TrajectoryRuntime", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  test("recovers a failed embark cohort from merge evidence", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-runtime-"));
+    const dbPath = path.join(tempDir, "runtime.db");
+    const store = new AppStore(dbPath);
+    try {
+      const runtime = new TrajectoryRuntime(store);
+      const started = runtime.startEmbarkCohortWorkflow({
+        repo_name: "test-repo",
+        base_branch: "main",
+        items: [
+          {
+            repo_name: "test-repo",
+            number: 201,
+            title: "Validated prefix",
+            labels: ["for-landing", "merge:ready"],
+            priority: 1,
+          },
+          {
+            repo_name: "test-repo",
+            number: 202,
+            title: "Conflicting member",
+            labels: ["for-review", "merge:ready"],
+            priority: 2,
+          },
+          {
+            repo_name: "test-repo",
+            number: 203,
+            title: "Ordered dependent",
+            labels: ["for-review", "merge:ready"],
+            priority: 3,
+          },
+        ],
+      });
+
+      const approval = runtime.approveEmbarkCohort(
+        started.ids.run_id,
+        "test-operator",
+        "continue validation",
+      );
+      assert.equal(approval.approval_state, "approved");
+      const claim = runtime.claimNextActivity(started.ids.run_id);
+      assert.ok(claim);
+      const guardrails = runtime.evaluateActivityGuardrails(claim!);
+      assert.equal(guardrails.passed, true);
+      const running = runtime.startClaimedActivity(claim!, "cohort-session", "test-model");
+      runtime.completeActivity(running, {
+        success: false,
+        summary: "merge failed on #202",
+        error_message: "conflict in scripts/start-dev",
+      });
+      assert.equal(runtime.getRunState(started.ids.run_id)?.run.status, "blocked");
+
+      const recovered = runtime.recoverEmbarkCohort({
+        run_id: started.ids.run_id,
+        failed_activity_id: running.ids.activity_id,
+        validated_pr_numbers: [201],
+        failure: {
+          pr_number: 202,
+          summary: "merge conflict in scripts/start-dev requires a maintainer decision",
+          conflict_files: ["scripts/start-dev"],
+          evidence_refs: ["comment:202", "git:merge-attempt"],
+          disposition: "needs-redesign",
+        },
+        actor: "test-operator",
+      });
+
+      assert.equal(recovered.strategy, "split-and-replan");
+      assert.deepEqual(recovered.validated_pr_numbers, [201]);
+      assert.deepEqual(recovered.deferred_pr_numbers, [203]);
+      const state = runtime.getRunState(started.ids.run_id);
+      assert.equal(state?.run.status, "executing");
+      assert.equal(state?.run.current_phase, "embark_replanning");
+      assert.equal(state?.worksets[0]?.status, "active");
+      assert.equal(state?.worksets[0]?.approval_state, "approved");
+      assert.deepEqual(
+        state?.work_items.map((item) => [item.number, item.status, item.next_action]),
+        [
+          [201, "validated", "operator_handoff"],
+          [202, "blocked", "replan"],
+          [203, "ready", "await_replan"],
+        ],
+      );
+      const failedGate = state?.activities.find(
+        (activity) => activity.activity_id === running.ids.activity_id,
+      );
+      assert.equal(failedGate?.status, "blocked");
+      const continuation = state?.activities.find(
+        (activity) => activity.activity_id === recovered.continuation_activity_id,
+      );
+      assert.equal(continuation?.type, "embark_planning");
+      assert.equal(continuation?.status, "ready");
+      assert.deepEqual(continuation?.evidence_refs, ["comment:202", "git:merge-attempt"]);
+
+      const recoveryClaim = runtime.claimNextActivity(started.ids.run_id);
+      assert.equal(recoveryClaim?.activity.activity_id, recovered.continuation_activity_id);
+      assert.equal(runtime.evaluateActivityGuardrails(recoveryClaim!).passed, true);
+      const recoveryRunning = runtime.startClaimedActivity(
+        recoveryClaim!,
+        "recovery-session",
+        "test-model",
+      );
+      runtime.completeActivity(recoveryRunning, {
+        success: true,
+        summary: "recovery plan requires operator redesign",
+      });
+      const handoffState = runtime.getRunState(started.ids.run_id);
+      assert.equal(handoffState?.run.status, "waiting");
+      assert.equal(handoffState?.run.current_phase, "embark_operator_handoff");
+      assert.equal(handoffState?.worksets[0]?.status, "paused");
+      assert.ok(
+        handoffState?.events.some(
+          (event) => event.event_type === "runtime.embark_cohort.recovered",
+        ),
+      );
+    } finally {
+      store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

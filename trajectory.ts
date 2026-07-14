@@ -268,6 +268,38 @@ export interface EmbarkCohortTrajectoryIds {
   group_activity_id: string;
 }
 
+export interface EmbarkMergeFailureEvidence {
+  pr_number: number;
+  summary: string;
+  conflict_files?: string[];
+  evidence_refs?: string[];
+  disposition?: string | null;
+}
+
+export interface EmbarkCohortRecoveryInput {
+  run_id: string;
+  failed_activity_id: string;
+  validated_pr_numbers?: number[];
+  failure: EmbarkMergeFailureEvidence;
+  actor?: string;
+}
+
+export interface EmbarkCohortRecoveryResult {
+  run_id: string;
+  workset_id: string;
+  continuation_activity_id: string;
+  strategy: "split-and-replan" | "replan-failed-member";
+  validated_pr_numbers: number[];
+  failed_pr_number: number;
+  deferred_pr_numbers: number[];
+}
+
+export interface EmbarkCohortApprovalResult {
+  run_id: string;
+  workset_id: string;
+  approval_state: "approved";
+}
+
 export interface ActivityClaim {
   ids: CompatibilityTrajectoryIds;
   activity: ActivityRecord;

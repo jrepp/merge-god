@@ -256,6 +256,12 @@ function cmdProfile(g: GlobalArgs): number {
   return runChild(args[0]!, args.slice(1));
 }
 
+function cmdCohort(g: GlobalArgs): number {
+  const args = ["embark_cohort.ts", ...g.rest];
+  if (g.db) args.push("--db", g.db);
+  return runChild(args[0]!, args.slice(1));
+}
+
 function cmdValidate(g: GlobalArgs): number {
   logText("Validating process isolation and data flow...");
   const parsed = parseArgs({
@@ -412,6 +418,7 @@ COMMANDS:
   pr-loop     Run bounded or continuous PR processing loop.
   doctor      Check local prerequisites and config paths.
   profile     Profile a shallow PR inventory without agent or mutation calls.
+  cohort      Inspect, approve, or evidence-recover an embark cohort.
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
@@ -419,6 +426,7 @@ Quick self-test:
   tsx merge-god.ts scan --repo-path . --pr 14
   tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
   tsx merge-god.ts pr-loop . --once --dry-run
+  tsx merge-god.ts cohort status --run RUN_ID
 Run 'tsx merge-god.ts help' for details.
 `;
 
@@ -454,6 +462,7 @@ function main(): number {
     "pr-loop": () => cmdPrLoop(g),
     doctor: () => cmdDoctor(g),
     profile: () => cmdProfile(g),
+    cohort: () => cmdCohort(g),
     help: () => cmdHelp(),
   };
 

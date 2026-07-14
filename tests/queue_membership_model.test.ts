@@ -307,17 +307,17 @@ describe("queue membership model", () => {
     const hints = extractConstituentHints(
       {
         body: [
-          "- meridian/web#217 - API queue lane head: abcdef1",
+          "- example-org/example-repo#217 - API queue lane head: abcdef1",
           "| PR | Title | Head |",
           "| --- | --- | --- |",
           "| group/subgroup/repo!218 | GitLab queue lane | abcdef2 |",
-          "Closes meridian/web#999",
+          "Closes example-org/example-repo#999",
         ].join("\n"),
       },
       [
         {
           html_url: "https://example.test/org/repo/pull/300#issuecomment-shorthand",
-          body: "meridian/web#219 Worker lane",
+          body: "example-org/example-repo#219 Worker lane",
         },
       ],
     );
@@ -469,7 +469,7 @@ describe("queue membership model", () => {
           "",
           "| Area | Commit | Evidence |",
           "| --- | --- | --- |",
-          "| Agent completion budget | [`0fa6461`](https://github.ibm.com/meridian/agent/commit/0fa6461) in [agent PR #92](https://github.ibm.com/meridian/agent/pull/92) | Runtime budget change. |",
+          "| Agent completion budget | [`0fa6461`](https://github.example.test/example-org/example-agent/commit/0fa6461) in [agent PR #92](https://github.example.test/example-org/example-agent/pull/92) | Runtime budget change. |",
         ].join("\n"),
       },
       [],

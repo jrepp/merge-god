@@ -198,14 +198,14 @@ describe("queue validation evidence parsing", () => {
       {
         html_url: "https://example.test/pull/203#issuecomment-repo-qualified",
         body: [
-          "- meridian/web#217 npm run metro -> failed",
+          "- example-org/example-repo#217 npm run metro -> failed",
           "- group/subgroup/repo!218 npm run gitlab => passed",
-          "- passed for meridian/web#219: npm run status-target",
-          "- meridian/web#220 failed: npm run target-status",
+          "- passed for example-org/example-repo#219: npm run status-target",
+          "- example-org/example-repo#220 failed: npm run target-status",
           "| Scope | Command | Result |",
           "| --- | --- | --- |",
-          "| meridian/web#221 | npm run table | blocked |",
-          "- meridian/web#222 and meridian/web#223 npm run shared -> failed",
+          "| example-org/example-repo#221 | npm run table | blocked |",
+          "- example-org/example-repo#222 and example-org/example-repo#223 npm run shared -> failed",
         ].join("\n"),
       },
     ]);

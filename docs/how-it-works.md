@@ -8,6 +8,28 @@ order: 12
 merge-god's job is to give the agent **everything it needs** to land a PR, then
 let it act. The pipeline is three stages.
 
+## Reviewer updates
+
+Merge God puts the requested action first when it needs help. Reviewer-facing
+comments use this order:
+
+1. **Problem** — the specific PR, file, or check that stopped progress.
+2. **Required action** — one direct instruction that names the next owner and
+   completion condition.
+3. **Checks** — a short result table.
+4. **Technical details** — optional evidence in a collapsed section.
+
+PR comments never cite a machine-local path or opaque run reference as reviewer
+evidence. Locally generated logs and reports must be attached to the PR or
+published as a reviewer-accessible CI/forge artifact before the comment links
+to them. Credentials, query parameters, home-directory paths, and email
+addresses are removed from published reviewer text.
+
+Internal state-machine names do not lead reviewer comments. The dashboard and
+CLI use **merge group** for a set of PRs tested together, **step** for the current
+operation, and **maintainer decision needed** when automation cannot choose the
+intended behavior safely.
+
 ## 1. Gather
 
 Before touching anything, `pr-loop.ts` builds a complete picture of each PR:
