@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { remediationPolicyDecisionFromValue } from "./remediation_policy_model";
 import type { AppStore } from "./app_store";
 import { runPiAgent, type AgentObservation, type CoordinationTrajectoryBridge, type PiAgentResult, type WorkItem } from "./coordination";
+import { PI_TOOL_NAMES } from "./pi/tool_contract";
 import type { GitOpsObserver } from "./git_ops";
 import { recordPromptRendered } from "./telemetry";
 import type {
@@ -583,8 +584,8 @@ export class TrajectoryRuntime {
         ? `Model reason: ${this.activityModelProfileValue(claim.activity, "model_reason")}`
         : null,
       "",
-      "Use merge_god_trajectory_state to inspect durable state.",
-      "Use merge_god_trajectory_event for checkpoints, decisions, blockers, and evidence.",
+      `Use ${PI_TOOL_NAMES.context} view=trajectory to inspect durable state.`,
+      `Use ${PI_TOOL_NAMES.activity} for durable checkpoints, observations, and lifecycle changes.`,
       "Complete only the scoped activity assigned here.",
     ].filter((line): line is string => line !== null).join("\n");
   }

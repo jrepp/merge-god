@@ -24,6 +24,7 @@ import * as readline from "node:readline";
 import YAML from "yaml";
 import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
 import { AppStore } from "./app_store";
+import { PI_TOOL_NAMES } from "./pi/tool_contract";
 import {
   evidenceSummaryFromPrDetailsAndContext,
   renderReviewGateStatusComment,
@@ -852,7 +853,7 @@ export function agentTokenUsageFromResult(result: unknown): AgentTokenUsage | nu
     source:
       typeof usage["source"] === "string" && usage["source"].trim()
         ? usage["source"].trim()
-        : "merge_god_complete",
+        : PI_TOOL_NAMES.complete,
   };
 }
 

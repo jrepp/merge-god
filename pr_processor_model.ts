@@ -16,6 +16,7 @@ import {
   prDetailsUrl,
 } from "./pr_details_access_model";
 import { prStateFromAgentDecision, type PrProcessingState } from "./pr_state";
+import { PI_TOOL_NAMES } from "./pi/tool_contract";
 import type { ReviewGateStatus } from "./review_gate_model";
 import type { RemediationPolicyDecision } from "./remediation_policy_model";
 
@@ -218,7 +219,7 @@ export function piAgentFailureReason(
   const detail = candidates.map(conciseFailureText).find(Boolean);
   if (returncode !== 0 && detail) return `pi exited ${returncode}: ${detail}`;
   if (returncode !== 0) return `pi exited ${returncode}`;
-  if (result === null || result === undefined) return "pi agent exited without reporting merge_god_complete result";
+  if (result === null || result === undefined) return `pi agent exited without reporting ${PI_TOOL_NAMES.complete} result`;
   if (status === "unknown") {
     return detail
       ? `pi agent reported completion without successful status: ${detail}`

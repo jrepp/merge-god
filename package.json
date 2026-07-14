@@ -36,6 +36,8 @@
     "ci": "npm run typecheck && npm test && npm run test:coverage:check && npm run markdownlint",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts packages/github-sync/tests/*.test.ts packages/workflow-ir-core/tests/*.test.ts",
+    "test:pi-interactions": "node --import tsx --test tests/pi_agent_interactions.test.ts",
+    "test:pi-faults": "node --import tsx --test tests/pi_agent_harness.test.ts",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include='*.ts' --test-coverage-include='packages/**/src/*.ts' --test-coverage-exclude='tests/**' --test-coverage-exclude='site/**' tests/*.test.ts packages/github-sync/tests/*.test.ts packages/workflow-ir-core/tests/*.test.ts",
     "test:coverage:check": "npm run test:coverage -- --test-coverage-lines=70 --test-coverage-branches=55 --test-coverage-functions=65",
     "dashboard": "tsx dashboard.ts",

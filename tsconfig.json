@@ -22,6 +22,8 @@
     "*.ts",
     "merge_god/**/*.ts",
     "agents/**/*.ts",
+    "pi/agent_interactions.ts",
+    "pi/tool_contract.ts",
     "tests/**/*.ts",
     "packages/github-sync/src/**/*.ts",
     "packages/github-sync/tests/**/*.ts",
