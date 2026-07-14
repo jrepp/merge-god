@@ -52,6 +52,20 @@ Merge God creates multiple merge commits from existing ready PRs and validates
 them together as one output PR. Actual automatic merge-commit creation and output
 PR creation are separate execution work.
 
+# Evidence-Guided Cohort Recovery
+
+A failed cohort merge gate is recoverable when durable evidence identifies the
+failed member. Recovery preserves validated members, records conflict files and
+evidence references on the failed member, and derives deferred members from the
+original merge order. It then creates a high-tier, non-mutating
+`embark_planning` activity and reopens the run in `embark_replanning`.
+
+This transition avoids two unsafe outcomes: discarding a validated prefix, or
+forcing a conflict resolution that exceeds the failed member's disposition.
+The recovery activity may recommend a smaller cohort, redesign, salvage path,
+or operator handoff. It may not edit, push, or merge while its tool policy is
+non-mutating.
+
 # Operator Notes
 
 - Use `merge:ready` to mark PRs eligible for normal processing or embark
@@ -64,11 +78,23 @@ PR creation are separate execution work.
 # Review Gate Comment Cache
 
 Merge God may maintain one PR comment marked internally as the review gate cache.
-The rendered comment stores the latest visible gate projection as:
+The reviewer-facing comment uses this order:
 
-- rule,
-- status,
-- explanation.
+- required action,
+- checks and results,
+- a collapsed technical-details section when evidence is available.
+
+The required action must identify the specific next step and completion
+condition. Internal terms such as trajectory, workset, activity, disposition,
+or evidence ref must not lead the comment. Avoid generic explainer headings such
+as “Why it matters”; use operational headings such as “Problem,” “Required
+action,” “Checks,” and “Technical details.”
+
+Machine-local evidence may remain in the durable run record, but it must not be
+cited in a PR comment. Publish it as a PR attachment or reviewer-accessible
+forge/CI artifact first. The publication boundary removes opaque evidence refs,
+home-directory paths, local URLs, URL credentials and query parameters, and
+email addresses from reviewer-facing output.
 
 This comment is intentionally not authoritative. It can be missing, stale,
 duplicated after token changes, or unavailable due to GitHub API failures.

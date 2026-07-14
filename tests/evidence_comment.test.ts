@@ -4,12 +4,57 @@ import assert from "node:assert/strict";
 import {
   evidenceSummaryFromPrDetailsAndContext,
   evidenceSummaryFromPrContext,
+  renderPublishedReviewGateStatusComment,
   renderReviewGateStatusComment,
 } from "../evidence_comment";
 import { analyzeMergeBlockers, inferMergeQueueContext } from "../merge_pr_model";
 import { QUEUE_VALIDATION_EVIDENCE_DETAIL_LIMIT } from "../review_gate_evidence_comment_model";
 
 describe("evidence comment rendering", () => {
+  test("leads blocked comments with a concrete required action", () => {
+    const rendered = renderReviewGateStatusComment(
+      [
+        {
+          rule: "merge-conflicts",
+          status: "blocked",
+          explanation: "Conflict in scripts/start-dev.",
+        },
+      ],
+      "2026-07-01T00:00:00.000Z",
+      { conflicts: { has_conflicts: true, conflicting_files: ["scripts/start-dev"] } },
+    );
+
+    assert.match(
+      rendered,
+      /\*\*Required action:\*\* Resolve the listed merge conflict on the PR branch, push the update, and rerun Merge God\./,
+    );
+    assert.ok(rendered.indexOf("**Required action:**") < rendered.indexOf("| Check | Result | Details |"));
+    assert.match(rendered, /<summary>Technical details<\/summary>/);
+    assert.doesNotMatch(rendered, /Why it matters|What this means/);
+  });
+
+  test("published comments omit local refs and retain reviewer-accessible evidence", () => {
+    const rendered = renderPublishedReviewGateStatusComment(
+      [{ rule: "merge-conflicts", status: "blocked", explanation: "See /Users/example/run.log." }],
+      "2026-07-01T00:00:00.000Z",
+      {
+        conflicts: {
+          has_conflicts: true,
+          conflicting_files: ["scripts/start-dev"],
+          evidence_refs: [
+            "git:merge-tree",
+            "/Users/example/run.log",
+            "https://example.test/check/42?token=secret#result",
+          ],
+        },
+      },
+    );
+
+    assert.doesNotMatch(rendered, /git:merge-tree|\/Users\/|token=secret|Evidence refs/);
+    assert.match(rendered, /\[local path redacted\]/);
+    assert.match(rendered, /Reviewer evidence \| 1 \| https:\/\/example\.test\/check\/42#result/);
+  });
+
   test("renders direct edge-shaped gate rows", () => {
     const rendered = renderReviewGateStatusComment(
       [
@@ -5501,7 +5546,7 @@ describe("evidence comment rendering", () => {
           merge_commits: [],
           validation_evidence: [
             {
-              command: "meridian/web#217 failed: npm run metro",
+              command: "example-org/example-repo#217 failed: npm run metro",
               status: "",
               scope: "",
               evidence_ref: "comment:repo-target",

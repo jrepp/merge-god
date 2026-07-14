@@ -21,6 +21,9 @@ import type {
   CompatibilityTrajectoryInput,
   EmbarkCohortTrajectoryIds,
   EmbarkCohortTrajectoryInput,
+  EmbarkCohortApprovalResult,
+  EmbarkCohortRecoveryInput,
+  EmbarkCohortRecoveryResult,
   JsonObject,
   ModelTier,
   PrQueueTrajectoryIds,
@@ -241,6 +244,18 @@ export class TrajectoryRuntime {
     return { workflow: EMBARK_COHORT_WORKFLOW, ids, state };
   }
 
+  approveEmbarkCohort(
+    runId: string,
+    actor = "operator",
+    reason?: string,
+  ): EmbarkCohortApprovalResult {
+    return this.store.approveEmbarkCohort(runId, actor, reason);
+  }
+
+  recoverEmbarkCohort(input: EmbarkCohortRecoveryInput): EmbarkCohortRecoveryResult {
+    return this.store.recoverEmbarkCohort(input);
+  }
+
   claimNextActivity(runId: string): ActivityClaim | null {
     const claim = this.store.claimNextActivity(runId);
     if (claim) {
@@ -270,11 +285,16 @@ export class TrajectoryRuntime {
     const remediationPolicy = remediationPolicyDecisionFromValue(
       claim.work_item?.risk_signals["remediation_policy"],
     );
+    const state = this.getRunState(claim.ids.run_id);
+    const workset = state?.worksets.find((item) => item.workset_id === claim.ids.workset_id);
+    const isCohortActivity = workset?.kind === "embark_cohort" && claim.work_item === null;
     const checks = [
       {
         name: "label_contract",
-        passed: labels.has("for-review") || labels.has("for-landing"),
-        summary: "Work item must carry for-review or for-landing.",
+        passed: isCohortActivity || labels.has("for-review") || labels.has("for-landing"),
+        summary: isCohortActivity
+          ? "Cohort-level activities inherit the label contract from their members."
+          : "Work item must carry for-review or for-landing.",
       },
       {
         name: "activity_claimed",
@@ -284,6 +304,7 @@ export class TrajectoryRuntime {
       {
         name: "mode_activity_match",
         passed:
+          (isCohortActivity && ["merge_gate", "embark_planning"].includes(claim.activity.type)) ||
           isChildActivity ||
           (mode === "for-review" && claim.activity.type === "review_workflow") ||
           (mode === "for-landing" && claim.activity.type === "merge_gate"),
@@ -291,18 +312,32 @@ export class TrajectoryRuntime {
       },
       {
         name: "remediation_policy",
-        passed: remediationPolicy !== null && !remediationPolicy.blocked,
-        summary: remediationPolicy === null
-          ? "Work item must have a resolved remediation policy."
-          : remediationPolicy.reasons.join(" "),
+        passed: isCohortActivity || (remediationPolicy !== null && !remediationPolicy.blocked),
+        summary: isCohortActivity
+          ? "Cohort-level activities use the approved cohort tool policy."
+          : remediationPolicy === null
+            ? "Work item must have a resolved remediation policy."
+            : remediationPolicy.reasons.join(" "),
       },
       {
         name: "disposition_cap",
-        passed: remediationPolicy?.budget.mutating_allowed === true,
-        summary: remediationPolicy?.budget.mutating_allowed === true
-          ? `${remediationPolicy.effective_mode} permits bounded mutation.`
-          : `${remediationPolicy?.effective_mode ?? "unknown"} cannot be handed to a mutating pi activity.`,
+        passed:
+          isCohortActivity
+            ? claim.activity.tool_policy["mutating_allowed"] !== true
+            : remediationPolicy?.budget.mutating_allowed === true,
+        summary: isCohortActivity
+          ? "Cohort recovery planning must remain non-mutating."
+          : remediationPolicy?.budget.mutating_allowed === true
+            ? `${remediationPolicy.effective_mode} permits bounded mutation.`
+            : `${remediationPolicy?.effective_mode ?? "unknown"} cannot be handed to a mutating pi activity.`,
       },
+      ...(isCohortActivity
+        ? [{
+            name: "cohort_approval",
+            passed: workset?.approval_state === "approved",
+            summary: "Embark cohorts require operator approval before validation or recovery.",
+          }]
+        : []),
     ];
     const result = { passed: checks.every((check) => check.passed), checks };
     this.store.appendTrajectoryEvent(
@@ -570,18 +605,32 @@ export class TrajectoryRuntime {
 
   private defaultActivityPrompt(claim: ActivityClaim, state: TrajectoryState): string {
     const item = claim.work_item;
+    const workset = state.worksets.find((candidate) => candidate.workset_id === claim.ids.workset_id);
+    const cohortItems = workset?.kind === "embark_cohort"
+      ? state.work_items
+          .filter((candidate) => candidate.workset_id === workset.workset_id)
+          .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+          .map((candidate) => `#${candidate.number} (${candidate.status}: ${candidate.next_action ?? "unknown"})`)
+          .join(", ")
+      : null;
+    const recoveryPlan = claim.activity.metadata["recovery_plan"];
     return [
       "# Merge God Trajectory Activity",
       "",
       `Run: ${state.run.run_id}`,
       `Activity: ${claim.activity.activity_id} (${claim.activity.type})`,
-      item ? `PR: #${item.number} ${item.title}` : "PR: unknown",
+      item ? `PR: #${item.number} ${item.title}` : (cohortItems ? `Cohort: ${cohortItems}` : "PR: unknown"),
       item?.mode ? `Mode: ${item.mode}` : null,
       this.activityModelProfileValue(claim.activity, "model_tier")
         ? `Model tier: ${this.activityModelProfileValue(claim.activity, "model_tier")}`
         : null,
       this.activityModelProfileValue(claim.activity, "model_reason")
         ? `Model reason: ${this.activityModelProfileValue(claim.activity, "model_reason")}`
+        : null,
+      recoveryPlan ? `Recovery evidence: ${JSON.stringify(recoveryPlan)}` : null,
+      `Tool policy: ${JSON.stringify(claim.activity.tool_policy)}`,
+      claim.activity.tool_policy["mutating_allowed"] === false
+        ? "Do not edit, commit, push, approve, or merge. Produce an evidence-grounded plan or operator handoff."
         : null,
       "",
       `Use ${PI_TOOL_NAMES.context} view=trajectory to inspect durable state.`,

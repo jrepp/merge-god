@@ -41,6 +41,13 @@ import { AppStore, DatabaseError as AppDatabaseError } from "./app_store";
 import { SyncStore, DatabaseError as SyncDatabaseError } from "@merge-god/github-sync";
 import type { TrajectoryState } from "./trajectory";
 import { dashboardContextSummaryFromEvent } from "./dashboard_event_model";
+import {
+  practitionerActivityLabel,
+  practitionerNextActionLabel,
+  practitionerPhaseLabel,
+  practitionerRunStatusLabel,
+  practitionerWorkflowLabel,
+} from "./practitioner_language_model";
 import { prQueueInfoFromPullRequest, prQueueInfoFromRecord, type PrQueueDisplayInfo } from "./pr_queue_display_model";
 
 /** Combined DB-store holder: SyncStore (async, PR/repo) + AppStore (sync, processing/dashboard). */
@@ -563,7 +570,9 @@ interface WorkflowStateSnapshot {
   run_id: string;
   workflow_label: string;
   status: string;
+  status_label: string;
   phase: string;
+  phase_label: string;
   started_at: Date;
   heartbeat_at: Date | null;
   completed_at: Date | null;
@@ -601,10 +610,11 @@ function setsIntersect<T>(a: Set<T>, b: Set<T>): boolean {
 function workflowLabel(state: TrajectoryState): string {
   const metadata = state.run.metadata;
   const runtimePath = toStr(metadata["runtime_path"]);
-  if (runtimePath) return runtimePath.replace(/_/g, " ");
-  if (state.worksets.some((workset) => workset.kind === "embark_cohort")) return "embark cohort";
-  if (state.worksets.some((workset) => workset.kind === "pr_queue")) return "pr queue";
-  return state.run.strategy_version;
+  if (runtimePath) return practitionerWorkflowLabel(runtimePath);
+  const workset = state.worksets.find((candidate) =>
+    ["embark_cohort", "pr_queue", "review_batch", "issue_batch", "salvage_candidate_set"].includes(candidate.kind)
+  );
+  return practitionerWorkflowLabel(workset?.kind ?? state.run.strategy_version);
 }
 
 function buildWorkflowSnapshot(state: TrajectoryState): WorkflowStateSnapshot {
@@ -637,7 +647,9 @@ function buildWorkflowSnapshot(state: TrajectoryState): WorkflowStateSnapshot {
     run_id: state.run.run_id,
     workflow_label: workflowLabel(state),
     status: state.run.status,
+    status_label: practitionerRunStatusLabel(state.run.status),
     phase: state.run.current_phase,
+    phase_label: practitionerPhaseLabel(state.run.current_phase),
     started_at: toDate(state.run.started_at),
     heartbeat_at: state.run.heartbeat_at ? toDate(state.run.heartbeat_at) : null,
     completed_at: state.run.completed_at ? toDate(state.run.completed_at) : null,
@@ -650,9 +662,9 @@ function buildWorkflowSnapshot(state: TrajectoryState): WorkflowStateSnapshot {
     current_work: currentItem
       ? `#${currentItem.number} ${truncate(currentItem.title.replace(/\s+/g, " "), 48)}`
       : currentActivity
-        ? currentActivity.type
+        ? practitionerActivityLabel(currentActivity.type)
         : null,
-    next_action: currentItem?.next_action ?? null,
+    next_action: practitionerNextActionLabel(currentItem?.next_action),
     latest_event: latestEvent?.event_type ?? null,
     latest_event_actor: latestEvent?.actor ?? null,
     latest_event_at: latestEvent ? toDate(latestEvent.created_at) : null,
@@ -2269,9 +2281,9 @@ class Dashboard {
     text.append(`${workflow.workflow_label}`, "bold white");
     text.append(` (${truncate(workflow.run_id, 8)})`, "dim");
     text.append(" | Status: ", "dim");
-    text.append(workflow.status, statusStyle);
-    text.append(" | Phase: ", "dim");
-    text.append(`${workflow.phase}\n`, "yellow dim");
+    text.append(workflow.status_label, statusStyle);
+    text.append(" | Step: ", "dim");
+    text.append(`${workflow.phase_label}\n`, "yellow dim");
 
     text.append("  Work: ", "dim");
     text.append(`${workflow.work_item_count} items`, "white");
@@ -2291,7 +2303,7 @@ class Dashboard {
       text.append("  Current: ", "dim");
       text.append(workflow.current_work ?? "n/a", "white");
       if (workflow.next_action) {
-        text.append(" | Next: ", "dim");
+        text.append(" | Required action: ", "dim");
         text.append(workflow.next_action, "cyan");
       }
       text.append("\n");

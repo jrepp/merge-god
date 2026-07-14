@@ -1274,7 +1274,7 @@ describe("merge PR model", () => {
       {
         title: "Manual queue",
         body: [
-          "- meridian/web#217 - Metro API lane",
+          "- example-org/example-repo#217 - Metro API lane",
           "- group/subgroup/repo!218 - GitLab UI lane",
         ].join("\n"),
       },
@@ -1284,7 +1284,7 @@ describe("merge PR model", () => {
           {
             html_url: "https://example.test/pull/219#issuecomment-repo-qualified",
             body: [
-              "- meridian/web#217 npm run metro -> failed",
+              "- example-org/example-repo#217 npm run metro -> failed",
               "- group/subgroup/repo!218 npm run gitlab => passed",
             ].join("\n"),
           },
@@ -3314,7 +3314,7 @@ describe("merge PR model", () => {
         commits: [],
         comments: [
           {
-            html_url: "https://github.ibm.com/meridian/web/pull/183#issuecomment-status",
+            html_url: "https://github.example.test/example-org/example-repo/pull/183#issuecomment-status",
             body: [
               "| Command | Status | Detail |",
               "| --- | --- | --- |",
@@ -3326,7 +3326,7 @@ describe("merge PR model", () => {
               "",
               "| Area | Commit | Evidence |",
               "| --- | --- | --- |",
-              "| Agent completion budget | [`0fa6461`](https://github.ibm.com/meridian/agent/commit/0fa6461) in [agent PR #92](https://github.ibm.com/meridian/agent/pull/92) | Runtime budget change. |",
+              "| Agent completion budget | [`0fa6461`](https://github.example.test/example-org/example-agent/commit/0fa6461) in [agent PR #92](https://github.example.test/example-org/example-agent/pull/92) | Runtime budget change. |",
             ].join("\n"),
           },
         ],
@@ -5001,7 +5001,7 @@ describe("merge PR model", () => {
             sha: "qualified2026",
             commit: {
               message: [
-                "Merge branch 'release/2026.07' of github.ibm.com:meridian/web into queue/release",
+                "Merge branch 'release/2026.07' of github.example.test:example-org/example-repo into queue/release",
                 "",
                 "Conflicts:",
                 "\tpackages/web/src/qualified.ts",
@@ -5043,7 +5043,7 @@ describe("merge PR model", () => {
       {
         sha: "qualified2026",
         pr_number: null,
-        subject: "Merge branch 'release/2026.07' of github.ibm.com:meridian/web into queue/release",
+        subject: "Merge branch 'release/2026.07' of github.example.test:example-org/example-repo into queue/release",
         conflict_files: ["packages/web/src/qualified.ts"],
         evidence_refs: ["commit:qualified2026"],
       },

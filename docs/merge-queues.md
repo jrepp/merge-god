@@ -10,6 +10,31 @@ source PRs merged into one queue branch. It is different from a normal PR:
 success depends on the queue head, the constituent PR lineage, the conflict
 resolutions between them, and the validation evidence for each affected area.
 
+## Terms shown to practitioners
+
+The code and stored records retain precise internal names. Reviewer comments,
+the dashboard, and CLI summaries use shorter terms:
+
+| Internal name | Practitioner-facing name |
+| --- | --- |
+| embark cohort | merge group |
+| trajectory | run record |
+| workset | PR group |
+| work item | PR |
+| activity | step |
+| merge gate | merge check |
+| replan | choose the next safe merge plan |
+| operator handoff | maintainer decision needed |
+| evidence refs | technical details |
+
+A blocked update starts with **Required action** and gives a concrete completion
+condition. Internal identifiers, commit stages, and stored evidence references
+belong in a collapsed **Technical details** section.
+
+Local evidence must be uploaded as a PR attachment or a reviewer-accessible
+CI/forge artifact. Comments must not cite worktree paths, local database rows,
+local URLs, or opaque run references that a reviewer cannot open.
+
 ## Domain model
 
 merge-god records queue-specific context alongside the normal PR context:
@@ -128,7 +153,7 @@ Self-referenced validation provenance recognizes GitHub `/pull/` and `/pulls/`
 URLs as well as GitLab `/-/merge_requests/` URLs, so validation captured from
 constituent PR or MR discussion can still contribute membership evidence across
 supported forge URL shapes. Repo-qualified shorthand such as
-`meridian/web#201` or `group/subgroup/repo!202` is also normalized when it
+`example-org/example-repo#201` or `group/subgroup/repo!202` is also normalized when it
 appears in constituent hints or validation scopes.
 
 Generic product words such as `queue`, `batch`, or `stack` are not enough by
@@ -733,3 +758,58 @@ Queue PRs still require operator intent. Use `for-landing` for normal queue
 cleanup or `for-review` when the queue also needs a quality-review pass. A
 future `for-queue` mode may make aggregate queue handling explicit, but unlabeled
 PRs remain skipped by design.
+
+## Recovering a failed merge group
+
+A failed PR does not discard the PRs that already passed. Merge God keeps the
+passing PRs, stops on the failed PR, and waits before trying later PRs.
+
+**Required action:** decide the intended result for the failed PR, update its
+branch, run the required checks, and retry the merge group.
+
+Internally, recovery preserves the validated prefix, records the failure on the
+PR that stopped, defers later PRs, and creates a read-only planning step.
+
+Approve a capture-first cohort before validation:
+
+```bash
+npx tsx merge-god.ts cohort approve \
+  --run <run-id> \
+  --reason "continue grouped validation"
+```
+
+When a merge attempt fails, recover it with the observed evidence:
+
+```bash
+npx tsx merge-god.ts cohort recover \
+  --run <run-id> \
+  --failed-pr 204 \
+  --validated-pr 203 \
+  --summary "merge conflict in scripts/start-dev requires a maintainer decision" \
+  --disposition needs-redesign \
+  --conflict-file scripts/start-dev \
+  --evidence-ref <durable-comment-or-artifact-ref>
+```
+
+Recovery uses the stored merge order to identify the waiting PRs. It keeps the
+failed PR blocked with its conflict files and technical evidence. The follow-up
+step is read-only: it may recommend a smaller group, a code change, or a
+maintainer decision, but it cannot edit, push, or merge.
+
+Inspect the durable state at any point:
+
+```bash
+npx tsx merge-god.ts cohort status --run <run-id>
+```
+
+Run the claimable recovery activity against the stored embark workspace, or
+provide an explicit local path:
+
+```bash
+npx tsx merge-god.ts cohort run \
+  --run <run-id> \
+  --repo-path /path/to/embark-worktree
+```
+
+The runtime enforces the step's read-only policy before launch. It produces a
+recommended next action without editing, pushing, or merging.

@@ -1318,7 +1318,8 @@ describe("agent flow: runPiAgent result contract", () => {
       "2026-06-30T00:00:00.000Z",
     );
     assert.match(rendered, /merge-god-review-gate-cache:v1/);
-    assert.match(rendered, /Non-authoritative cache/);
+    assert.match(rendered, /\*\*Required action:\*\*/);
+    assert.match(rendered, /reviewer summary/);
     assert.match(rendered, /merge \\| gate &lt;script&gt;/);
     assert.match(rendered, /\| unknown \|/);
     assert.match(rendered, /needs &#64;ops &#96;approval&#96; \\| &lt;img/);

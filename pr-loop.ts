@@ -27,6 +27,7 @@ import { AppStore } from "./app_store";
 import { PI_TOOL_NAMES } from "./pi/tool_contract";
 import {
   evidenceSummaryFromPrDetailsAndContext,
+  renderPublishedReviewGateStatusComment,
   renderReviewGateStatusComment,
   type ReviewGateEvidenceSummary,
   type ReviewGateStatus,
@@ -934,7 +935,7 @@ export function updateReviewGateStatusComment(
   gates: ReviewGateStatus[],
   opts: { updatedAt?: string; evidence?: ReviewGateEvidenceSummary | null } = {},
 ): boolean {
-  const body = renderReviewGateStatusComment(gates, opts.updatedAt, opts.evidence ?? null);
+  const body = renderPublishedReviewGateStatusComment(gates, opts.updatedAt, opts.evidence ?? null);
   const existingCommentId = findOwnedReviewGateCacheComment(prNumber);
   const plan = planReviewGateCommentCommand(prNumber, body, existingCommentId);
   const [returncode, _stdout, stderr] = runCommand(plan.args, undefined, 30, 1024 * 1024);
@@ -961,7 +962,7 @@ export async function updateReviewGateStatusCommentAsync(
   gates: ReviewGateStatus[],
   opts: { updatedAt?: string; evidence?: ReviewGateEvidenceSummary | null } = {},
 ): Promise<boolean> {
-  const body = renderReviewGateStatusComment(gates, opts.updatedAt, opts.evidence ?? null);
+  const body = renderPublishedReviewGateStatusComment(gates, opts.updatedAt, opts.evidence ?? null);
   const existingCommentId = await findOwnedReviewGateCacheCommentAsync(prNumber);
   const plan = planReviewGateCommentCommand(prNumber, body, existingCommentId);
   const [returncode, _stdout, stderr] = await createSpawnCommandRunner(logJson).run(
