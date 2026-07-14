@@ -62,6 +62,7 @@ Labels are how you tell merge-god what to do.
 | --- | --- | --- |
 | `for-landing` | PR | Resolve conflicts -> address reviews -> fix CI -> merge. |
 | `for-review` | PR | Everything above, plus a second quality/security review pass. |
+| `duplicate` | PR | Hold processing while `merge-god duplicates` proves whether the patch is already represented. |
 | `for-impl` | Issue | Implement the issue as a PR (requires `watch_issues: true`). |
 | _(none)_ | PR | Skipped. Drafts and WIP PRs are always excluded. |
 

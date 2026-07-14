@@ -33,6 +33,7 @@ monitor.
 ```yaml
 repos:
   - path: /Users/you/dev/my-project
+    repo: github.example.com/owner/my-project
     name: "My Project"
     enabled: true
     watch_issues: false
@@ -42,6 +43,7 @@ repos:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `path` | string | — **required** | Absolute path to a local git repo with a GitHub remote. |
+| `repo` | string | inferred | Expected `HOST/OWNER/REPO`, `OWNER/REPO`, or GitHub URL. Startup fails before mutation if the checkout remote does not match. |
 | `name` | string | dir name | Display name in the dashboard. |
 | `enabled` | bool | `true` | Set `false` to skip this repo. |
 | `watch_issues` | bool | `false` | Monitor `for-impl` issues and implement them as PRs. See [Usage](./usage/#issue-watching). |
@@ -62,10 +64,12 @@ Labels live on GitHub, not in the config — but they're how you steer merge-god
 | --- | --- | --- |
 | `for-landing` | PR | Process to land: conflicts → reviews → CI → merge. |
 | `for-review` | PR | `for-landing` **plus** a second quality-review pass. |
+| `duplicate` | PR | Hold normal processing pending patch-equivalence and base-containment analysis. |
 | `for-impl` | Issue | Implement the issue as a PR (requires `watch_issues: true`). |
 
 A PR with **no label is skipped**. Drafts and WIP/work-in-process PRs are always
-excluded.
+excluded. Duplicate-labeled PRs are also excluded from normal agent processing;
+use `merge-god duplicates` to inspect them without reading the database.
 
 ## Doormat (AWS credentials)
 

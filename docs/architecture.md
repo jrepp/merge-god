@@ -188,6 +188,7 @@ Use GitHub labels (`for-review`, `for-landing`) to control how PRs are processed
 
 - `for-landing`: Basic processing (conflicts, reviews, CI)
 - `for-review`: Comprehensive review with code improvements
+- `duplicate`: Hold agent processing pending exact patch and base-containment analysis
 - No label: Skip PR entirely
 
 ---

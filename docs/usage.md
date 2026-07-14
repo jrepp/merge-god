@@ -52,10 +52,46 @@ cp config.example.yaml config.yaml
 For each repo, the loop iterates open PRs **in order** and processes any that:
 
 - carry a `for-landing` or `for-review` label, and
-- are not drafts and not labeled WIP / work-in-process.
+- are not drafts, labeled WIP / work-in-process, or labeled `duplicate`.
 
 PRs with no recognized label are left alone. Confirmed processing order:
 **issues first** (if watching), then PRs.
+
+### Duplicate PRs
+
+The `duplicate` label is a hold, not proof that a PR can be closed. merge-god
+removes these PRs from the agent queue and analyzes them directly from current
+Git and GitHub state; it does not require the state database.
+
+```bash
+npx tsx merge-god.ts duplicates
+```
+
+The analyzer calculates stable patch identities for open PRs and checks every
+retained commit patch against the target base branch. Its outcomes are:
+
+| Outcome | Behavior |
+| --- | --- |
+| `already_landed` | Every retained patch is on the base branch. This is the only automatically closable outcome. |
+| `canonical_open` | Preferred representative of an exact open patch cluster; land it first. |
+| `exact_open_duplicate` | Exact open peer of the canonical PR; keep it open until the canonical PR lands. |
+| `embark_candidate` | Different patch with overlapping files; compare retained scope and validate both merge-commit orders in an isolated cohort. |
+| `unverified_duplicate` | The label is not supported by exact evidence; compare retained scope and synthesize unique work. |
+| `analysis_failed` | Evidence collection was incomplete; do not mutate the PR. |
+
+Analysis is read-only from the PR author's perspective. It may fetch remote Git
+objects, but it does not rewrite branches, open the database, comment, label,
+or close PRs. To close only exact patches already represented on the base:
+
+```bash
+npx tsx merge-god.ts duplicates --close-landed
+```
+
+Each closure receives a comment with the stable patch ID and canonical merged
+PR when GitHub can identify it, then receives `merge:complete`. Similar titles
+or overlapping files never satisfy the automatic-close threshold. Overlap with
+different patch identities is routed to embark planning so unique behavior can
+be combined and tested without rewriting either source branch.
 
 ### `for-landing` vs `for-review`
 
@@ -104,14 +140,24 @@ Use bounded controls when testing merge-god against a whole repository without
 starting a long-running daemon:
 
 ```bash
+npx tsx merge-god.ts run --once
+npx tsx merge-god.ts run --once --dry-run
+npx tsx merge-god.ts duplicates
 npx tsx pr-loop.ts /path/to/repo --once --dry-run
 npx tsx merge-god.ts pr-loop /path/to/repo --max-iterations 3 --idle-sleep-seconds 30
 ```
 
+`run` uses the sole enabled repository from `config.yaml`, including its
+optional `repo` identity guard. Pass a path to `pr-loop` explicitly when more
+than one repository is enabled. The root CLI and dashboard pass one central
+state database to repository workers; target checkouts no longer receive a
+stray `merge-god-state.db`.
+
 - `--once` runs one loop iteration and exits.
 - `--max-iterations N` runs at most `N` loop iterations.
-- `--dry-run` still syncs the repo, discovers PRs, and plans stack order, but
-  does not invoke agents or change PR state labels.
+- `--dry-run` inspects the current checkout, discovers PRs, and plans stack
+  order without fetching, switching branches, pulling, opening a state
+  database, invoking agents, or changing PR state labels.
 - `--idle-sleep-seconds N`, `--sync-failure-sleep-seconds N`, and
   `--between-items-sleep-seconds N` tune loop pacing for CI, local testing, or
   daemon operation.
