@@ -25,6 +25,7 @@ import type {
   PrQueueTrajectoryIds,
   PrQueueTrajectoryInput,
   ProposedNextActionInput,
+  TrajectoryCloseoutReport,
   TrajectoryState,
 } from "./trajectory";
 
@@ -68,6 +69,7 @@ export interface RuntimeStartResult {
   workflow: RuntimeWorkflowDefinition;
   ids: CompatibilityTrajectoryIds;
   state: TrajectoryState;
+  resumed: boolean;
 }
 
 export interface QueueStartResult {
@@ -139,7 +141,10 @@ export class TrajectoryRuntime {
   }
 
   startPrAgentWorkflow(input: CompatibilityTrajectoryInput): RuntimeStartResult {
-    const ids = this.store.createCompatibilityTrajectoryForPr(input);
+    const ids = this.store.createCompatibilityTrajectoryForPr({
+      ...input,
+      session_id: input.session_id ?? randomUUID(),
+    });
     this.store.appendTrajectoryEvent(
       ids.run_id,
       "runtime.workflow.started",
@@ -160,7 +165,31 @@ export class TrajectoryRuntime {
     if (!state) {
       throw new Error(`Trajectory state was not persisted for run ${ids.run_id}`);
     }
-    return { workflow: ONE_SHOT_PR_AGENT_WORKFLOW, ids, state };
+    return { workflow: ONE_SHOT_PR_AGENT_WORKFLOW, ids, state, resumed: false };
+  }
+
+  startOrResumePrAgentWorkflow(input: CompatibilityTrajectoryInput): RuntimeStartResult {
+    const existing = this.store.findResumableCompatibilityTrajectory(input.repo_name, input.pr_number);
+    if (!existing) return this.startPrAgentWorkflow(input);
+    const ids = this.store.resumeCompatibilityTrajectory(existing, input.session_id ?? randomUUID(), input.model ?? null);
+    this.store.appendTrajectoryEvent(
+      ids.run_id,
+      "runtime.workflow.resumed",
+      "merge-god-runtime",
+      {
+        workflow_id: ONE_SHOT_PR_AGENT_WORKFLOW.id,
+        workflow_version: ONE_SHOT_PR_AGENT_WORKFLOW.version,
+      },
+      {
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: ids.activity_session_id,
+      },
+    );
+    const state = this.store.getTrajectoryState(ids.run_id);
+    if (!state) throw new Error(`Trajectory state was not persisted for resumed run ${ids.run_id}`);
+    return { workflow: ONE_SHOT_PR_AGENT_WORKFLOW, ids, state, resumed: true };
   }
 
   startPrQueueWorkflow(input: PrQueueTrajectoryInput): QueueStartResult {
@@ -396,6 +425,29 @@ export class TrajectoryRuntime {
     return { accepted: true, child_activity_id: childActivityId };
   }
 
+  closeChildActivity(
+    ids: CompatibilityTrajectoryIds,
+    input: { activity_id: string; success: boolean; summary: string; error_message?: string | null },
+  ): ModelControlResult {
+    const state = this.getRunState(ids.run_id);
+    const child = state?.activities.find((activity) => activity.activity_id === input.activity_id);
+    if (!child || child.parent_activity_id !== ids.activity_id) {
+      return this.rejectModelControl(ids, "activity.close_rejected", "activity is not a child of the current activity");
+    }
+    if (["succeeded", "failed", "blocked", "canceled"].includes(child.status)) {
+      return this.rejectModelControl(ids, "activity.close_rejected", `activity is already ${child.status}`);
+    }
+    const session = state?.activity_sessions.find((candidate) =>
+      candidate.activity_id === child.activity_id && candidate.completed_at === null
+    );
+    this.store.completeActivity({
+      ...ids,
+      activity_id: child.activity_id,
+      activity_session_id: session?.activity_session_id ?? null,
+    }, input.success, input.summary, input.error_message ?? null);
+    return { accepted: true, child_activity_id: child.activity_id };
+  }
+
   async runNextActivityWithPi(
     runId: string,
     options: RunNextActivityOptions,
@@ -462,7 +514,7 @@ export class TrajectoryRuntime {
     return { claim: started, guardrails, pi_result: piResult, completed: true };
   }
 
-  completePrAgentWorkflow(ids: CompatibilityTrajectoryIds, completion: RuntimeCompletion): void {
+  completePrAgentWorkflow(ids: CompatibilityTrajectoryIds, completion: RuntimeCompletion): TrajectoryCloseoutReport {
     this.store.appendTrajectoryEvent(
       ids.run_id,
       "runtime.workflow.completing",
@@ -484,6 +536,13 @@ export class TrajectoryRuntime {
       completion.summary ?? null,
       completion.error_message ?? null,
     );
+    const closeout = this.store.getTrajectoryCloseoutReport(ids.run_id);
+    this.appendWorkflowEvent(ids, "runtime.workflow.closed", {
+      workflow_id: ONE_SHOT_PR_AGENT_WORKFLOW.id,
+      success: completion.success,
+      closeout,
+    });
+    return closeout;
   }
 
   appendWorkflowEvent(
@@ -502,6 +561,10 @@ export class TrajectoryRuntime {
 
   getRunState(runId: string): TrajectoryState | null {
     return this.store.getTrajectoryState(runId);
+  }
+
+  getCloseoutReport(runId: string): TrajectoryCloseoutReport {
+    return this.store.getTrajectoryCloseoutReport(runId);
   }
 
   private defaultActivityPrompt(claim: ActivityClaim, state: TrajectoryState): string {
@@ -561,6 +624,7 @@ export class TrajectoryRuntime {
         evidence_refs: input.evidence_refs,
       }),
       createChildActivity: (input) => this.createChildActivity(ids, input),
+      closeActivity: (input) => this.closeChildActivity(ids, input),
     };
   }
 

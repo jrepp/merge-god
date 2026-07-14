@@ -121,7 +121,21 @@ OTLP variables are present.
 
 Each PR processing attempt is traced as `merge_god.process_pr`, with child spans
 for context gathering and pi agent execution. Issue implementation runs are
-traced as `merge_god.process_issue`.
+traced as `merge_god.process_issue`. PR runs also carry the durable trajectory
+identifiers (`run_id`, workset, work item, activity, and activity session) into
+the pi work item.
+
+Durable trajectory reads include a normalized hierarchy from run through
+workset, work item, activity, activity session, agent turn, and tool call. Each
+level exposes an external `open`, `closed`, `blocked`, `failed`, or `canceled`
+state plus the underlying raw status. A resume cursor identifies unfinished
+activities, sessions, turns, and tool calls. On restart, an unfinished PR agent
+trajectory is reused with a replacement session after abandoned leaves are
+marked interrupted.
+
+A successful trajectory cannot close while a child remediation activity is
+still open. Failed trajectories explicitly cancel unfinished descendants and
+emit a final closeout report for every lifecycle level.
 
 Key metrics:
 

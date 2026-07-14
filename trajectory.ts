@@ -299,4 +299,53 @@ export interface TrajectoryState {
   activities: ActivityRecord[];
   activity_sessions: ActivitySessionRecord[];
   events: TrajectoryEventRecord[];
+  hierarchy: TrajectoryHierarchyRecord[];
+  resume: TrajectoryResumeState;
+}
+
+export type ExternalLifecycleState = "open" | "closed" | "blocked" | "failed" | "canceled";
+
+export type TrajectoryHierarchyLevel =
+  | "run"
+  | "workset"
+  | "work_item"
+  | "activity"
+  | "activity_session"
+  | "agent_turn"
+  | "tool_call";
+
+export interface TrajectoryHierarchyRecord {
+  level: TrajectoryHierarchyLevel;
+  id: string;
+  parent_level: TrajectoryHierarchyLevel | null;
+  parent_id: string | null;
+  state: ExternalLifecycleState;
+  raw_status: string;
+  opened_at: string | null;
+  closed_at: string | null;
+  metadata: JsonObject;
+}
+
+export interface TrajectoryResumeState {
+  resumable: boolean;
+  next_action: "resume_activity" | "claim_activity" | null;
+  open_run_id: string | null;
+  open_workset_ids: string[];
+  open_work_item_ids: string[];
+  open_activity_ids: string[];
+  open_activity_session_ids: string[];
+  open_agent_turn_ids: string[];
+  open_tool_call_ids: string[];
+  last_event_id: string | null;
+}
+
+export interface TrajectoryCloseoutReport {
+  run_id: string;
+  complete: boolean;
+  open_workset_ids: string[];
+  open_work_item_ids: string[];
+  open_activity_ids: string[];
+  open_activity_session_ids: string[];
+  open_agent_turn_ids: string[];
+  open_tool_call_ids: string[];
 }

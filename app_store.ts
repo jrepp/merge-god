@@ -33,6 +33,9 @@ import type {
   PrQueueTrajectoryInput,
   ProposedNextActionInput,
   TrajectoryEventRecord,
+  TrajectoryCloseoutReport,
+  TrajectoryHierarchyRecord,
+  TrajectoryResumeState,
   TrajectoryState,
   WorkItemRecord,
   WorksetRecord,
@@ -1523,13 +1526,20 @@ export class AppStore {
         const pendingForItem = this.db
           .prepare("SELECT COUNT(*) AS count FROM activities WHERE work_item_id = ? AND status IN ('ready', 'claimed', 'running')")
           .get(ids.work_item_id) as { count: number } | undefined;
+        const activeForItem = this.db
+          .prepare("SELECT COUNT(*) AS count FROM activities WHERE work_item_id = ? AND status IN ('claimed', 'running')")
+          .get(ids.work_item_id) as { count: number } | undefined;
         const failedForItem = this.db
           .prepare("SELECT COUNT(*) AS count FROM activities WHERE work_item_id = ? AND status = 'failed'")
           .get(ids.work_item_id) as { count: number } | undefined;
         const itemHasFailure = !success || (failedForItem?.count ?? 0) > 0;
         const itemHasPending = (pendingForItem?.count ?? 0) > 0;
         const workItemStatus = itemHasFailure ? "failed" : (itemHasPending ? "running" : "validated");
-        const nextAction = itemHasFailure ? "inspect_failure" : (itemHasPending ? "claim_activity" : "operator_handoff");
+        const nextAction = itemHasFailure
+          ? "inspect_failure"
+          : itemHasPending
+            ? (activeForItem?.count ?? 0) > 0 ? "resume_activity" : "claim_activity"
+            : "operator_handoff";
         this.db
           .prepare("UPDATE work_items SET status = ?, next_action = ?, updated_at = ? WHERE work_item_id = ?")
           .run(workItemStatus, nextAction, now, ids.work_item_id);
@@ -1687,6 +1697,133 @@ export class AppStore {
         // ignore rollback failures; surface the original error below
       }
       throw new DatabaseError(`Failed to create child activity: ${String(e)}`);
+    }
+  }
+
+  /** Find the newest unfinished one-shot PR trajectory that can be resumed. */
+  findResumableCompatibilityTrajectory(
+    repoName: string,
+    prNumber: number,
+  ): CompatibilityTrajectoryIds | null {
+    const row = this.db.prepare(
+      `SELECT r.run_id, ws.workset_id, wi.work_item_id, a.activity_id,
+              (SELECT activity_session_id FROM activity_sessions s
+               WHERE s.activity_id = a.activity_id AND s.completed_at IS NULL
+               ORDER BY s.started_at DESC LIMIT 1) AS activity_session_id
+       FROM orchestration_runs r
+       JOIN worksets ws ON ws.run_id = r.run_id
+       JOIN work_items wi ON wi.workset_id = ws.workset_id
+       JOIN activities a ON a.run_id = r.run_id AND a.work_item_id = wi.work_item_id
+       WHERE r.repo_name = ? AND wi.number = ? AND r.strategy_version = 'compatibility-v1'
+         AND r.status IN ('created', 'surveying', 'planning', 'executing', 'waiting')
+         AND a.parent_activity_id IS NULL
+         AND a.status IN ('created', 'ready', 'claimed', 'running')
+       ORDER BY r.started_at DESC, a.created_at
+       LIMIT 1`,
+    ).get(repoName, prNumber) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      run_id: String(row["run_id"]),
+      workset_id: String(row["workset_id"]),
+      work_item_id: String(row["work_item_id"]),
+      activity_id: String(row["activity_id"]),
+      activity_session_id: strOrNull(row["activity_session_id"]),
+    };
+  }
+
+  resumeCompatibilityTrajectory(
+    ids: CompatibilityTrajectoryIds,
+    sessionId: string,
+    model: string | null = null,
+  ): CompatibilityTrajectoryIds {
+    const state = this.getTrajectoryState(ids.run_id);
+    if (!state?.resume.resumable) throw new DatabaseError(`Trajectory ${ids.run_id} is not resumable`);
+    const now = nowIso();
+    const activitySessionId = randomUUID();
+    const priorSessionId = ids.activity_session_id;
+    try {
+      this.db.exec("BEGIN");
+      this.db.prepare(
+        `UPDATE activity_sessions
+         SET status = 'interrupted', completed_at = ?, metadata = ?
+         WHERE activity_id = ? AND completed_at IS NULL`,
+      ).run(now, stringifyJson({ resume_reason: "replacement_session" }), ids.activity_id);
+      for (const turnId of state.resume.open_agent_turn_ids) {
+        const turn = state.hierarchy.find((record) => record.level === "agent_turn" && record.id === turnId);
+        this.insertTrajectoryEvent({
+          run_id: ids.run_id,
+          workset_id: ids.workset_id,
+          work_item_id: ids.work_item_id,
+          activity_id: ids.activity_id,
+          activity_session_id: priorSessionId,
+          event_type: "pi.agent_turn.interrupted",
+          actor: "merge-god",
+          payload: {
+            turn_id: turnId,
+            turn_index: turn?.metadata["turn_index"] ?? null,
+            reason: "trajectory_resumed",
+          },
+        });
+      }
+      for (const callId of state.resume.open_tool_call_ids) {
+        const toolCall = state.hierarchy.find((record) => record.level === "tool_call" && record.id === callId);
+        this.insertTrajectoryEvent({
+          run_id: ids.run_id,
+          workset_id: ids.workset_id,
+          work_item_id: ids.work_item_id,
+          activity_id: ids.activity_id,
+          activity_session_id: priorSessionId,
+          event_type: "pi.tool_call.incomplete",
+          actor: "merge-god",
+          payload: {
+            call_id: callId,
+            turn_id: toolCall?.parent_level === "agent_turn" ? toolCall.parent_id : null,
+            tool_name: toolCall?.metadata["tool_name"] ?? null,
+            status: "incomplete",
+            reason: "trajectory_resumed",
+          },
+        });
+      }
+      this.db.prepare(
+        `INSERT INTO activity_sessions (
+           activity_session_id, activity_id, session_id, model, status, started_at, metadata
+         ) VALUES (?, ?, ?, ?, 'running', ?, ?)`,
+      ).run(
+        activitySessionId,
+        ids.activity_id,
+        sessionId,
+        model,
+        now,
+        stringifyJson({ compatibility_path: true, resumed_from_session_id: priorSessionId }),
+      );
+      this.db.prepare("UPDATE activities SET status = 'running', completed_at = NULL, updated_at = ? WHERE activity_id = ?")
+        .run(now, ids.activity_id);
+      this.db.prepare("UPDATE work_items SET status = 'running', next_action = 'resume_agent', updated_at = ? WHERE work_item_id = ?")
+        .run(now, ids.work_item_id);
+      this.db.prepare("UPDATE worksets SET status = 'active', updated_at = ? WHERE workset_id = ?")
+        .run(now, ids.workset_id);
+      this.db.prepare(
+        "UPDATE orchestration_runs SET status = 'executing', current_phase = 'agent_resumed', heartbeat_at = ?, completed_at = NULL WHERE run_id = ?",
+      ).run(now, ids.run_id);
+      this.insertTrajectoryEvent({
+        run_id: ids.run_id,
+        workset_id: ids.workset_id,
+        work_item_id: ids.work_item_id,
+        activity_id: ids.activity_id,
+        activity_session_id: activitySessionId,
+        event_type: "compatibility_trajectory.resumed",
+        actor: "merge-god",
+        payload: { prior_activity_session_id: priorSessionId, session_id: sessionId, model },
+      });
+      this.db.exec("COMMIT");
+      return { ...ids, activity_session_id: activitySessionId };
+    } catch (e) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failures; surface the original error below
+      }
+      throw new DatabaseError(`Failed to resume compatibility trajectory: ${String(e)}`);
     }
   }
 
@@ -1910,8 +2047,46 @@ export class AppStore {
     const activityStatus = success ? "succeeded" : "failed";
     const workItemStatus = success ? "validated" : "failed";
 
+    if (success) {
+      const state = this.getTrajectoryState(ids.run_id);
+      const openChildren = state?.activities.filter((activity) =>
+        activity.activity_id !== ids.activity_id &&
+        !["succeeded", "failed", "blocked", "canceled"].includes(activity.status)
+      ) ?? [];
+      if (openChildren.length > 0) {
+        throw new DatabaseError(
+          `Cannot complete trajectory ${ids.run_id}; child activities remain open: ${openChildren.map((activity) => activity.activity_id).join(", ")}`,
+        );
+      }
+      if ((state?.resume.open_agent_turn_ids.length ?? 0) > 0 || (state?.resume.open_tool_call_ids.length ?? 0) > 0) {
+        throw new DatabaseError(
+          `Cannot complete trajectory ${ids.run_id}; agent turns or tool calls remain open`,
+        );
+      }
+    }
+
     try {
       this.db.exec("BEGIN");
+      if (!success) {
+        this.db
+          .prepare(
+            `UPDATE activity_sessions
+             SET status = 'canceled', completed_at = COALESCE(completed_at, ?)
+             WHERE activity_id IN (
+               SELECT activity_id FROM activities
+               WHERE run_id = ? AND activity_id != ?
+             ) AND completed_at IS NULL`,
+          )
+          .run(now, ids.run_id, ids.activity_id);
+        this.db
+          .prepare(
+            `UPDATE activities
+             SET status = 'canceled', completed_at = COALESCE(completed_at, ?), updated_at = ?
+             WHERE run_id = ? AND activity_id != ?
+               AND status NOT IN ('succeeded', 'failed', 'blocked', 'canceled')`,
+          )
+          .run(now, now, ids.run_id, ids.activity_id);
+      }
       this.db
         .prepare(
           `
@@ -1981,7 +2156,19 @@ export class AppStore {
         activity_session_id: ids.activity_session_id,
         event_type: "compatibility_trajectory.completed",
         actor: "merge-god",
-        payload: { success, summary, error_message: errorMessage },
+        payload: {
+          success,
+          summary,
+          error_message: errorMessage,
+          closeout: {
+            run: runStatus,
+            workset: success ? "completed" : "blocked",
+            work_item: workItemStatus,
+            activity: activityStatus,
+            activity_session: runStatus,
+            descendants: success ? "already_terminal" : "canceled_if_open",
+          },
+        },
       });
 
       this.db.exec("COMMIT");
@@ -1993,6 +2180,42 @@ export class AppStore {
       }
       throw new DatabaseError(`Failed to complete compatibility trajectory: ${String(e)}`);
     }
+  }
+
+  getTrajectoryCloseoutReport(runId: string): TrajectoryCloseoutReport {
+    const state = this.getTrajectoryState(runId);
+    if (!state) throw new DatabaseError(`Trajectory run not found: ${runId}`);
+    const openWorksetIds = state.worksets
+      .filter((item) => !["completed", "blocked"].includes(item.status))
+      .map((item) => item.workset_id);
+    const openWorkItemIds = state.work_items
+      .filter((item) => !["validated", "merged", "closed", "skipped", "blocked", "failed"].includes(item.status))
+      .map((item) => item.work_item_id);
+    const openActivityIds = state.activities
+      .filter((item) => !["succeeded", "failed", "blocked", "canceled"].includes(item.status))
+      .map((item) => item.activity_id);
+    const openActivitySessionIds = state.activity_sessions
+      .filter((item) => item.completed_at === null)
+      .map((item) => item.activity_session_id);
+    const openAgentTurnIds = state.hierarchy
+      .filter((item) => item.level === "agent_turn" && item.state === "open")
+      .map((item) => item.id);
+    const openToolCallIds = state.hierarchy
+      .filter((item) => item.level === "tool_call" && item.state === "open")
+      .map((item) => item.id);
+    const runOpen = !["completed", "blocked", "failed"].includes(state.run.status);
+    return {
+      run_id: runId,
+      complete: !runOpen && openWorksetIds.length === 0 && openWorkItemIds.length === 0 &&
+        openActivityIds.length === 0 && openActivitySessionIds.length === 0 &&
+        openAgentTurnIds.length === 0 && openToolCallIds.length === 0,
+      open_workset_ids: openWorksetIds,
+      open_work_item_ids: openWorkItemIds,
+      open_activity_ids: openActivityIds,
+      open_activity_session_ids: openActivitySessionIds,
+      open_agent_turn_ids: openAgentTurnIds,
+      open_tool_call_ids: openToolCallIds,
+    };
   }
 
   /** Append a structured trajectory event for a run. */
@@ -2099,13 +2322,188 @@ export class AppStore {
       .prepare("SELECT * FROM trajectory_events WHERE run_id = ? ORDER BY id")
       .all(runId) as Record<string, unknown>[];
 
+    const run = this.parseOrchestrationRun(runRow);
+    const parsedWorksets = worksets.map((row) => this.parseWorkset(row));
+    const parsedWorkItems = workItems.map((row) => this.parseWorkItem(row));
+    const parsedActivities = activities.map((row) => this.parseActivity(row));
+    const parsedSessions = activitySessions.map((row) => this.parseActivitySession(row));
+    const parsedEvents = events.map((row) => this.parseTrajectoryEvent(row));
+    const hierarchy = this.buildTrajectoryHierarchy(
+      run,
+      parsedWorksets,
+      parsedWorkItems,
+      parsedActivities,
+      parsedSessions,
+      parsedEvents,
+    );
     return {
-      run: this.parseOrchestrationRun(runRow),
-      worksets: worksets.map((row) => this.parseWorkset(row)),
-      work_items: workItems.map((row) => this.parseWorkItem(row)),
-      activities: activities.map((row) => this.parseActivity(row)),
-      activity_sessions: activitySessions.map((row) => this.parseActivitySession(row)),
-      events: events.map((row) => this.parseTrajectoryEvent(row)),
+      run,
+      worksets: parsedWorksets,
+      work_items: parsedWorkItems,
+      activities: parsedActivities,
+      activity_sessions: parsedSessions,
+      events: parsedEvents,
+      hierarchy,
+      resume: this.buildTrajectoryResumeState(run.run_id, hierarchy, parsedEvents),
+    };
+  }
+
+  private buildTrajectoryHierarchy(
+    run: OrchestrationRunRecord,
+    worksets: WorksetRecord[],
+    workItems: WorkItemRecord[],
+    activities: ActivityRecord[],
+    sessions: ActivitySessionRecord[],
+    events: TrajectoryEventRecord[],
+  ): TrajectoryHierarchyRecord[] {
+    const hierarchy: TrajectoryHierarchyRecord[] = [{
+      level: "run",
+      id: run.run_id,
+      parent_level: null,
+      parent_id: null,
+      state: ["completed"].includes(run.status) ? "closed"
+        : run.status === "blocked" ? "blocked"
+        : run.status === "failed" ? "failed"
+        : "open",
+      raw_status: run.status,
+      opened_at: run.started_at,
+      closed_at: run.completed_at,
+      metadata: { current_phase: run.current_phase },
+    }];
+    for (const workset of worksets) {
+      hierarchy.push({
+        level: "workset",
+        id: workset.workset_id,
+        parent_level: "run",
+        parent_id: run.run_id,
+        state: workset.status === "completed" ? "closed" : workset.status === "blocked" ? "blocked" : "open",
+        raw_status: workset.status,
+        opened_at: workset.created_at,
+        closed_at: ["completed", "blocked"].includes(workset.status) ? workset.updated_at : null,
+        metadata: {},
+      });
+    }
+    for (const item of workItems) {
+      const state = ["validated", "merged", "closed", "skipped"].includes(item.status) ? "closed"
+        : item.status === "blocked" ? "blocked"
+        : item.status === "failed" ? "failed"
+        : "open";
+      hierarchy.push({
+        level: "work_item",
+        id: item.work_item_id,
+        parent_level: "workset",
+        parent_id: item.workset_id,
+        state,
+        raw_status: item.status,
+        opened_at: item.created_at,
+        closed_at: state === "open" ? null : item.updated_at,
+        metadata: { number: item.number, next_action: item.next_action },
+      });
+    }
+    for (const activity of activities) {
+      const state = activity.status === "succeeded" ? "closed"
+        : activity.status === "blocked" ? "blocked"
+        : activity.status === "failed" ? "failed"
+        : activity.status === "canceled" ? "canceled"
+        : "open";
+      hierarchy.push({
+        level: "activity",
+        id: activity.activity_id,
+        parent_level: activity.parent_activity_id ? "activity" : activity.work_item_id ? "work_item" : "run",
+        parent_id: activity.parent_activity_id ?? activity.work_item_id ?? run.run_id,
+        state,
+        raw_status: activity.status,
+        opened_at: activity.created_at,
+        closed_at: activity.completed_at,
+        metadata: { type: activity.type },
+      });
+    }
+    for (const session of sessions) {
+      const normalized = session.status.toLowerCase();
+      const state = session.completed_at === null ? "open"
+        : normalized.includes("fail") || normalized === "interrupted" ? "failed"
+        : normalized.includes("block") ? "blocked"
+        : normalized.includes("cancel") ? "canceled"
+        : "closed";
+      hierarchy.push({
+        level: "activity_session",
+        id: session.activity_session_id,
+        parent_level: "activity",
+        parent_id: session.activity_id,
+        state,
+        raw_status: session.status,
+        opened_at: session.started_at,
+        closed_at: session.completed_at,
+        metadata: { session_id: session.session_id, model: session.model },
+      });
+    }
+
+    const turnNodes = new Map<string, TrajectoryHierarchyRecord>();
+    const toolNodes = new Map<string, TrajectoryHierarchyRecord>();
+    for (const event of events) {
+      const turnId = typeof event.payload["turn_id"] === "string" ? event.payload["turn_id"] : null;
+      if (turnId && event.event_type.startsWith("pi.agent_turn.")) {
+        const completed = event.event_type.endsWith("completed") || event.event_type.endsWith("interrupted");
+        turnNodes.set(turnId, {
+          level: "agent_turn",
+          id: turnId,
+          parent_level: "activity_session",
+          parent_id: event.activity_session_id,
+          state: event.event_type.endsWith("interrupted") ? "failed" : completed ? "closed" : "open",
+          raw_status: event.event_type.slice("pi.agent_turn.".length),
+          opened_at: turnNodes.get(turnId)?.opened_at ?? event.created_at,
+          closed_at: completed ? event.created_at : null,
+          metadata: { turn_index: event.payload["turn_index"] ?? null },
+        });
+      }
+      const callId = typeof event.payload["call_id"] === "string" ? event.payload["call_id"] : null;
+      if (callId && event.event_type.startsWith("pi.tool_call.")) {
+        const suffix = event.event_type.slice("pi.tool_call.".length);
+        const completed = suffix === "completed" || suffix === "incomplete";
+        toolNodes.set(callId, {
+          level: "tool_call",
+          id: callId,
+          parent_level: turnId ? "agent_turn" : "activity_session",
+          parent_id: turnId ?? event.activity_session_id,
+          state: suffix === "incomplete" || event.payload["status"] === "failed" ? "failed" : completed ? "closed" : "open",
+          raw_status: String(event.payload["status"] ?? suffix),
+          opened_at: toolNodes.get(callId)?.opened_at ?? event.created_at,
+          closed_at: completed ? event.created_at : null,
+          metadata: { tool_name: event.payload["tool_name"] ?? null },
+        });
+      }
+    }
+    hierarchy.push(...turnNodes.values(), ...toolNodes.values());
+    return hierarchy;
+  }
+
+  private buildTrajectoryResumeState(
+    runId: string,
+    hierarchy: TrajectoryHierarchyRecord[],
+    events: TrajectoryEventRecord[],
+  ): TrajectoryResumeState {
+    const openIds = (level: TrajectoryHierarchyRecord["level"]): string[] => hierarchy
+      .filter((node) => node.level === level && node.state === "open")
+      .map((node) => node.id);
+    const openActivities = openIds("activity");
+    const activeActivity = hierarchy.some((node) =>
+      node.level === "activity" && node.state === "open" && ["created", "claimed", "running"].includes(node.raw_status)
+    );
+    const readyActivity = hierarchy.some((node) =>
+      node.level === "activity" && node.state === "open" && node.raw_status === "ready"
+    );
+    const openRun = hierarchy.some((node) => node.level === "run" && node.state === "open");
+    return {
+      resumable: openRun && (openActivities.length > 0 || readyActivity),
+      next_action: activeActivity ? "resume_activity" : readyActivity ? "claim_activity" : null,
+      open_run_id: openRun ? runId : null,
+      open_workset_ids: openIds("workset"),
+      open_work_item_ids: openIds("work_item"),
+      open_activity_ids: openActivities,
+      open_activity_session_ids: openIds("activity_session"),
+      open_agent_turn_ids: openIds("agent_turn"),
+      open_tool_call_ids: openIds("tool_call"),
+      last_event_id: events.at(-1)?.event_id ?? null,
     };
   }
 
