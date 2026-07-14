@@ -40,10 +40,11 @@ describe("TrajectoryRuntime", () => {
         payload: { summary: "continue with validation" },
       });
       bridge.heartbeat?.({ phase: "validation" });
-      runtime.completePrAgentWorkflow(started.ids, {
+      const closeout = runtime.completePrAgentWorkflow(started.ids, {
         success: true,
         summary: "runtime test completed",
       });
+      assert.equal(closeout.complete, true);
 
       const state = runtime.getRunState(started.ids.run_id);
       assert.ok(state !== null);
@@ -58,8 +59,120 @@ describe("TrajectoryRuntime", () => {
           "runtime.workflow.heartbeat",
           "runtime.workflow.completing",
           "compatibility_trajectory.completed",
+          "runtime.workflow.closed",
         ],
       );
+    } finally {
+      store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects successful closeout while child remediation remains open", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-runtime-closeout-"));
+    const store = new AppStore(path.join(tempDir, "runtime.db"));
+    try {
+      const runtime = new TrajectoryRuntime(store);
+      const started = runtime.startPrAgentWorkflow({
+        repo_name: "test-repo",
+        pr_number: 13,
+        mode: "for-landing",
+        labels: ["for-landing"],
+      });
+      const child = runtime.createChildActivity(started.ids, {
+        type: "ci_diagnosis",
+        summary: "Diagnose the low-level failure before closeout.",
+        model_tier: "standard",
+        model_reason: "Diagnosis requires repository and CI context.",
+      });
+      assert.equal(child.accepted, true);
+
+      assert.throws(
+        () => runtime.completePrAgentWorkflow(started.ids, { success: true, summary: "premature" }),
+        /child activities remain open/,
+      );
+      const open = runtime.getCloseoutReport(started.ids.run_id);
+      assert.equal(open.complete, false);
+      assert.ok(open.open_activity_ids.includes(started.ids.activity_id));
+      assert.ok(open.open_activity_ids.includes(child.child_activity_id!));
+
+      const closed = runtime.completePrAgentWorkflow(started.ids, {
+        success: false,
+        summary: "Canceled after incomplete remediation was detected.",
+      });
+      assert.equal(closed.complete, true);
+      const state = runtime.getRunState(started.ids.run_id);
+      assert.equal(
+        state?.activities.find((activity) => activity.activity_id === child.child_activity_id)?.status,
+        "canceled",
+      );
+    } finally {
+      store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("resumes an open PR trajectory with a replacement session and reconciled execution leaves", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-runtime-resume-"));
+    const store = new AppStore(path.join(tempDir, "runtime.db"));
+    try {
+      const runtime = new TrajectoryRuntime(store);
+      const started = runtime.startOrResumePrAgentWorkflow({
+        repo_name: "test-repo",
+        pr_number: 14,
+        mode: "for-landing",
+        labels: ["for-landing"],
+        session_id: "pi-session-1",
+      });
+      assert.equal(started.resumed, false);
+      runtime.appendWorkflowEvent(started.ids, "pi.agent_turn.started", {
+        turn_id: `${started.ids.activity_session_id}:turn:0`,
+        turn_index: 0,
+      }, "pi-extension");
+      runtime.appendWorkflowEvent(started.ids, "pi.tool_call.started", {
+        call_id: "call-open",
+        tool_name: "bash",
+        turn_id: `${started.ids.activity_session_id}:turn:0`,
+        status: "started",
+      }, "pi-extension");
+
+      const open = runtime.getRunState(started.ids.run_id);
+      assert.equal(open?.resume.resumable, true);
+      assert.deepEqual(open?.resume.open_agent_turn_ids, [`${started.ids.activity_session_id}:turn:0`]);
+      assert.deepEqual(open?.resume.open_tool_call_ids, ["call-open"]);
+
+      const resumed = runtime.startOrResumePrAgentWorkflow({
+        repo_name: "test-repo",
+        pr_number: 14,
+        mode: "for-landing",
+        labels: ["for-landing"],
+        session_id: "pi-session-2",
+      });
+      assert.equal(resumed.resumed, true);
+      assert.equal(resumed.ids.run_id, started.ids.run_id);
+      assert.notEqual(resumed.ids.activity_session_id, started.ids.activity_session_id);
+      const priorSession = resumed.state.activity_sessions.find((session) =>
+        session.activity_session_id === started.ids.activity_session_id
+      );
+      assert.equal(priorSession?.status, "interrupted");
+      assert.ok(priorSession?.completed_at);
+      assert.deepEqual(resumed.state.resume.open_agent_turn_ids, []);
+      assert.deepEqual(resumed.state.resume.open_tool_call_ids, []);
+      assert.equal(resumed.state.resume.open_activity_session_ids.length, 1);
+      const reconciledToolCall = resumed.state.hierarchy.find((record) =>
+        record.level === "tool_call" && record.id === "call-open"
+      );
+      assert.equal(reconciledToolCall?.parent_level, "agent_turn");
+      assert.equal(reconciledToolCall?.parent_id, `${started.ids.activity_session_id}:turn:0`);
+      assert.equal(reconciledToolCall?.state, "failed");
+      assert.ok(resumed.state.events.some((event) => event.event_type === "compatibility_trajectory.resumed"));
+      assert.ok(resumed.state.events.some((event) => event.event_type === "runtime.workflow.resumed"));
+
+      const closeout = runtime.completePrAgentWorkflow(resumed.ids, {
+        success: false,
+        summary: "resume test closeout",
+      });
+      assert.equal(closeout.complete, true);
     } finally {
       store.close();
       rmSync(tempDir, { recursive: true, force: true });

@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 import YAML from "yaml";
 import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
+import { AppStore } from "./app_store";
 import {
   evidenceSummaryFromPrDetailsAndContext,
   renderReviewGateStatusComment,
@@ -81,6 +82,7 @@ import {
   sanitizeSpanAttributes,
   withTelemetrySpan,
 } from "./telemetry";
+import { TrajectoryRuntime, type RuntimeStartResult } from "./trajectory_runtime";
 
 export { renderReviewGateStatusComment } from "./evidence_comment";
 export { validateGitRef } from "./git_ref";
@@ -1604,6 +1606,7 @@ export async function processPr(
   db: SyncStore | null = null,
   repoName: string | null = null,
   mergeRules = "",
+  appStore: AppStore | null = null,
 ): Promise<boolean> {
   const inputResult = normalizePrProcessingInput(pr, defaultBranch, mode);
 
@@ -1809,6 +1812,38 @@ export async function processPr(
     repoName,
     remediationPolicy,
   );
+  let trajectoryRuntime: TrajectoryRuntime | null = null;
+  let trajectoryStart: RuntimeStartResult | null = null;
+  let trajectoryClosed = false;
+  if (appStore && repoName) {
+    trajectoryRuntime = new TrajectoryRuntime(appStore);
+    trajectoryStart = trajectoryRuntime.startOrResumePrAgentWorkflow({
+      repo_name: repoName,
+      repo_path: process.cwd(),
+      pr_number: prNumber,
+      mode,
+      title,
+      url,
+      labels: prDetailsLabels(prDetails),
+      base_ref: baseBranch,
+      head_ref: headBranch,
+      disposition_setting: remediationPolicy.effective_mode,
+      repository_remediation_mode: remediationPolicy.repository_mode,
+      risk_remediation_ceiling: remediationPolicy.risk_ceiling,
+      global_remediation_ceiling: remediationPolicy.global_ceiling,
+    });
+    workItem["trajectory_refs"] = trajectoryStart.ids;
+    workItem["trajectory"] = trajectoryStart.state;
+    workItem["resumed"] = trajectoryStart.resumed;
+    span.setAttributes(sanitizeSpanAttributes({
+      "merge_god.run_id": trajectoryStart.ids.run_id,
+      "merge_god.workset_id": trajectoryStart.ids.workset_id,
+      "merge_god.work_item_id": trajectoryStart.ids.work_item_id,
+      "merge_god.activity_id": trajectoryStart.ids.activity_id,
+      "merge_god.activity_session_id": trajectoryStart.ids.activity_session_id,
+      "merge_god.trajectory_resumed": trajectoryStart.resumed,
+    }));
+  }
 
   try {
     const startedAt = Date.now();
@@ -1816,6 +1851,9 @@ export async function processPr(
       timeout: 3600,
       gitObserver: createGitOpsObserver(),
       agentObserver: createAgentObservationObserver(),
+      trajectory: trajectoryRuntime && trajectoryStart
+        ? trajectoryRuntime.bridgeForPiAgent(trajectoryStart.ids)
+        : undefined,
     });
     const duration = (Date.now() - startedAt) / 1000;
     const agentUsage = {
@@ -1901,9 +1939,49 @@ export async function processPr(
       completionPlan.notification.tags,
     );
 
+    if (trajectoryRuntime && trajectoryStart) {
+      const closeout = trajectoryRuntime.completePrAgentWorkflow(trajectoryStart.ids, {
+        success: agentDecision.success,
+        summary: completionPlan.success
+          ? "Pi agent completed and GitHub merge evidence was verified"
+          : agentDecision.failure_reason,
+        error_message: agentDecision.failure_reason,
+      });
+      trajectoryClosed = true;
+      logJson("trajectory_closeout", {
+        pr_number: prNumber,
+        run_id: trajectoryStart.ids.run_id,
+        complete: closeout.complete,
+        closeout,
+      });
+    }
+
     return agentDecision.success;
   } catch (e) {
     const reason = errMsg(e);
+    if (trajectoryRuntime && trajectoryStart && !trajectoryClosed) {
+      try {
+        const closeout = trajectoryRuntime.completePrAgentWorkflow(trajectoryStart.ids, {
+          success: false,
+          summary: "PR processing failed before verified completion",
+          error_message: reason,
+        });
+        trajectoryClosed = true;
+        logJson("trajectory_closeout", {
+          pr_number: prNumber,
+          run_id: trajectoryStart.ids.run_id,
+          complete: closeout.complete,
+          closeout,
+        });
+      } catch (closeoutError) {
+        logJson("trajectory_closeout", {
+          pr_number: prNumber,
+          run_id: trajectoryStart.ids.run_id,
+          complete: false,
+          error: errMsg(closeoutError),
+        });
+      }
+    }
     const exceptionPlan = buildPrAgentExceptionPlan(inputResult.value, reason);
     logJson("process_pr", {
       action: "exception",
@@ -2291,12 +2369,14 @@ export async function main(): Promise<void> {
   });
 
   let db: SyncStore | null = null;
+  let appStore: AppStore | null = null;
   let repoName: string | null = null;
   if (DB_AVAILABLE) {
     try {
       const dbPath = resolve("merge-god-state.db");
       db = new SyncStore(dbPath);
       await db.initialize();
+      appStore = new AppStore(dbPath);
       repoName = basename(repoPath);
       logJson("startup", { database_enabled: true, db_path: dbPath, repo_name: repoName });
     } catch (e) {
@@ -2305,6 +2385,7 @@ export async function main(): Promise<void> {
         warning: "Continuing without database persistence",
       });
       db = null;
+      appStore = null;
     }
   } else {
     logJson("startup", {
@@ -2476,6 +2557,7 @@ export async function main(): Promise<void> {
             db,
             repoName,
             mergeRules,
+            appStore,
           );
           if (success && prNumber) processingPrs.delete(prNumber);
           totalProcessed++;

@@ -74,6 +74,12 @@ export interface CoordinationTrajectoryBridge {
     evidence_refs?: string[];
     metadata?: Record<string, unknown>;
   }): unknown | Promise<unknown>;
+  closeActivity?(input: {
+    activity_id: string;
+    success: boolean;
+    summary: string;
+    error_message?: string | null;
+  }): unknown | Promise<unknown>;
 }
 
 export type { FollowUpPrInput } from "./follow_up_pr_model";
@@ -438,6 +444,29 @@ export class CoordinationServer {
                 metadata,
               }),
             ).then((activity) => this._send(res, 200, { ok: true, activity }));
+          })
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
+      if (url === "/trajectory/close-activity") {
+        if (!this._trajectory?.closeActivity) {
+          this._send(res, 404, { ok: false, error: "no trajectory close-activity bridge" });
+          return;
+        }
+        this._readBody(req)
+          .then((body) => {
+            const activityId = typeof body["activity_id"] === "string" ? body["activity_id"].trim() : "";
+            const summary = typeof body["summary"] === "string" ? body["summary"].trim() : "";
+            if (!activityId || !summary || typeof body["success"] !== "boolean") {
+              this._send(res, 400, { ok: false, error: "activity_id, success, and summary are required" });
+              return;
+            }
+            return Promise.resolve(this._trajectory!.closeActivity!({
+              activity_id: activityId,
+              success: body["success"] as boolean,
+              summary,
+              error_message: typeof body["error_message"] === "string" ? body["error_message"] : null,
+            })).then((activity) => this._send(res, 200, { ok: true, activity }));
           })
           .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
         return;
