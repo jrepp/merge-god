@@ -48,7 +48,7 @@ control through **GitHub labels** — you decide *which* PRs get processed and
   builds a structured prompt, and hands it to the agent.
 - **`pi` + merge-god extension** — the AI coding agent (must be on your `PATH`).
   merge-god talks to pi through a tiny **coordination API** and a custom pi
-  extension (`pi/extensions/merge-god`) that exposes `merge_god_*` tools. See
+  extension (`pi/extensions/merge-god`) that exposes the compact `mg_*` tools. See
   [how it works](./how-it-works/).
 
 ## Where to next?

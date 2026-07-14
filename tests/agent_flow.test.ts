@@ -12,20 +12,20 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { AppStore } from "../app_store";
 import {
   CoordinationServer,
-  findExtension,
+  DEFAULT_INSTRUCTION,
+  buildPiExtensionInjection,
   linkNodeModulesIntoWorktree,
   loadPiDotEnv,
-  runPiAgent,
   type CoordinationTrajectoryBridge,
   type PiAgentResult,
 } from "../coordination";
+import { PI_TOOL_NAMES, PI_TOOL_SURFACE } from "../pi/tool_contract";
 import {
   evidenceSummaryFromPrContext,
   renderReviewGateStatusComment,
@@ -41,7 +41,8 @@ import {
   piAgentFailureReason,
 } from "../pr-loop";
 import { reviewGateStatusesFromContext } from "../review_gate_status";
-import { TrajectoryRuntime } from "../trajectory_runtime";
+import { GitOps } from "../git_ops";
+import { PiAgentHarness } from "./helpers/pi_agent_harness";
 
 class MockTrajectoryBridge implements CoordinationTrajectoryBridge {
   events: unknown[] = [];
@@ -280,6 +281,103 @@ describe("agent flow: coordination round-trip", () => {
       assert.equal(res.status, 200);
       assert.equal(body.ok, true);
       assert.equal(body.trajectory.run.run_id, "snapshot-run");
+    } finally {
+      await s.stop();
+    }
+  });
+
+  test("captures the injected Pi tool surface and paired call reliability", async () => {
+    const bridge = new MockTrajectoryBridge();
+    const s = new CoordinationServer("127.0.0.1", 0, bridge);
+    s.setAgentTraceContext({
+      trace_id: "1".repeat(32),
+      parent_span_id: "2".repeat(16),
+      traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+      run_id: "run-1",
+      activity_id: "activity-1",
+    }, "/extension/index.ts");
+    await s.start();
+    try {
+      const surfaceRes = await fetch(`${s.baseUrl}/tool-surface`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tools: [{
+            name: PI_TOOL_NAMES.context,
+            label: "merge-god context",
+            description: "Load context",
+            parameter_schema: { type: "object", properties: {} },
+            prompt_guideline_count: 1,
+          }],
+        }),
+      });
+      assert.equal(surfaceRes.status, 200);
+
+      for (const payload of [
+        {
+          phase: "started",
+          call_id: "call-1",
+          tool_name: PI_TOOL_NAMES.context,
+          started_at: "2026-07-13T12:00:00.000Z",
+          input_keys: [],
+        },
+        {
+          phase: "completed",
+          call_id: "call-1",
+          tool_name: PI_TOOL_NAMES.context,
+          started_at: "2026-07-13T12:00:00.000Z",
+          duration_ms: 12,
+          success: true,
+        },
+      ]) {
+        const res = await fetch(`${s.baseUrl}/tool-call`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        assert.equal(res.status, 200);
+      }
+      const incompleteRes = await fetch(`${s.baseUrl}/tool-call`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          phase: "started",
+          call_id: "call-2",
+          tool_name: PI_TOOL_NAMES.context,
+          started_at: new Date().toISOString(),
+          input_keys: [],
+        }),
+      });
+      assert.equal(incompleteRes.status, 200);
+      await s.finalizeToolCalls();
+
+      const toolingRes = await fetch(`${s.baseUrl}/tooling`);
+      const body = (await toolingRes.json()) as {
+        tooling: {
+          surface: Array<{ name: string }>;
+          calls: Array<{ status: string; duration_ms: number }>;
+          reliability: { completion_ratio: number; succeeded: number; failed: number; incomplete: number };
+        };
+      };
+      assert.deepEqual(body.tooling.surface.map((tool) => tool.name), [PI_TOOL_NAMES.context]);
+      assert.equal(body.tooling.calls.length, 2);
+      assert.equal(body.tooling.calls[0]?.status, "succeeded");
+      assert.equal(body.tooling.calls[0]?.duration_ms, 12);
+      assert.equal(body.tooling.calls[1]?.status, "incomplete");
+      assert.equal(body.tooling.reliability.completion_ratio, 0.5);
+      assert.equal(body.tooling.reliability.succeeded, 1);
+      assert.equal(body.tooling.reliability.failed, 0);
+      assert.equal(body.tooling.reliability.incomplete, 1);
+      assert.deepEqual(
+        bridge.events.map((event) => (event as { event_type: string }).event_type),
+        [
+          "pi.tool_surface.registered",
+          "pi.tool_call.started",
+          "pi.tool_call.completed",
+          "pi.tool_call.started",
+          "pi.tool_call.incomplete",
+        ],
+      );
     } finally {
       await s.stop();
     }
@@ -910,10 +1008,33 @@ describe("PR context inference", () => {
 });
 
 describe("agent flow: runPiAgent result contract", () => {
+  test("keeps Pi startup instruction compact and delegates detail to explicit tools", () => {
+    assert.deepEqual(PI_TOOL_SURFACE, ["mg_context", "mg_activity", "mg_follow_up", "mg_complete"]);
+    assert.ok(DEFAULT_INSTRUCTION.length < 500);
+    assert.match(DEFAULT_INSTRUCTION, new RegExp(PI_TOOL_NAMES.context));
+    assert.match(DEFAULT_INSTRUCTION, new RegExp(PI_TOOL_NAMES.activity));
+    assert.doesNotMatch(DEFAULT_INSTRUCTION, /merge_god_trajectory_state|merge_god_debug_snapshot/);
+    const injection = buildPiExtensionInjection({
+      extension_path: "/tmp/merge-god-extension.ts",
+      api_url: "http://127.0.0.1:1234",
+      instruction: DEFAULT_INSTRUCTION,
+      trace_context: {
+        trace_id: "1".repeat(32),
+        parent_span_id: "2".repeat(16),
+        traceparent: `00-${"1".repeat(32)}-${"2".repeat(16)}-01`,
+      },
+    });
+    assert.deepEqual(injection.expected_tools, PI_TOOL_SURFACE);
+    assert.deepEqual(injection.cli_args.slice(0, 6), [
+      "--print", "--mode", "json", "--no-session", "--extension", "/tmp/merge-god-extension.ts",
+    ]);
+    assert.equal(injection.environment["MERGE_GOD_API"], "http://127.0.0.1:1234");
+  });
+
   test("PiAgentResult carries the four fields (returncode/stdout/stderr/result)", () => {
     // Shape contract: runPiAgent returns an object (the TS analogue of Python's
     // `(returncode, stdout, stderr, result)` 4-tuple). A result is recorded by
-    // the agent only if it calls merge_god_complete; otherwise it is null.
+    // the agent only if it calls mg_complete; otherwise it is null.
     const success: PiAgentResult = {
       returncode: 0,
       stdout: "Agent completed successfully",
@@ -1572,6 +1693,17 @@ describe("agent flow: runPiAgent result contract", () => {
       ),
       ["low-risk"],
     );
+    assert.deepEqual(
+      agentAnnotationLabelsForCompletion(
+        {
+          status: "success",
+          summary: "Local validation and CI checks passed, but completion was not verified.",
+          annotation_labels: ["low-risk"],
+        },
+        "GitHub reports the PR is OPEN and unmerged",
+      ),
+      ["low-risk"],
+    );
   });
 
   test("loadPiDotEnv only loads pi runtime secrets", () => {
@@ -1611,161 +1743,42 @@ describe("agent flow: runPiAgent result contract", () => {
     }
   });
 
-  test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
-    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-flow-"));
-    const binDir = path.join(tempDir, "bin");
-    const repoDir = path.join(tempDir, "repo");
-    const dbPath = path.join(tempDir, "trajectory.db");
-    const runnerPath = path.join(tempDir, "fake-pi-runner.mjs");
-    const piPath = path.join(binDir, "pi");
-    const tsxLoader = import.meta.resolve("tsx");
-    const store = new AppStore(dbPath);
-
+  test("detached agent worktrees can start from an explicit PR-head ref", () => {
+    const repoDir = mkdtempSync(path.join(tmpdir(), "mg-agent-worktree-ref-"));
+    let worktree: ReturnType<GitOps["createDetachedWorktree"]> | null = null;
     try {
-      mkdirSync(binDir);
-      mkdirSync(repoDir);
-      writeFileSync(path.join(repoDir, "README.md"), "# fake repo\n");
-      writeFileSync(path.join(repoDir, ".env"), "ZAI_API_KEY=fake-zai-key\nANTHROPIC_API_KEY=ignored\n");
       for (const args of [
         ["init"],
         ["config", "user.email", "merge-god@example.test"],
         ["config", "user.name", "merge-god test"],
-        ["add", "README.md"],
-        ["commit", "-m", "Initial commit"],
       ]) {
-        const result = spawnSync("git", args, { cwd: repoDir, encoding: "utf8" });
-        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.equal(spawnSync("git", args, { cwd: repoDir }).status, 0);
       }
-      writeFileSync(
-        runnerPath,
-        `
-const extensionIndex = process.argv.indexOf("--extension");
-if (extensionIndex === -1 || !process.argv[extensionIndex + 1]) {
-  console.error("missing --extension argument");
-  process.exit(2);
-}
+      writeFileSync(path.join(repoDir, "state.txt"), "base\n");
+      assert.equal(spawnSync("git", ["add", "state.txt"], { cwd: repoDir }).status, 0);
+      assert.equal(spawnSync("git", ["commit", "-m", "base"], { cwd: repoDir }).status, 0);
+      assert.equal(spawnSync("git", ["branch", "pr-head"], { cwd: repoDir }).status, 0);
+      assert.equal(spawnSync("git", ["checkout", "pr-head"], { cwd: repoDir }).status, 0);
+      writeFileSync(path.join(repoDir, "state.txt"), "pull request\n");
+      assert.equal(spawnSync("git", ["commit", "-am", "pr head"], { cwd: repoDir }).status, 0);
+      assert.equal(spawnSync("git", ["checkout", "-"], { cwd: repoDir }).status, 0);
 
-const extensionModule = await import(process.argv[extensionIndex + 1]);
-const tools = new Map();
-console.log(JSON.stringify({ zaiApiKeyLoaded: process.env.ZAI_API_KEY === "fake-zai-key" }));
-extensionModule.default({
-  registerTool(tool) {
-    tools.set(tool.name, tool);
-  },
-});
+      worktree = new GitOps(repoDir).createDetachedWorktree("pr-head");
+      assert.equal(readFileSync(path.join(worktree.path, "state.txt"), "utf8"), "pull request\n");
+    } finally {
+      worktree?.cleanup();
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 
-async function callTool(name, params = {}) {
-  const tool = tools.get(name);
-  if (!tool) throw new Error("missing tool: " + name);
-  const result = await tool.execute("fake-call-id", params);
-  console.log(JSON.stringify({ tool: name, details: result.details }));
-  return result;
-}
-
-const context = await callTool("merge_god_context");
-const state = await callTool("merge_god_trajectory_state");
-const runId = state.details?.data?.trajectory?.run?.run_id ?? null;
-await callTool("merge_god_trajectory_event", {
-  event_type: "decision.made",
-  payload: {
-    summary: "fake pi inspected coordination trajectory state",
-    run_id: runId,
-    context_ok: context.details?.ok === true,
-  },
-});
-await callTool("merge_god_observe", {
-  level: "info",
-  category: "context",
-  summary: "fake pi has enough context to continue",
-  signal_refs: ["evidence://fake-pi/context"],
-  grounding_refs: ["AGENTS.md"],
-  confidence: 0.9,
-  suggested_next: "create child activity",
-});
-await callTool("merge_god_debug_snapshot");
-await callTool("merge_god_propose_next", {
-  next_action: "create_child_activity",
-  rationale: "fake pi verified trajectory state and needs scoped CI diagnosis",
-  evidence_refs: ["evidence://fake-pi/state-read"],
-});
-await callTool("merge_god_create_child_activity", {
-  type: "ci_diagnosis",
-  summary: "fake pi requested a scoped CI diagnosis child activity",
-  model_tier: "standard",
-  model_reason: "CI diagnosis needs moderate reasoning over trajectory and check state.",
-  evidence_refs: ["evidence://fake-pi/state-read"],
-});
-await callTool("merge_god_complete", {
-  status: "success",
-  summary: "fake pi used merge-god coordination trajectory state",
-  annotations: {
-    labels: ["large", "embark-candidate"],
-  },
-  telemetry: {
-    model: "fake-pi-model",
-    usage: {
-      input_tokens: 10,
-      output_tokens: 5,
-      total_tokens: 15,
-      source: "fake-pi-provider",
-    },
-  },
-});
-`,
-      );
-      writeFileSync(
-        piPath,
-        `#!/bin/sh
-exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$@"
-`,
-      );
-      chmodSync(piPath, 0o755);
-
-      const runtime = new TrajectoryRuntime(store);
-      const started = runtime.startPrAgentWorkflow({
-        repo_name: "owner/repo",
-        repo_path: repoDir,
-        pr_number: 42,
-        mode: "for-review",
-        title: "Use trajectory state",
-        labels: ["for-review"],
-        model: "fake-pi",
-      });
-      const gitEvents: string[] = [];
-      const gitMetrics: string[] = [];
-      const observations: string[] = [];
-
-      const result = await runPiAgent(
-        {
-          kind: "trajectory_activity",
-          repo: "owner/repo",
-          repo_path: repoDir,
-          pr_number: 42,
-          mode: "for-review",
-          title: "Use trajectory state",
-          prompt: "Use the merge-god trajectory state before reporting completion.",
-        },
-        repoDir,
-        {
-          extensionPath: findExtension(),
-          extraEnv: { PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
-          trajectory: runtime.bridgeForPiAgent(started.ids),
-          gitObserver: {
-            onEvent(event) {
-              gitEvents.push(event.event);
-            },
-            onMetric(metric) {
-              gitMetrics.push(metric.name);
-            },
-          },
-          agentObserver(observation) {
-            observations.push(observation.summary);
-          },
-          timeout: 10,
-        },
-      );
+  test("runPiAgent launches pi extension tools that use coordination trajectory state", async () => {
+    const harness = new PiAgentHarness();
+    try {
+      const run = await harness.run("success");
+      const { result, state, started } = run;
 
       assert.equal(result.returncode, 0, result.stderr || result.stdout);
+      assert.ok(run.elapsed_ms < 5000, "pi should stop promptly after mg_complete");
       assert.match(result.stdout, /"zaiApiKeyLoaded":true/);
       assert.doesNotMatch(result.stdout, /fake-zai-key/);
       assert.equal(result.result?.["status"], "success");
@@ -1782,28 +1795,51 @@ exec node --import ${JSON.stringify(tsxLoader)} ${JSON.stringify(runnerPath)} "$
           source: "fake-pi-provider",
         },
       });
-      assert.match(result.stdout, /"tool":"merge_god_trajectory_state"/);
-      assert.match(result.stdout, /"tool":"merge_god_observe"/);
-      assert.match(result.stdout, /"tool":"merge_god_debug_snapshot"/);
-      assert.match(result.stdout, /"tool":"merge_god_propose_next"/);
-      assert.match(result.stdout, /"tool":"merge_god_create_child_activity"/);
-      assert.ok(gitEvents.includes("git.worktree.created"));
-      assert.ok(gitEvents.includes("git.worktree.removed"));
-      assert.ok(gitMetrics.includes("git.command.duration_ms"));
-      assert.deepEqual(observations, ["fake pi has enough context to continue"]);
+      assert.match(result.stdout, /"tool":"mg_context"/);
+      assert.match(result.stdout, /"tool":"mg_activity"/);
+      assert.ok(run.git_events.includes("git.worktree.created"));
+      assert.ok(run.git_events.includes("git.worktree.removed"));
+      assert.ok(run.git_metrics.includes("git.command.duration_ms"));
+      assert.deepEqual(run.observations, ["fake pi has enough context to continue"]);
+      assert.equal(result.tooling?.injection.surface_scope, "all-configured");
+      assert.equal(result.tooling?.surface.length, 5);
+      assert.ok(result.tooling?.surface.some((tool) => tool.name === "bash" && tool.active));
+      assert.deepEqual(
+        result.tooling?.surface.filter((tool) => tool.name.startsWith("mg_")).map((tool) => tool.name).sort(),
+        [...PI_TOOL_SURFACE].sort(),
+      );
+      assert.equal(result.tooling?.turns.length, 1);
+      assert.equal(result.tooling?.turns[0]?.status, "completed");
+      assert.equal(result.tooling?.reliability.started, 9);
+      assert.equal(result.tooling?.reliability.completed, 9);
+      assert.equal(result.tooling?.reliability.failed, 0);
+      assert.equal(result.tooling?.reliability.incomplete, 0);
 
-      const state = runtime.getRunState(started.ids.run_id);
-      assert.ok(state !== null);
-      assert.ok(state!.events.some((event) => event.event_type === "decision.made"));
-      assert.ok(state!.events.some((event) => event.event_type === "agent.observation"));
-      assert.ok(state!.events.some((event) => event.event_type === "activity.next_action.proposed"));
-      assert.ok(state!.events.some((event) => event.event_type === "activity.child_created"));
-      assert.ok(state!.activities.some((activity) => activity.parent_activity_id === started.ids.activity_id && activity.type === "ci_diagnosis"));
-      const workItem = state!.work_items.find((item) => item.work_item_id === started.ids.work_item_id);
-      assert.equal(workItem?.next_action, "create_child_activity");
+      assert.ok(state.events.some((event) => event.event_type === "decision.made"));
+      assert.ok(state.events.some((event) => event.event_type === "agent.observation"));
+      assert.ok(state.events.some((event) => event.event_type === "activity.next_action.proposed"));
+      assert.ok(state.events.some((event) => event.event_type === "activity.child_created"));
+      assert.ok(state.events.some((event) => event.event_type === "activity.completed"));
+      assert.ok(state.events.some((event) => event.event_type === "pi.agent_turn.started"));
+      assert.ok(state.events.some((event) => event.event_type === "pi.agent_turn.completed"));
+      assert.ok(state.events.some((event) => event.event_type === "pi.extension.injected"));
+      assert.ok(state.events.some((event) => event.event_type === "pi.tool_surface.registered"));
+      const completedToolEvents = state.events.filter((event) => event.event_type === "pi.tool_call.completed");
+      assert.equal(completedToolEvents.length, 9);
+      assert.equal(
+        (completedToolEvents[0]?.payload["trace_context"] as Record<string, unknown>)?.["run_id"],
+        started.ids.run_id,
+      );
+      assert.equal(completedToolEvents[0]?.payload["turn_id"], `${started.ids.activity_session_id}:turn:0`);
+      assert.ok(state.hierarchy.some((node) => node.level === "agent_turn" && node.state === "closed"));
+      assert.equal(state.hierarchy.filter((node) => node.level === "tool_call").length, 9);
+      assert.ok(state.activities.some((activity) =>
+        activity.parent_activity_id === started.ids.activity_id && activity.type === "ci_diagnosis"
+      ));
+      const workItem = state.work_items.find((item) => item.work_item_id === started.ids.work_item_id);
+      assert.equal(workItem?.next_action, "resume_activity");
     } finally {
-      store.close();
-      rmSync(tempDir, { recursive: true, force: true });
+      harness.close();
     }
   });
 });

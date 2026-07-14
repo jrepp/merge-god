@@ -1,5 +1,7 @@
 import {
+  context,
   metrics,
+  propagation,
   trace,
   SpanStatusCode,
   type Span,
@@ -45,6 +47,8 @@ let promptRenderedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["creat
 let promptSizeHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null;
 let agentRunCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null;
 let agentDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null;
+let toolCallCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null;
+let toolCallDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null;
 
 function envText(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name];
@@ -332,11 +336,21 @@ function meterInstruments() {
     description: "Agent run duration in seconds",
     unit: "s",
   });
+  toolCallCounter ??= meter.createCounter("merge_god.pi.tool_call", {
+    description: "Pi extension tool call count by tool and result",
+    unit: "1",
+  });
+  toolCallDurationHistogram ??= meter.createHistogram("merge_god.pi.tool_call.duration", {
+    description: "Pi extension tool call duration in milliseconds",
+    unit: "ms",
+  });
   return {
     promptRenderedCounter,
     promptSizeHistogram,
     agentRunCounter,
     agentDurationHistogram,
+    toolCallCounter,
+    toolCallDurationHistogram,
   };
 }
 
@@ -379,6 +393,42 @@ export function recordAgentRun(
     duration_seconds: durationSeconds,
     ...attributes,
   });
+}
+
+export function recordPiToolCall(
+  toolName: string,
+  success: boolean,
+  durationMs: number,
+  attributes: Record<string, unknown> = {},
+  traceparent?: string | null,
+  startedAt?: number,
+): void {
+  const attrs = sanitizeSpanAttributes({
+    "merge_god.tool_name": toolName,
+    "merge_god.result_status": success ? "success" : "failure",
+    "merge_god.duration_ms": durationMs,
+    ...attributes,
+  });
+  const instruments = meterInstruments();
+  instruments.toolCallCounter.add(1, attrs as MetricAttributes);
+  instruments.toolCallDurationHistogram.record(durationMs, attrs as MetricAttributes);
+
+  const parentContext = traceparent
+    ? propagation.extract(context.active(), { traceparent })
+    : context.active();
+  const span = telemetryTracer().startSpan(
+    "merge_god.pi_tool_call",
+    {
+      attributes: attrs,
+      ...(startedAt === undefined ? {} : { startTime: startedAt }),
+    },
+    parentContext,
+  );
+  span.setStatus({
+    code: success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+    ...(success ? {} : { message: "Pi extension tool call failed" }),
+  });
+  span.end(startedAt === undefined ? undefined : startedAt + Math.max(0, durationMs));
 }
 
 export async function withTelemetrySpan<T>(

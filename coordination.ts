@@ -6,12 +6,13 @@
  *
  * merge-god pushes a *work item* — the gathered prompt/context for a PR or
  * issue — to a tiny local HTTP server. The pi extension's tools
- * (`merge_god_context`, `merge_god_complete`) pull that work item and report
+ * (`mg_context`, `mg_complete`) pull that work item and report
  * results back over the same HTTP API. This replaces the former
  * `bob --json <prompt>` subprocess contract.
  */
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, readFileSync, symlinkSync } from "node:fs";
@@ -26,8 +27,10 @@ import {
   stringArray,
 } from "./follow_up_pr_model";
 import { GitOps, type GitOpsObserver } from "./git_ops";
+import { PI_AGENT_INSTRUCTION, PI_TOOL_SURFACE } from "./pi/tool_contract";
 import {
   recordAgentRun,
+  recordPiToolCall,
   recordPromptRendered,
   sanitizeSpanAttributes,
   withTelemetrySpan,
@@ -114,6 +117,69 @@ export interface AgentObservation extends AgentObservationInput {
   timestamp: string;
 }
 
+export interface PiToolSurfaceEntry {
+  name: string;
+  label: string;
+  description: string;
+  parameter_schema: Record<string, unknown>;
+  prompt_guideline_count: number;
+  active: boolean;
+  source_info: Record<string, unknown>;
+}
+
+export interface PiToolCallMeasurement {
+  call_id: string;
+  tool_name: string;
+  status: "started" | "succeeded" | "failed" | "incomplete";
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  input_keys: string[];
+  error: string | null;
+  turn_id: string | null;
+  lifecycle_anomalies: string[];
+}
+
+export interface PiAgentTurnMeasurement {
+  turn_id: string;
+  turn_index: number;
+  status: "started" | "completed" | "interrupted";
+  started_at: string;
+  completed_at: string | null;
+  tool_call_ids: string[];
+}
+
+export interface PiToolingSnapshot {
+  injection: {
+    method: "pi-cli-extension";
+    extension_path: string | null;
+    surface_scope: "extension" | "all-configured";
+  };
+  surface: PiToolSurfaceEntry[];
+  turns: PiAgentTurnMeasurement[];
+  calls: PiToolCallMeasurement[];
+  reliability: {
+    started: number;
+    completed: number;
+    succeeded: number;
+    failed: number;
+    incomplete: number;
+    protocol_errors: number;
+    completion_ratio: number;
+  };
+}
+
+export interface AgentTraceContext {
+  trace_id: string;
+  parent_span_id: string;
+  traceparent: string;
+  run_id?: string;
+  workset_id?: string;
+  work_item_id?: string;
+  activity_id?: string;
+  activity_session_id?: string | null;
+}
+
 /** Locate the merge-god pi extension entry, walking up from this file. */
 export function findExtension(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -132,6 +198,41 @@ export function findExtension(): string {
     "Could not find the merge-god pi extension at pi/extensions/merge-god/index.ts. " +
       "Run from the merge-god repository or set MERGE_GOD_EXTENSION.",
   );
+}
+
+export interface PiExtensionInjectionPlan {
+  method: "pi-cli-extension";
+  extension_path: string;
+  expected_tools: string[];
+  cli_args: string[];
+  environment: Record<string, string>;
+}
+
+export function buildPiExtensionInjection(input: {
+  extension_path: string;
+  api_url: string;
+  trace_context: AgentTraceContext;
+  instruction: string;
+}): PiExtensionInjectionPlan {
+  return {
+    method: "pi-cli-extension",
+    extension_path: input.extension_path,
+    expected_tools: [...PI_TOOL_SURFACE],
+    cli_args: [
+      "--print",
+      "--mode",
+      "json",
+      "--no-session",
+      "--extension",
+      input.extension_path,
+      input.instruction,
+    ],
+    environment: {
+      MERGE_GOD_API: input.api_url,
+      MERGE_GOD_TRACEPARENT: input.trace_context.traceparent,
+      MERGE_GOD_TRACE_CONTEXT: JSON.stringify(input.trace_context),
+    },
+  };
 }
 
 function* parents(dir: string): Generator<string> {
@@ -161,6 +262,12 @@ export class CoordinationServer {
   private _gitObserver: GitOpsObserver | null;
   private _agentObserver: ((observation: AgentObservation) => void) | null;
   private _resultListeners = new Set<(result: Record<string, unknown>) => void>();
+  private _toolSurface: PiToolSurfaceEntry[] = [];
+  private _toolCalls = new Map<string, PiToolCallMeasurement>();
+  private _agentTurns = new Map<string, PiAgentTurnMeasurement>();
+  private _extensionPath: string | null = null;
+  private _toolSurfaceScope: "extension" | "all-configured" = "extension";
+  private _traceContext: AgentTraceContext | null = null;
   host: string;
   port: number;
 
@@ -234,6 +341,75 @@ export class CoordinationServer {
     this._trajectory = trajectory;
   }
 
+  setAgentTraceContext(traceContext: AgentTraceContext, extensionPath: string): void {
+    this._traceContext = traceContext;
+    this._extensionPath = extensionPath;
+  }
+
+  getToolingSnapshot(): PiToolingSnapshot {
+    const calls = [...this._toolCalls.values()];
+    const succeeded = calls.filter((call) => call.status === "succeeded").length;
+    const failed = calls.filter((call) => call.status === "failed").length;
+    const completed = succeeded + failed;
+    const incomplete = calls.filter((call) => call.status === "started" || call.status === "incomplete").length;
+    const protocolErrors = calls.reduce((count, call) => count + call.lifecycle_anomalies.length, 0);
+    return {
+      injection: {
+        method: "pi-cli-extension",
+        extension_path: this._extensionPath,
+        surface_scope: this._toolSurfaceScope,
+      },
+      surface: [...this._toolSurface],
+      turns: [...this._agentTurns.values()],
+      calls,
+      reliability: {
+        started: calls.length,
+        completed,
+        succeeded,
+        failed,
+        incomplete,
+        protocol_errors: protocolErrors,
+        completion_ratio: calls.length === 0 ? 1 : completed / calls.length,
+      },
+    };
+  }
+
+  async finalizeToolCalls(): Promise<void> {
+    for (const call of this._toolCalls.values()) {
+      if (call.status !== "started") continue;
+      call.status = "incomplete";
+      const durationMs = Math.max(0, Date.now() - Date.parse(call.started_at));
+      call.duration_ms = durationMs;
+      call.completed_at = new Date().toISOString();
+      call.error = "Pi process exited before the extension reported tool completion";
+      recordPiToolCall(call.tool_name, false, durationMs, {
+        "merge_god.tool_call_id": call.call_id,
+        "merge_god.tool_call_incomplete": true,
+        "merge_god.run_id": this._traceContext?.run_id,
+        "merge_god.activity_id": this._traceContext?.activity_id,
+      }, this._traceContext?.traceparent, Date.parse(call.started_at));
+      if (this._trajectory) {
+        await Promise.resolve(this._trajectory.appendEvent({
+          event_type: "pi.tool_call.incomplete",
+          actor: "merge-god",
+          payload: { ...call, trace_context: this._traceContext },
+        }));
+      }
+    }
+    for (const turn of this._agentTurns.values()) {
+      if (turn.status !== "started") continue;
+      turn.status = "interrupted";
+      turn.completed_at = new Date().toISOString();
+      if (this._trajectory) {
+        await Promise.resolve(this._trajectory.appendEvent({
+          event_type: "pi.agent_turn.interrupted",
+          actor: "merge-god",
+          payload: { ...turn, trace_context: this._traceContext },
+        }));
+      }
+    }
+  }
+
   setRepoPath(repoPath: string | null): void {
     this._repoPath = repoPath;
   }
@@ -294,23 +470,30 @@ export class CoordinationServer {
           .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
         return;
       }
+      if (url === "/trajectory/summary") {
+        const fallback = this.getWork()?.["trajectory"] ?? null;
+        if (!this._trajectory && fallback === null) {
+          this._send(res, 404, { ok: false, error: "no trajectory state" });
+          return;
+        }
+        Promise.resolve(this._trajectory ? this._trajectory.getState() : fallback)
+          .then((trajectory) => this._send(res, 200, { ok: true, trajectory: compactTrajectoryState(trajectory) }))
+          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+        return;
+      }
       if (url === "/debug") {
         this._send(res, 200, {
           ok: true,
           work: this.getWork(),
           observations: this.getObservations(),
-          capabilities: {
-            tools: [
-              "merge_god_context",
-              "merge_god_observe",
-              "merge_god_trajectory_state",
-              "merge_god_trajectory_event",
-              "merge_god_open_follow_up_pr",
-              "merge_god_complete",
-            ],
-            worktree_path: this._repoPath,
-          },
+          trace_context: this._traceContext,
+          tooling: this.getToolingSnapshot(),
+          capabilities: { tools: this._toolSurface.map((tool) => tool.name), worktree_path: this._repoPath },
         });
+        return;
+      }
+      if (url === "/tooling") {
+        this._send(res, 200, { ok: true, trace_context: this._traceContext, tooling: this.getToolingSnapshot() });
         return;
       }
       this._send(res, 404, { ok: false, error: "not found" });
@@ -471,6 +654,27 @@ export class CoordinationServer {
           .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
         return;
       }
+      if (url === "/tool-surface") {
+        this._readBody(req)
+          .then((body) => this._recordToolSurface(body))
+          .then((tooling) => this._send(res, 200, { ok: true, tooling }))
+          .catch((err: unknown) => this._send(res, 400, { ok: false, error: String(err) }));
+        return;
+      }
+      if (url === "/tool-call") {
+        this._readBody(req)
+          .then((body) => this._recordToolCall(body))
+          .then((measurement) => this._send(res, 200, { ok: true, measurement }))
+          .catch((err: unknown) => this._send(res, 400, { ok: false, error: String(err) }));
+        return;
+      }
+      if (url === "/agent-turn") {
+        this._readBody(req)
+          .then((body) => this._recordAgentTurn(body))
+          .then((turn) => this._send(res, 200, { ok: true, turn }))
+          .catch((err: unknown) => this._send(res, 400, { ok: false, error: String(err) }));
+        return;
+      }
       if (url === "/follow-up-pr") {
         if (!this._repoPath) {
           this._send(res, 404, { ok: false, error: "no agent worktree configured" });
@@ -504,6 +708,185 @@ export class CoordinationServer {
       );
     }
     return observation;
+  }
+
+  private async _recordToolSurface(body: Record<string, unknown>): Promise<PiToolingSnapshot> {
+    const tools = Array.isArray(body["tools"]) ? body["tools"] : [];
+    this._toolSurfaceScope = body["scope"] === "all-configured" ? "all-configured" : "extension";
+    this._toolSurface = tools.flatMap((value): PiToolSurfaceEntry[] => {
+      if (typeof value !== "object" || value === null) return [];
+      const tool = value as Record<string, unknown>;
+      const name = typeof tool["name"] === "string" ? tool["name"].trim() : "";
+      if (!name) return [];
+      return [{
+        name,
+        label: typeof tool["label"] === "string" ? tool["label"] : name,
+        description: typeof tool["description"] === "string" ? tool["description"] : "",
+        parameter_schema: typeof tool["parameter_schema"] === "object" && tool["parameter_schema"] !== null
+          ? tool["parameter_schema"] as Record<string, unknown>
+          : {},
+        prompt_guideline_count: typeof tool["prompt_guideline_count"] === "number"
+          ? tool["prompt_guideline_count"]
+          : 0,
+        active: tool["active"] !== false,
+        source_info: typeof tool["source_info"] === "object" && tool["source_info"] !== null
+          ? tool["source_info"] as Record<string, unknown>
+          : {},
+      }];
+    });
+    if (this._trajectory) {
+      await Promise.resolve(this._trajectory.appendEvent({
+        event_type: "pi.tool_surface.registered",
+        actor: "pi-extension",
+        payload: {
+          injection_method: "pi-cli-extension",
+          surface_scope: this._toolSurfaceScope,
+          extension_path: this._extensionPath,
+          tool_count: this._toolSurface.length,
+          tool_names: this._toolSurface.map((tool) => tool.name),
+          trace_context: this._traceContext,
+        },
+      }));
+    }
+    return this.getToolingSnapshot();
+  }
+
+  private async _recordToolCall(body: Record<string, unknown>): Promise<PiToolCallMeasurement> {
+    const callId = typeof body["call_id"] === "string" ? body["call_id"].trim() : "";
+    const toolName = typeof body["tool_name"] === "string" ? body["tool_name"].trim() : "";
+    const phase = body["phase"] === "completed" ? "completed" : body["phase"] === "started" ? "started" : "";
+    if (!callId || !toolName || !phase) throw new Error("call_id, tool_name, and a valid phase are required");
+    const now = new Date().toISOString();
+    const existing = this._toolCalls.get(callId);
+    if (phase === "started") {
+      if (existing) {
+        const anomaly = existing.status === "started" ? "duplicate_start" : "start_after_completion";
+        if (!existing.lifecycle_anomalies.includes(anomaly)) existing.lifecycle_anomalies.push(anomaly);
+        if (this._trajectory) {
+          await Promise.resolve(this._trajectory.appendEvent({
+            event_type: "pi.tool_call.protocol_error",
+            actor: "merge-god",
+            payload: { ...existing, anomaly, trace_context: this._traceContext },
+          }));
+        }
+        return existing;
+      }
+      const measurement: PiToolCallMeasurement = {
+        call_id: callId,
+        tool_name: toolName,
+        status: "started",
+        started_at: typeof body["started_at"] === "string" ? body["started_at"] : now,
+        completed_at: null,
+        duration_ms: null,
+        input_keys: Array.isArray(body["input_keys"])
+          ? body["input_keys"].filter((key): key is string => typeof key === "string")
+          : [],
+        error: null,
+        turn_id: typeof body["turn_id"] === "string" ? body["turn_id"] : null,
+        lifecycle_anomalies: [],
+      };
+      this._toolCalls.set(callId, measurement);
+      if (measurement.turn_id) {
+        const turn = this._agentTurns.get(measurement.turn_id);
+        if (turn && !turn.tool_call_ids.includes(callId)) turn.tool_call_ids.push(callId);
+      }
+      if (this._trajectory) {
+        await Promise.resolve(this._trajectory.appendEvent({
+          event_type: "pi.tool_call.started",
+          actor: "pi-extension",
+          payload: { ...measurement, trace_context: this._traceContext },
+        }));
+      }
+      return measurement;
+    }
+
+    if (existing && existing.status !== "started") {
+      const anomaly = "duplicate_completion";
+      if (!existing.lifecycle_anomalies.includes(anomaly)) existing.lifecycle_anomalies.push(anomaly);
+      if (this._trajectory) {
+        await Promise.resolve(this._trajectory.appendEvent({
+          event_type: "pi.tool_call.protocol_error",
+          actor: "merge-god",
+          payload: { ...existing, anomaly, trace_context: this._traceContext },
+        }));
+      }
+      return existing;
+    }
+
+    const completionWithoutStart = existing === undefined;
+    const success = body["success"] === true && !completionWithoutStart;
+    const durationMs = typeof body["duration_ms"] === "number" ? Math.max(0, body["duration_ms"]) : 0;
+    const measurement: PiToolCallMeasurement = {
+      call_id: callId,
+      tool_name: toolName,
+      status: success ? "succeeded" : "failed",
+      started_at: existing?.started_at ?? (typeof body["started_at"] === "string" ? body["started_at"] : now),
+      completed_at: now,
+      duration_ms: durationMs,
+      input_keys: existing?.input_keys ?? [],
+      error: completionWithoutStart
+        ? "Tool completion was reported without a matching start"
+        : typeof body["error"] === "string" ? body["error"] : null,
+      turn_id: existing?.turn_id ?? (typeof body["turn_id"] === "string" ? body["turn_id"] : null),
+      lifecycle_anomalies: completionWithoutStart
+        ? ["completion_without_start"]
+        : existing?.lifecycle_anomalies ?? [],
+    };
+    this._toolCalls.set(callId, measurement);
+    if (measurement.turn_id) {
+      const turn = this._agentTurns.get(measurement.turn_id);
+      if (turn && !turn.tool_call_ids.includes(callId)) turn.tool_call_ids.push(callId);
+    }
+    if (completionWithoutStart && this._trajectory) {
+      await Promise.resolve(this._trajectory.appendEvent({
+        event_type: "pi.tool_call.protocol_error",
+        actor: "merge-god",
+        payload: {
+          ...measurement,
+          anomaly: "completion_without_start",
+          trace_context: this._traceContext,
+        },
+      }));
+    }
+    recordPiToolCall(toolName, success, durationMs, {
+      "merge_god.tool_call_id": callId,
+      "merge_god.run_id": this._traceContext?.run_id,
+      "merge_god.activity_id": this._traceContext?.activity_id,
+      "merge_god.activity_session_id": this._traceContext?.activity_session_id,
+    }, this._traceContext?.traceparent, Date.parse(measurement.started_at));
+    if (this._trajectory) {
+      await Promise.resolve(this._trajectory.appendEvent({
+        event_type: "pi.tool_call.completed",
+        actor: "pi-extension",
+        payload: { ...measurement, trace_context: this._traceContext },
+      }));
+    }
+    return measurement;
+  }
+
+  private async _recordAgentTurn(body: Record<string, unknown>): Promise<PiAgentTurnMeasurement> {
+    const turnId = typeof body["turn_id"] === "string" ? body["turn_id"].trim() : "";
+    const turnIndex = typeof body["turn_index"] === "number" ? body["turn_index"] : -1;
+    const phase = body["phase"] === "completed" ? "completed" : body["phase"] === "started" ? "started" : "";
+    if (!turnId || turnIndex < 0 || !phase) throw new Error("turn_id, turn_index, and a valid phase are required");
+    const existing = this._agentTurns.get(turnId);
+    const turn: PiAgentTurnMeasurement = {
+      turn_id: turnId,
+      turn_index: turnIndex,
+      status: phase,
+      started_at: existing?.started_at ?? (typeof body["started_at"] === "string" ? body["started_at"] : new Date().toISOString()),
+      completed_at: phase === "completed" ? new Date().toISOString() : null,
+      tool_call_ids: existing?.tool_call_ids ?? [],
+    };
+    this._agentTurns.set(turnId, turn);
+    if (this._trajectory) {
+      await Promise.resolve(this._trajectory.appendEvent({
+        event_type: `pi.agent_turn.${phase}`,
+        actor: "pi-extension",
+        payload: { ...turn, trace_context: this._traceContext },
+      }));
+    }
+    return turn;
   }
 
   private async _openFollowUpPr(body: Record<string, unknown>): Promise<FollowUpPrResult> {
@@ -568,6 +951,38 @@ export class CoordinationServer {
   }
 }
 
+function compactTrajectoryState(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return {};
+  const state = value as Record<string, unknown>;
+  const events = Array.isArray(state["events"]) ? state["events"] : [];
+  return {
+    run: state["run"] ?? null,
+    resume: state["resume"] ?? null,
+    hierarchy: state["hierarchy"] ?? [],
+    work_items: state["work_items"] ?? [],
+    activities: state["activities"] ?? [],
+    activity_sessions: state["activity_sessions"] ?? [],
+    recent_events: events.slice(-12).map((event) => {
+      if (typeof event !== "object" || event === null) return event;
+      const row = event as Record<string, unknown>;
+      const payload = typeof row["payload"] === "object" && row["payload"] !== null
+        ? row["payload"] as Record<string, unknown>
+        : {};
+      return {
+        event_id: row["event_id"],
+        event_type: row["event_type"],
+        actor: row["actor"],
+        activity_id: row["activity_id"],
+        activity_session_id: row["activity_session_id"],
+        created_at: row["created_at"],
+        summary: payload["summary"] ?? null,
+        status: payload["status"] ?? null,
+        next_action: payload["next_action"] ?? null,
+      };
+    }),
+  };
+}
+
 function normalizeAgentObservation(body: Record<string, unknown>): AgentObservation {
   const summary = typeof body["summary"] === "string" ? body["summary"].trim() : "";
   if (!summary) throw new Error("summary is required");
@@ -593,47 +1008,14 @@ function normalizeAgentObservation(body: Record<string, unknown>): AgentObservat
   };
 }
 
-export const DEFAULT_INSTRUCTION =
-  "You are operating as the merge-god PR agent.\n" +
-  "1) Call the `merge_god_context` tool to load your work item from the " +
-  "merge-god coordination API.\n" +
-  "2) When a trajectory is available, use `merge_god_trajectory_state` to " +
-  "inspect the current run/work/activity state, and use " +
-  "`merge_god_trajectory_event` for meaningful checkpoints, decisions, " +
-  "blockers, and evidence references.\n" +
-  "When creating child trajectory activities, include `model_tier` " +
-  "(`fast`, `standard`, or `high`) and `model_reason`; merge-god rejects " +
-  "child activities that do not propose the needed model quality.\n" +
-  "3) Use `merge_god_observe` at major checkpoints so merge-god can render live " +
-  "TUI signal: whether you have enough context, what evidence you found, what " +
-  "you need, and what you plan next. Use `merge_god_debug_snapshot` if you are " +
-  "unsure what coordination state or tools are available.\n" +
-  "4) Carry out the work described there in this repository using your file " +
-  "and shell tools. You are running inside an isolated git worktree created " +
-  "for this invocation. For general repository validation, unset ambient " +
-  "`ZAI_API_KEY` unless the validation explicitly checks pi runtime secret " +
-  "loading. When merging a PR, use a GitHub remote merge commit path that does " +
-  "not require checking out the base branch in this local worktree.\n" +
-  "5) If you discover a separate issue that should be fixed in its own branch, " +
-  "open a remediation PR only when you have concrete underlying signal " +
-  "(for example failing tests, CI logs, review comments, issue text, runtime " +
-  "errors, or reproducible command output) and project-doc grounding " +
-  "(AGENTS.md, docs/, commandments.yaml, or referenced Workflow-IR). Use " +
-  "`merge_god_open_follow_up_pr` with signal_refs and grounding_refs to commit " +
-  "the current worktree changes, push a branch, open a pull request, and notify " +
-  "the coordinator.\n" +
-  "6) Call the `merge_god_complete` tool with status and a concise summary of " +
-  "what you did. Include obvious semantic PR annotations when supported by the " +
-  "evidence (large, too-large, unaligned, needs-split, needs-design, high-risk, " +
-  "low-risk, docs-only, test-only, embark-candidate, underlying-needed). " +
-  "Include a `telemetry` object with the exact model identifier and exact " +
-  "provider token usage when available; do not estimate token usage. Then stop.";
+export const DEFAULT_INSTRUCTION = PI_AGENT_INSTRUCTION;
 
 export interface PiAgentResult {
   returncode: number;
   stdout: string;
   stderr: string;
   result: JsonResult;
+  tooling?: PiToolingSnapshot;
 }
 
 const PI_DOTENV_KEYS = new Set(["ZAI_API_KEY"]);
@@ -695,7 +1077,7 @@ export function loadPiDotEnv(repoPath: string): Record<string, string> {
  * Starts a coordination server, publishes `workItem`, launches
  * `pi --print --mode json` with the merge-god extension, and returns
  * `{ returncode, stdout, stderr, result }` where `result` is whatever the agent
- * reported via the `merge_god_complete` tool (if any).
+ * reported via the `mg_complete` tool (if any).
  */
 export async function runPiAgent(
   workItem: WorkItem,
@@ -735,6 +1117,34 @@ export async function runPiAgent(
     },
     async (span) => {
   const ext = extensionPath ?? findExtension();
+  const spanContext = span.spanContext();
+  const traceId = /^0+$/.test(spanContext.traceId) ? randomBytes(16).toString("hex") : spanContext.traceId;
+  const parentSpanId = /^0+$/.test(spanContext.spanId) ? randomBytes(8).toString("hex") : spanContext.spanId;
+  const trajectoryRefs = typeof workItem["trajectory_refs"] === "object" && workItem["trajectory_refs"] !== null
+    ? workItem["trajectory_refs"] as Record<string, unknown>
+    : {};
+  const traceContext: AgentTraceContext = {
+    trace_id: traceId,
+    parent_span_id: parentSpanId,
+    traceparent: `00-${traceId}-${parentSpanId}-${spanContext.traceFlags === 0 ? "00" : "01"}`,
+    ...(typeof trajectoryRefs["run_id"] === "string" ? { run_id: trajectoryRefs["run_id"] } : {}),
+    ...(typeof trajectoryRefs["workset_id"] === "string" ? { workset_id: trajectoryRefs["workset_id"] } : {}),
+    ...(typeof trajectoryRefs["work_item_id"] === "string" ? { work_item_id: trajectoryRefs["work_item_id"] } : {}),
+    ...(typeof trajectoryRefs["activity_id"] === "string" ? { activity_id: trajectoryRefs["activity_id"] } : {}),
+    ...(typeof trajectoryRefs["activity_session_id"] === "string" || trajectoryRefs["activity_session_id"] === null
+      ? { activity_session_id: trajectoryRefs["activity_session_id"] as string | null }
+      : {}),
+  };
+  span.setAttributes(sanitizeSpanAttributes({
+    "merge_god.trace_id": traceContext.trace_id,
+    "merge_god.run_id": traceContext.run_id,
+    "merge_god.workset_id": traceContext.workset_id,
+    "merge_god.work_item_id": traceContext.work_item_id,
+    "merge_god.activity_id": traceContext.activity_id,
+    "merge_god.activity_session_id": traceContext.activity_session_id,
+    "merge_god.pi_extension_path": ext,
+    "merge_god.pi_extension_injection": "pi-cli-extension",
+  }));
   const gitOps = new GitOps(repoPath, gitObserver ?? null);
   let worktreeRef = "HEAD";
   if (workItem.kind === "pr" && Number.isInteger(workItem.pr_number) && (workItem.pr_number ?? 0) > 0) {
@@ -755,9 +1165,20 @@ export async function runPiAgent(
     gitObserver ?? null,
     agentObserver ?? null,
   );
+  server.setAgentTraceContext(traceContext, ext);
   await server.start();
+  const injection = buildPiExtensionInjection({
+    extension_path: ext,
+    api_url: server.baseUrl,
+    trace_context: traceContext,
+    instruction,
+  });
   const dotenvEnv = loadPiDotEnv(repoPath);
-  const env: NodeJS.ProcessEnv = { ...process.env, ...dotenvEnv, MERGE_GOD_API: server.baseUrl };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...dotenvEnv,
+    ...injection.environment,
+  };
   if (extraEnv) Object.assign(env, extraEnv);
   const startedAt = Date.now();
   recordPromptRendered("pi_work_item", workItem.prompt, {
@@ -772,17 +1193,21 @@ export async function runPiAgent(
       ...workItem,
       repo_path: worktree.path,
       source_repo_path: workItem.repo_path ?? repoPath,
+      trace_context: traceContext,
     });
-    const args = [
-      "--print",
-      "--mode",
-      "json",
-      "--no-session",
-      "--extension",
-      ext,
-      instruction,
-    ];
-    const proc = spawn("pi", args, {
+    if (trajectory) {
+      await Promise.resolve(trajectory.appendEvent({
+        event_type: "pi.extension.injected",
+        actor: "merge-god",
+        payload: {
+          injection_method: injection.method,
+          extension_path: injection.extension_path,
+          expected_tools: injection.expected_tools,
+          trace_context: traceContext,
+        },
+      }));
+    }
+    const proc = spawn("pi", injection.cli_args, {
       cwd: worktree.path,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -842,11 +1267,14 @@ export async function runPiAgent(
     if (exit.error) {
       stderr += stderr.endsWith("\n") || stderr.length === 0 ? String(exit.error) : `\n${String(exit.error)}`;
     }
-    const result = {
+    await server.finalizeToolCalls();
+    const tooling = server.getToolingSnapshot();
+    const result: PiAgentResult = {
       returncode: exit.code,
       stdout,
       stderr,
       result: server.getResult(),
+      tooling,
     };
     const resultStatus = typeof result.result?.["status"] === "string" ? result.result["status"] : null;
     const success = result.returncode === 0 && resultStatus === "success";
@@ -865,6 +1293,12 @@ export async function runPiAgent(
       "merge_god.completion_reported": result.result !== null,
       "merge_god.duration_seconds": duration,
       "merge_god.observation_count": server.getObservations().length,
+      "merge_god.tool_surface_count": tooling.surface.length,
+      "merge_god.tool_call_count": tooling.reliability.started,
+      "merge_god.tool_call_failure_count": tooling.reliability.failed,
+      "merge_god.tool_call_incomplete_count": tooling.reliability.incomplete,
+      "merge_god.tool_call_protocol_error_count": tooling.reliability.protocol_errors,
+      "merge_god.tool_call_completion_ratio": tooling.reliability.completion_ratio,
     }));
     recordAgentRun("pi", success, duration, {
       "merge_god.work_item_kind": workItem.kind ?? "unknown",

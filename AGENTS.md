@@ -55,8 +55,9 @@ agents/              Claude Agent SDK integration — claude_agent.ts (Anthropic
                      NOTE: the Bedrock runtime branch throws "not yet supported in TS".
 
 pi/                  the `merge-god` pi extension package — registers the
-                     `merge_god_context` / `merge_god_complete` tools that talk
-                     to the coordination API. Loaded by `pi --extension`.
+                     compact `mg_context` / `mg_activity` / `mg_follow_up` /
+                     `mg_complete` tool contract. `agent_interactions.ts` is
+                     the functional coordination core. Loaded by `pi --extension`.
 merge_god/           packaged refactor exposing the `merge-god` CLI (cli.ts) and
                      validate.ts / sync.ts / run_agent.ts. Shared modules in this
                      folder are thin re-export shims of the root .ts modules — edit

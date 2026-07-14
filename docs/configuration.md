@@ -123,7 +123,11 @@ Each PR processing attempt is traced as `merge_god.process_pr`, with child spans
 for context gathering and pi agent execution. Issue implementation runs are
 traced as `merge_god.process_issue`. PR runs also carry the durable trajectory
 identifiers (`run_id`, workset, work item, activity, and activity session) into
-the pi work item.
+the pi work item. The pi extension reports Pi's configured tool manifest,
+including built-in and extension tools, plus paired tool-call start/completion
+measurements back to the coordinator. This connects
+the high-level OpenTelemetry trace to the ordered SQLite trajectory events and
+the lowest-level remediation tool calls.
 
 Durable trajectory reads include a normalized hierarchy from run through
 workset, work item, activity, activity session, agent turn, and tool call. Each
@@ -133,9 +137,17 @@ activities, sessions, turns, and tool calls. On restart, an unfinished PR agent
 trajectory is reused with a replacement session after abandoned leaves are
 marked interrupted.
 
-A successful trajectory cannot close while a child remediation activity is
-still open. Failed trajectories explicitly cancel unfinished descendants and
-emit a final closeout report for every lifecycle level.
+Tool-call tracing records the tool name, parameter names, outcome, duration, and
+correlation identifiers. It does not store parameter values. A successful
+trajectory cannot close while a child remediation activity is still open;
+failed trajectories explicitly cancel unfinished descendants and emit a final
+closeout report for every lifecycle level.
+
+The Pi bootstrap instruction is intentionally short. Detailed work context is
+loaded with `mg_context`, whose default trajectory view is compact;
+`trajectory_full` is available for forensic inspection. Lifecycle mutations
+and structured observations are consolidated under `mg_activity` so the model sees a smaller,
+explicit coordination surface.
 
 Key metrics:
 
@@ -145,6 +157,8 @@ Key metrics:
 | `merge_god.prompt.size` | Prompt size histogram in characters. |
 | `merge_god.agent.run` | Agent run count tagged by agent kind and result status. |
 | `merge_god.agent.duration` | Agent run duration histogram in seconds. |
+| `merge_god.pi.tool_call` | Pi extension tool-call count tagged by tool and result. |
+| `merge_god.pi.tool_call.duration` | Pi extension tool-call duration histogram in milliseconds. |
 
 ## Merge rules
 

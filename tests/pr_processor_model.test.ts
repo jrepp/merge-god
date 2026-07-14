@@ -315,7 +315,7 @@ describe("PR processor model", () => {
     assert.equal(piAgentFailureReason(1, null, "", ""), "pi exited 1");
     assert.equal(
       piAgentFailureReason(0, null, "", ""),
-      "pi agent exited without reporting merge_god_complete result",
+      "pi agent exited without reporting mg_complete result",
     );
     assert.equal(
       piAgentFailureReason(0, { summary: "done" }, "", ""),
@@ -371,10 +371,10 @@ describe("PR processor model", () => {
       classifyPrAgentResult({ returncode: 0, result: null, stderr: "", stdout: "" }),
       {
         success: false,
-        failure_reason: "pi agent exited without reporting merge_god_complete result",
+        failure_reason: "pi agent exited without reporting mg_complete result",
         failure_state: "failed",
         gate_status: "failed",
-        gate_explanation: "pi agent exited without reporting merge_god_complete result",
+        gate_explanation: "pi agent exited without reporting mg_complete result",
       },
     );
 

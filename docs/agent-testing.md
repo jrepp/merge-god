@@ -15,7 +15,7 @@ The merge-god PR-processing path uses the **pi agent** through the merge-god
 coordination API:
 
 - **Task decomposition**: Breaks PRs into discrete tasks
-- **Coordination tools**: Pulls work from `merge_god_context` and reports via `merge_god_complete`
+- **Coordination tools**: Pulls work from `mg_context` and reports via `mg_complete`
 - **Isolated worktrees**: Runs every pi invocation inside a temporary git worktree
 - **Tool calling**: File editing, git operations, test execution, and linked remediation PR creation
 - **Error recovery**: Automatic retry with exponential backoff
@@ -64,6 +64,49 @@ Use when:
 - Complex refactorings
 
 ## Testing Workflow
+
+### Deterministic Pi Failure Scenarios
+
+Agent coordination behavior has a functional core in
+`pi/agent_interactions.ts`. Request planning and response interpretation are
+pure functions; execution receives a `CoordinationClient` value. Run these fast
+tests without Pi, HTTP, git, or subprocess setup:
+
+```bash
+npm run test:pi-interactions
+```
+
+The Pi extension is a thin adapter created with an explicit client, clock, ID
+source, trace-context reader, and traceparent reader. Only its default
+production adapter reads process environment or global fetch state.
+
+The Pi integration has a scenario-driven harness that launches the real
+merge-god extension against the real localhost coordination API without calling
+an external model provider. Run the fault matrix with:
+
+```bash
+npm run test:pi-faults
+
+# Run one failure in isolation
+MERGE_GOD_TEST_SCENARIO=tool_timeout npm run test:pi-faults
+```
+
+The shared runner covers agent failures before and during turns, explicit agent
+failure results, agent and tool timeouts, thrown tools, coordination disconnects,
+missing or invalid tool lifecycle events, HTTP failures, and malformed
+responses. Every case records the normal tool
+surface, turn/tool hierarchy, reliability measurements, worktree lifecycle, and
+resume state when those stages are reached.
+
+Duplicate completions are de-duplicated, completion-before-start is recorded as
+a failed call, and both appear in `reliability.protocol_errors` and trajectory
+`pi.tool_call.protocol_error` events.
+
+The framework lives in `tests/helpers/pi_agent_harness.ts`; deterministic Pi
+behavior lives in `tests/fixtures/fake_pi_agent.mjs`. Add a scenario to the
+runner and its expected external outcome to `tests/pi_agent_harness.test.ts`.
+The successful end-to-end Pi test uses the same harness, so success and failure
+coverage exercise the same extension injection and coordination path.
 
 ### Promptfoo Prompt Evaluation
 

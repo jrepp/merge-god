@@ -5,7 +5,7 @@
   "description": "Pi extension that connects the pi coding agent to the merge-god coordination API.",
   "keywords": ["pi-package", "merge-god", "coordination", "automation", "pull-request"],
   "license": "MIT",
-  "files": ["README.md", "package.json", "extensions/merge-god/index.ts"],
+  "files": ["README.md", "package.json", "agent_interactions.ts", "tool_contract.ts", "extensions/merge-god/index.ts"],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
