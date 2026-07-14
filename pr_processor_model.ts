@@ -9,7 +9,9 @@ import { validateGitRef } from "./git_ref";
 import {
   prDetailsBaseBranch,
   prDetailsHeadBranch,
+  prDetailsMergedAt,
   prDetailsNumber,
+  prDetailsStateText,
   prDetailsTitle,
   prDetailsUrl,
 } from "./pr_details_access_model";
@@ -115,6 +117,13 @@ export interface PrAgentResultDecision {
   gate_explanation: string;
 }
 
+export interface PrMergeVerification {
+  available: boolean;
+  merged: boolean;
+  state: string;
+  failure_reason: string | null;
+}
+
 export type PrAgentResultStatus = "success" | "failure" | "unknown";
 
 function prAgentResultStatusText(result: unknown): string {
@@ -150,6 +159,34 @@ export function prAgentResultFailureDetail(result: unknown): string {
     resultObj["detail"],
     resultObj["details"],
   );
+}
+
+export function verifyPrMergeCompletion(prDetails: unknown): PrMergeVerification {
+  const details = asRecord(prDetails);
+  const state = normalizedToken(prDetailsStateText(details)).toUpperCase();
+  const mergedAt = prDetailsMergedAt(details);
+  const merged = state === "MERGED" || mergedAt === true ||
+    (typeof mergedAt === "string" && mergedAt.trim().length > 0);
+
+  if (merged) {
+    return { available: true, merged: true, state: state || "MERGED", failure_reason: null };
+  }
+  if (Object.keys(details).length === 0 || !state) {
+    return {
+      available: false,
+      merged: false,
+      state,
+      failure_reason: "pi reported success, but merge-god could not verify the PR merge state on GitHub",
+    };
+  }
+  return {
+    available: true,
+    merged: false,
+    state,
+    failure_reason: state === "CLOSED"
+      ? "pi reported success, but GitHub reports the PR is CLOSED without a merge"
+      : `pi reported success, but GitHub reports the PR is ${state} and unmerged`,
+  };
 }
 
 function prAgentResultNeeds(result: unknown): string[] {
@@ -215,9 +252,16 @@ export function classifyPrFailureState(
   return "failed";
 }
 
-export function classifyPrAgentResult(result: PrAgentResultLike): PrAgentResultDecision {
+export function classifyPrAgentResult(
+  result: PrAgentResultLike,
+  prDetailsAfterCompletion?: unknown,
+): PrAgentResultDecision {
   const status = prAgentResultStatus(result.result);
-  const success = result.returncode === 0 && status === "success";
+  const agentSucceeded = result.returncode === 0 && status === "success";
+  const mergeVerification = prDetailsAfterCompletion === undefined
+    ? null
+    : verifyPrMergeCompletion(prDetailsAfterCompletion);
+  const success = agentSucceeded && (mergeVerification?.merged ?? true);
   if (success) {
     return {
       success: true,
@@ -228,7 +272,9 @@ export function classifyPrAgentResult(result: PrAgentResultLike): PrAgentResultD
     };
   }
 
-  const failureReason = piAgentFailureReason(result.returncode, result.result, result.stderr, result.stdout);
+  const failureReason = agentSucceeded && mergeVerification?.failure_reason
+    ? mergeVerification.failure_reason
+    : piAgentFailureReason(result.returncode, result.result, result.stderr, result.stdout);
   const failureState = classifyPrFailureState(failureReason, result.result);
   return {
     success: false,

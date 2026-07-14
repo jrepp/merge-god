@@ -99,12 +99,12 @@ export class GitOps {
     this.runGit(["push", "-u", remote, branch]);
   }
 
-  createDetachedWorktree(): AgentWorktree {
+  createDetachedWorktree(ref = "HEAD"): AgentWorktree {
     const root = this.root();
     const rootOps = new GitOps(root, this.observer);
     const tempDir = mkdtempSync(path.join(tmpdir(), "merge-god-pi-"));
     const worktreePath = path.join(tempDir, "worktree");
-    rootOps.runGit(["worktree", "add", "--detach", worktreePath, "HEAD"]);
+    rootOps.runGit(["worktree", "add", "--detach", worktreePath, ref]);
     this.emitEvent({ event: "git.worktree.created", cwd: root, path: worktreePath });
     this.emitMetric({ name: "git.worktree.created", value: 1 });
     return {

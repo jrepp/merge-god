@@ -13,6 +13,7 @@ import {
   prAgentResultFailureDetail,
   prAgentResultStatus,
   piAgentFailureReason,
+  verifyPrMergeCompletion,
 } from "../pr_processor_model";
 import { resolveRemediationPolicy } from "../remediation_policy_model";
 
@@ -439,6 +440,34 @@ describe("PR processor model", () => {
         gate_status: "failed",
         gate_explanation: "pi exited 2: unit tests failed",
       },
+    );
+  });
+
+  test("requires live GitHub merge evidence before accepting agent success", () => {
+    const agentResult = {
+      returncode: 0,
+      result: { status: "success", merged: false, summary: "validation passed" },
+      stderr: "",
+      stdout: "",
+    };
+
+    assert.deepEqual(verifyPrMergeCompletion({ state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" }), {
+      available: true,
+      merged: true,
+      state: "MERGED",
+      failure_reason: null,
+    });
+    assert.deepEqual(classifyPrAgentResult(agentResult, { state: "OPEN", mergedAt: null }), {
+      success: false,
+      failure_reason: "pi reported success, but GitHub reports the PR is OPEN and unmerged",
+      failure_state: "failed",
+      gate_status: "failed",
+      gate_explanation: "pi reported success, but GitHub reports the PR is OPEN and unmerged",
+    });
+    assert.equal(classifyPrAgentResult(agentResult, { state: "MERGED", mergedAt: "2026-07-12T10:00:00Z" }).success, true);
+    assert.match(
+      classifyPrAgentResult(agentResult, {}).failure_reason ?? "",
+      /could not verify the PR merge state/,
     );
   });
 });
