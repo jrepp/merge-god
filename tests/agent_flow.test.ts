@@ -1670,6 +1670,17 @@ describe("agent flow: runPiAgent result contract", () => {
       ),
       ["needs-split", "needs-conflict-resolution"],
     );
+    assert.deepEqual(
+      inferredAgentAnnotationLabelsFromFailure(
+        {
+          status: "failure",
+          summary: "Validation and tests passed after merging the base branch.",
+          error: "GitHub base branch policy requires an eligible review approval.",
+        },
+        "GitHub base branch policy requires an eligible review approval.",
+      ),
+      ["needs-review"],
+    );
   });
 
   test("agentAnnotationLabelsForCompletion combines explicit and inferred labels", () => {

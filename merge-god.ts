@@ -204,6 +204,8 @@ function cmdAgent(g: GlobalArgs): number {
 }
 
 const PR_LOOP_VALUE_OPTIONS = new Set([
+  "--repo",
+  "--db",
   "--max-iterations",
   "--idle-sleep-seconds",
   "--sync-failure-sleep-seconds",
@@ -226,13 +228,60 @@ export function prLoopChildArgs(rest: string[]): string[] | null {
   return [rest[repoPathIndex]!, ...rest.slice(0, repoPathIndex), ...rest.slice(repoPathIndex + 1)];
 }
 
+function hasCliOption(rest: string[], name: string): boolean {
+  return rest.some((arg) => arg === name || arg.startsWith(`${name}=`));
+}
+
+/** Resolve a single configured repository when the operator omits repo_path. */
+export function configuredPrLoopChildArgs(rest: string[], configPath: string): string[] {
+  const explicit = prLoopChildArgs(rest);
+  if (explicit) return explicit;
+  if (!existsSync(configPath)) {
+    throw new Error(`repo_path was omitted and config was not found at ${configPath}`);
+  }
+  const parsed = YAML.parse(readFileSync(configPath, "utf8")) as
+    | { repos?: { path?: unknown; repo?: unknown; enabled?: boolean }[] }
+    | null;
+  const repos = (parsed?.repos ?? []).filter((repo) => repo.enabled ?? true);
+  if (repos.length !== 1) {
+    throw new Error(
+      `repo_path was omitted, but ${repos.length} enabled repositories are configured; pass a checkout path explicitly`,
+    );
+  }
+  const selected = repos[0]!;
+  if (typeof selected.path !== "string" || !selected.path.trim()) {
+    throw new Error("the enabled repository is missing repos[].path");
+  }
+  const args = [selected.path, ...rest];
+  if (typeof selected.repo === "string" && selected.repo.trim() && !hasCliOption(rest, "--repo")) {
+    args.push("--repo", selected.repo);
+  }
+  return args;
+}
+
 function cmdPrLoop(g: GlobalArgs): number {
-  const args = prLoopChildArgs(g.rest);
-  if (!args) {
-    logText("repo_path is required for pr-loop command", "error");
+  let args: string[];
+  try {
+    args = configuredPrLoopChildArgs(g.rest, resolvePath(g.config, "config.yaml"));
+  } catch (e) {
+    logText(errMsg(e), "error");
     return 1;
   }
+  if (!prLoopChildArgs(g.rest)) logText(`Using configured repository: ${args[0]}`, "info");
+  if (!hasCliOption(args, "--db")) args.push("--db", resolvePath(g.db, "merge-god-state.db"));
   return runChild("pr-loop.ts", args);
+}
+
+function cmdDuplicates(g: GlobalArgs): number {
+  let args: string[];
+  try {
+    args = configuredPrLoopChildArgs(g.rest, resolvePath(g.config, "config.yaml"));
+  } catch (e) {
+    logText(errMsg(e), "error");
+    return 1;
+  }
+  if (!prLoopChildArgs(g.rest)) logText(`Using configured repository: ${args[0]}`, "info");
+  return runChild("analyze_duplicates.ts", args);
 }
 
 function cmdProfile(g: GlobalArgs): number {
@@ -416,6 +465,8 @@ COMMANDS:
   test        Run test suite (--type all|isolation|db|agent).
   status      Show system status and statistics.
   pr-loop     Run bounded or continuous PR processing loop.
+  run         Run the configured repository queue (alias for pr-loop).
+  duplicates  Prove duplicate relationships; --close-landed closes only patches already on base.
   doctor      Check local prerequisites and config paths.
   profile     Profile a shallow PR inventory without agent or mutation calls.
   cohort      Inspect, approve, or evidence-recover an embark cohort.
@@ -426,6 +477,7 @@ Quick self-test:
   tsx merge-god.ts scan --repo-path . --pr 14
   tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
   tsx merge-god.ts pr-loop . --once --dry-run
+  tsx merge-god.ts duplicates
   tsx merge-god.ts cohort status --run RUN_ID
 Run 'tsx merge-god.ts help' for details.
 `;
@@ -460,6 +512,8 @@ function main(): number {
     test: () => cmdTest(g),
     status: () => cmdStatus(g),
     "pr-loop": () => cmdPrLoop(g),
+    run: () => cmdPrLoop(g),
+    duplicates: () => cmdDuplicates(g),
     doctor: () => cmdDoctor(g),
     profile: () => cmdProfile(g),
     cohort: () => cmdCohort(g),

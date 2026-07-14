@@ -686,8 +686,10 @@ class RepoMonitor {
   readonly logWriter: LogWriter | null;
   readonly hasTty: boolean;
   readonly db: DbStores | null;
+  readonly dbPath: string | null;
   readonly name: string;
   readonly path: string;
+  readonly repo: string | null;
   readonly enabled: boolean;
   readonly watchIssues: boolean;
   readonly interactive: boolean;
@@ -732,6 +734,7 @@ class RepoMonitor {
     logWriter?: LogWriter | null;
     hasTty?: boolean;
     db?: DbStores | null;
+    dbPath?: string | null;
   }) {
     this.config = opts.repoConfig;
     this.scriptPath = opts.scriptPath;
@@ -739,8 +742,10 @@ class RepoMonitor {
     this.logWriter = opts.logWriter ?? null;
     this.hasTty = opts.hasTty ?? false;
     this.db = opts.db ?? null;
+    this.dbPath = opts.dbPath ?? null;
     this.name = toStr(opts.repoConfig["name"], "Unknown");
     this.path = toStr(opts.repoConfig["path"], "");
+    this.repo = typeof opts.repoConfig["repo"] === "string" ? toStr(opts.repoConfig["repo"]) : null;
     this.enabled = opts.repoConfig["enabled"] !== false;
     this.watchIssues = Boolean(opts.repoConfig["watch_issues"]);
     this.interactive = opts.repoConfig["interactive"] !== false;
@@ -963,6 +968,7 @@ class RepoMonitor {
       if (pr.state !== PRState.OPEN || pr.draft) continue;
       const labelsLower = new Set(pr.labels.map((l) => l.toLowerCase()));
       if (setsIntersect(labelsLower, WIP_LABELS)) continue;
+      if (labelsLower.has("duplicate")) continue;
 
       const prInfo = prQueueInfoFromPullRequest(pr);
 
@@ -1092,6 +1098,8 @@ class RepoMonitor {
 
     try {
       const args = ["--import", "tsx", this.scriptPath, this.path];
+      if (this.repo) args.push("--repo", this.repo);
+      if (this.dbPath) args.push("--db", this.dbPath);
       if (this.watchIssues) args.push("--watch-issues");
       if (this.hasTty && this.interactive) args.push("--interactive");
 
@@ -1542,6 +1550,7 @@ class RepoMonitor {
 /** Repo config entry shape loaded from YAML. */
 interface RepoConfigEntry {
   path?: string;
+  repo?: string;
   name?: string;
   enabled?: boolean;
   watch_issues?: boolean;
@@ -1599,11 +1608,12 @@ class Dashboard {
 
     if (!this.dryRun && opts.dbPath) {
       try {
-        const syncStore = new SyncStore(opts.dbPath);
-        const appStore = new AppStore(opts.dbPath);
+        const resolvedDbPath = resolve(opts.dbPath);
+        const syncStore = new SyncStore(resolvedDbPath);
+        const appStore = new AppStore(resolvedDbPath);
         this.db = { syncStore, appStore };
-        this.dbPath = opts.dbPath;
-        this.logWriter?.log(`Database initialized: ${opts.dbPath}`);
+        this.dbPath = resolvedDbPath;
+        this.logWriter?.log(`Database initialized: ${resolvedDbPath}`);
       } catch (e) {
         if (isDbError(e)) {
           this.logWriter?.log(`Warning: Failed to initialize database: ${errMsg(e)}`);
@@ -1673,6 +1683,7 @@ class Dashboard {
         logWriter: this.logWriter,
         hasTty: this.hasTty,
         db: this.db,
+        dbPath: this.dbPath,
       });
       this.monitors.push(monitor);
     }

@@ -250,6 +250,8 @@ function cmdValidate(g: GlobalArgs): number {
 }
 
 const PR_LOOP_VALUE_OPTIONS = new Set([
+  "--repo",
+  "--db",
   "--max-iterations",
   "--idle-sleep-seconds",
   "--sync-failure-sleep-seconds",
@@ -272,13 +274,60 @@ function prLoopChildArgs(rest: string[]): string[] | null {
   return [rest[repoPathIndex]!, ...rest.slice(0, repoPathIndex), ...rest.slice(repoPathIndex + 1)];
 }
 
+function configuredRepoChildArgs(rest: string[], configPath: string): string[] {
+  const explicit = prLoopChildArgs(rest);
+  if (explicit) return explicit;
+  if (!existsSync(configPath)) {
+    throw new Error(`repo_path was omitted and config was not found at ${configPath}`);
+  }
+  const parsed = YAML.parse(readFileSync(configPath, "utf8")) as
+    | { repos?: { path?: unknown; repo?: unknown; enabled?: boolean }[] }
+    | null;
+  const repos = (parsed?.repos ?? []).filter((repo) => repo.enabled ?? true);
+  if (repos.length !== 1) {
+    throw new Error(
+      `repo_path was omitted, but ${repos.length} enabled repositories are configured; pass a checkout path explicitly`,
+    );
+  }
+  const selected = repos[0]!;
+  if (typeof selected.path !== "string" || !selected.path.trim()) {
+    throw new Error("the enabled repository is missing repos[].path");
+  }
+  const args = [selected.path, ...rest];
+  if (
+    typeof selected.repo === "string" &&
+    selected.repo.trim() &&
+    !rest.some((arg) => arg === "--repo" || arg.startsWith("--repo="))
+  ) {
+    args.push("--repo", selected.repo);
+  }
+  return args;
+}
+
 function cmdPrLoop(g: GlobalArgs): number {
-  const args = prLoopChildArgs(g.rest);
-  if (!args) {
-    logText("repo_path is required for pr-loop command", "error");
+  let args: string[];
+  try {
+    args = configuredRepoChildArgs(g.rest, resolvePath(g.config, "config.yaml"));
+  } catch (e) {
+    logText(errMsg(e), "error");
     return 1;
   }
+  if (!args.some((arg) => arg === "--db" || arg.startsWith("--db="))) {
+    args.push("--db", resolvePath(g.db, "merge-god-state.db"));
+  }
   return runChild("pr-loop.ts", args);
+}
+
+function cmdDuplicates(g: GlobalArgs): number {
+  try {
+    return runChild(
+      "analyze_duplicates.ts",
+      configuredRepoChildArgs(g.rest, resolvePath(g.config, "config.yaml")),
+    );
+  } catch (e) {
+    logText(errMsg(e), "error");
+    return 1;
+  }
 }
 
 function cmdSendApproval(): number {
@@ -602,6 +651,15 @@ OVERVIEW:
       --dry-run              Plan the iteration without invoking agents or changing PR labels
       --idle-sleep-seconds N Sleep between idle iterations (default: 300)
 
+  run
+    Run the sole enabled repository from config.yaml (alias for pr-loop).
+
+  duplicates
+    Analyze duplicate-labeled PRs without the state database.
+    Options:
+      --close-landed        Close only exact patches proven present on base
+      --json                Emit machine-readable evidence
+
   send-approval
     Send approval to a running pr-loop process.
 
@@ -661,6 +719,8 @@ export function main(): number {
     test: () => cmdTest(g),
     status: () => cmdStatus(g),
     "pr-loop": () => cmdPrLoop(g),
+    run: () => cmdPrLoop(g),
+    duplicates: () => cmdDuplicates(g),
     "send-approval": () => cmdSendApproval(),
     help: () => cmdHelp(),
   };

@@ -149,6 +149,33 @@ export interface PiAgentTurnMeasurement {
   tool_call_ids: string[];
 }
 
+export interface PiAgentProgress {
+  action: "agent_started" | "tool_started" | "tool_completed";
+  tool?: string;
+  success?: boolean;
+}
+
+/** Reduce pi's verbose JSON event stream to safe, operator-facing progress. */
+export function piAgentProgressFromRuntimeEvent(value: unknown): PiAgentProgress | null {
+  if (typeof value !== "object" || value === null) return null;
+  const event = value as Record<string, unknown>;
+  if (event["type"] === "agent_start") return { action: "agent_started" };
+  if (event["type"] === "tool_execution_start" && typeof event["toolName"] === "string") {
+    return { action: "tool_started", tool: event["toolName"] };
+  }
+  if (event["type"] === "tool_execution_end" && typeof event["toolName"] === "string") {
+    const result = typeof event["result"] === "object" && event["result"] !== null
+      ? event["result"] as Record<string, unknown>
+      : {};
+    return {
+      action: "tool_completed",
+      tool: event["toolName"],
+      success: result["isError"] !== true,
+    };
+  }
+  return null;
+}
+
 export interface PiToolingSnapshot {
   injection: {
     method: "pi-cli-extension";
@@ -1090,6 +1117,7 @@ export async function runPiAgent(
     trajectory?: CoordinationTrajectoryBridge;
     gitObserver?: GitOpsObserver;
     agentObserver?: (observation: AgentObservation) => void;
+    progressObserver?: (progress: PiAgentProgress) => void;
     completionGraceMs?: number;
   } = {},
 ): Promise<PiAgentResult> {
@@ -1101,6 +1129,7 @@ export async function runPiAgent(
     trajectory,
     gitObserver,
     agentObserver,
+    progressObserver,
     completionGraceMs = 1000,
   } = opts;
 
@@ -1214,10 +1243,25 @@ export async function runPiAgent(
     });
     let stdout = "";
     let stderr = "";
+    let stdoutLineBuffer = "";
     proc.stdout.setEncoding("utf8");
     proc.stderr.setEncoding("utf8");
     proc.stdout.on("data", (chunk: string) => {
       stdout += chunk;
+      stdoutLineBuffer += chunk;
+      for (;;) {
+        const newline = stdoutLineBuffer.indexOf("\n");
+        if (newline < 0) break;
+        const line = stdoutLineBuffer.slice(0, newline).trim();
+        stdoutLineBuffer = stdoutLineBuffer.slice(newline + 1);
+        if (!line || !progressObserver) continue;
+        try {
+          const progress = piAgentProgressFromRuntimeEvent(JSON.parse(line));
+          if (progress) progressObserver(progress);
+        } catch {
+          // Pi can emit non-JSON diagnostic lines; they are retained in stdout.
+        }
+      }
     });
     proc.stderr.on("data", (chunk: string) => {
       stderr += chunk;
