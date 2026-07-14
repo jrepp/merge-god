@@ -207,7 +207,7 @@ Need an AI agent to actually perform PR fixes (resolve conflicts, address review
 Drive the [pi](https://github.com/earendil-works/pi-coding-agent) coding agent
 through a small **coordination API** (`coordination.ts`) plus a custom
 **pi extension** (`pi/extensions/merge-god`). merge-god publishes a work item
-(the gathered prompt/context); the extension's `merge_god_*` tools pull it and
+(the gathered prompt/context); the extension's `mg_*` tools pull it and
 report results back over HTTP.
 
 ### Rationale

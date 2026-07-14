@@ -51,9 +51,9 @@ messages, no branding noise.
 ## 3. Act
 
 The prompt is published to the **merge-god coordination API**, then pi is
-launched with the `merge-god` extension. The agent calls the `merge_god_context`
+launched with the `merge-god` extension. The agent calls the `mg_context`
 tool to pull the prompt, does the work with its file/shell tools, then reports
-back with `merge_god_complete`. merge-god reads the result and advances:
+back with `mg_complete`. merge-god reads the result and advances:
 
 ## Two-pass review
 
