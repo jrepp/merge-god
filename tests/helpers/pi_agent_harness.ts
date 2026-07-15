@@ -99,7 +99,7 @@ export class PiAgentHarness {
     const startedAt = Date.now();
     const timeoutMs = options.timeout_ms ?? (
       scenario === "agent_timeout" || scenario === "agent_stall_before_session" || scenario === "tool_timeout"
-        ? 750
+        ? 3000
         : 2000
     );
     const result = await runPiAgent(

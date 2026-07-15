@@ -57,6 +57,23 @@ test("root dispatcher exposes doctor command", () => {
   }
 });
 
+test("packaged compatibility entrypoint uses the canonical CLI surface", () => {
+  const runHelp = (script: string) => spawnSync(
+    process.execPath,
+    ["--import", "tsx", script, "help"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  const root = runHelp("merge-god.ts");
+  const compatibility = runHelp("merge_god/cli.ts");
+
+  assert.equal(root.status, 0, root.stderr);
+  assert.equal(compatibility.status, 0, compatibility.stderr);
+  assert.equal(compatibility.stdout, root.stdout);
+  assert.match(root.stdout, /PRIMARY COMMANDS:/);
+  assert.match(root.stdout, /merge-god pr 14/);
+  assert.doesNotMatch(root.stdout, /^\s+(?:test|validate)\s/m);
+});
+
 test("dashboard dry-run does not require executable pr-loop script", () => {
   const result = spawnSync(
     process.execPath,

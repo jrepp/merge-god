@@ -336,7 +336,7 @@ export function buildPrPrompt(
 
   let taskNum = tasks.length + 1;
   tasks.push(`${taskNum}. Checkout the PR branch: \`${headBranch}\``);
-  tasks.push(`${taskNum + 1}. Sync with \`${baseBranch}\` using a merge commit; do not rebase unless repository rules explicitly require it`);
+  tasks.push(`${taskNum + 1}. Sync with \`${baseBranch}\` using a merge commit; do not rebase or force-push unless repository rules explicitly require history rewriting`);
   taskNum += 2;
 
   if (reviewComments.length > 0) {
@@ -354,7 +354,7 @@ export function buildPrPrompt(
   tasks.push(`${taskNum}. Run tests and checks locally to verify everything passes`);
   tasks.push(`${taskNum + 1}. Push changes back to \`${headBranch}\``);
   tasks.push(`${taskNum + 2}. Verify CI passes on GitHub after pushing`);
-  tasks.push(`${taskNum + 3}. Merge through GitHub using a merge commit; prefer a remote-only gh invocation if local worktrees already have \`${baseBranch}\` checked out`);
+  tasks.push(`${taskNum + 3}. Merge through GitHub using the merge-commit strategy (\`gh pr merge --merge\`); prefer a remote-only gh invocation if local worktrees already have \`${baseBranch}\` checked out`);
 
   parts.push(...tasks);
   parts.push("");
@@ -394,8 +394,9 @@ export function buildPrPrompt(
     "- ✅ Write clear, professional commit messages matching project style",
     "- ✅ Make focused, minimal changes addressing specific issues only",
     "- ✅ Prefer merge commits over rebasing so original commit hashes and stack ordering are preserved",
+    "- ❌ Do not force-push or otherwise rewrite existing collaborator commit history unless an explicit repository rule requires it",
     "- ✅ Test thoroughly before pushing; unset ambient `ZAI_API_KEY` for general repo validation unless the test explicitly checks pi runtime secret loading",
-    "- ✅ Merge through GitHub with a merge commit; avoid local checkout side effects from `gh pr merge` when another worktree owns the base branch",
+    "- ✅ Merge through GitHub with `gh pr merge --merge`; avoid local checkout side effects when another worktree owns the base branch",
     "- ✅ Respond to review comments on GitHub when appropriate",
     "- ✅ If blocked, clearly document the issue and what's needed",
     "- ✅ Open a separate remediation PR only when there is concrete signal and project-doc grounding",

@@ -16,6 +16,7 @@
 repos:
   # Example repository 1
   - path: /path/to/my-project
+    repo: github.example.com/owner/my-project # Optional identity guard; GitHub URL also accepted
     name: "My Project"
     enabled: true
     watch_issues: true  # Monitor issues with "for-impl" label (default: false)

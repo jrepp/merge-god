@@ -1,7 +1,10 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { prLoopChildArgs } from "../merge-god";
+import { configuredPrLoopChildArgs, prLoopChildArgs } from "../merge-god";
 import { parseCliArgs, runCommand } from "../pr-loop";
 
 describe("PR loop controls", () => {
@@ -9,6 +12,10 @@ describe("PR loop controls", () => {
     assert.deepEqual(
       parseCliArgs([
         "/repo",
+        "--repo",
+        "github.ibm.com/meridian/devtools",
+        "--db",
+        "/state/merge-god.db",
         "--once",
         "--dry-run",
         "--watch-issues",
@@ -21,6 +28,8 @@ describe("PR loop controls", () => {
       ]),
       {
         repoPath: "/repo",
+        repo: "github.ibm.com/meridian/devtools",
+        dbPath: "/state/merge-god.db",
         watchIssues: true,
         interactive: false,
         once: true,
@@ -65,6 +74,23 @@ describe("PR loop controls", () => {
       ["/repo", "--max-iterations=3", "--between-items-sleep-seconds", "1"],
     );
     assert.equal(prLoopChildArgs(["--once"]), null);
+  });
+
+  test("uses the sole enabled configured repo when the path is omitted", () => {
+    const dir = mkdtempSync(join(tmpdir(), "merge-god-config-"));
+    const config = join(dir, "config.yaml");
+    writeFileSync(config, [
+      "repos:",
+      "  - path: /repo/devtools",
+      "    repo: https://github.ibm.com/meridian/devtools",
+      "    enabled: true",
+    ].join("\n"));
+    assert.deepEqual(configuredPrLoopChildArgs(["--once"], config), [
+      "/repo/devtools",
+      "--once",
+      "--repo",
+      "https://github.ibm.com/meridian/devtools",
+    ]);
   });
 
   test("runCommand allows output above Node's default sync buffer", () => {

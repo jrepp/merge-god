@@ -51,6 +51,7 @@ export enum ProcessStatus {
 export interface RepoConfig {
   name: string;
   path: string;
+  repo?: string;
   enabled: boolean;
   tags?: string[];
   watch_issues?: boolean;

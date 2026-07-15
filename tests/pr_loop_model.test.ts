@@ -40,11 +40,13 @@ describe("PR loop model", () => {
       untagged: 1,
       filtered_draft: 0,
       filtered_wip: 0,
+      filtered_duplicate: 0,
       filtered_invalid: 0,
       filtered_state: 0,
       filtered_prs: {
         draft: [],
         wip: [],
+        duplicate: [],
         invalid: [],
         state: [],
       },
@@ -142,6 +144,13 @@ describe("PR loop model", () => {
         url: "https://example.test/pr/189",
         labels: [{ name: "merge:blocked" }, { name: "for-landing" }],
       },
+      {
+        number: 190,
+        title: "Duplicate PR",
+        headRefName: "feature/duplicate",
+        url: "https://example.test/pr/190",
+        labels: [{ name: "duplicate" }, { name: "for-landing" }],
+      },
     ]);
 
     assert.deepEqual(result.categorized, {
@@ -158,6 +167,9 @@ describe("PR loop model", () => {
     assert.deepEqual(result.filtered_prs.wip, [
       { number: 188, title: "WIP PR", label: "work-in-process" },
     ]);
+    assert.deepEqual(result.filtered_prs.duplicate, [
+      { number: 190, title: "Duplicate PR", label: "duplicate" },
+    ]);
     assert.deepEqual(result.filtered_prs.state, [
       { number: 189, title: "Already blocked", label: "merge:blocked" },
     ]);
@@ -166,8 +178,10 @@ describe("PR loop model", () => {
       "skip_draft",
       "skip_wip",
       "skip_state",
+      "skip_duplicate_candidate",
     ]);
-    assert.equal(result.summary["total"], 5);
+    assert.equal(result.summary["total"], 6);
     assert.equal(result.summary["filtered_invalid"], 1);
+    assert.equal(result.summary["filtered_duplicate"], 1);
   });
 });
