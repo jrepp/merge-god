@@ -70,6 +70,7 @@ merge-god only acts on PRs you label. From GitHub, add one of:
 | --- | --- |
 | `for-landing` | Basic processing — resolve conflicts, address reviews, fix CI, then merge. |
 | `for-review` | Everything above, **plus** a second pass for code quality, security, and best practices. |
+| `duplicate` | Hold normal processing until `merge-god duplicates` proves containment or identifies synthesis work. |
 | _(no label)_ | Skipped. |
 
 Want the agent to implement issues too? Enable
