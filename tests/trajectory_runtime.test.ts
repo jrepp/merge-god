@@ -179,6 +179,26 @@ describe("TrajectoryRuntime", () => {
     }
   });
 
+  test("requires an existing trajectory for explicit resume", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-runtime-required-resume-"));
+    const store = new AppStore(path.join(tempDir, "runtime.db"));
+    try {
+      const runtime = new TrajectoryRuntime(store);
+      assert.throws(
+        () => runtime.resumePrAgentWorkflow({
+          repo_name: "test-repo",
+          pr_number: 404,
+          mode: "for-landing",
+          labels: ["for-landing"],
+        }),
+        /No resumable trajectory for test-repo PR #404/,
+      );
+    } finally {
+      store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("creates a PR queue, claims activities, evaluates guardrails, and completes the run", () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-runtime-"));
     const dbPath = path.join(tempDir, "runtime.db");

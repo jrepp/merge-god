@@ -175,6 +175,21 @@ export class TrajectoryRuntime {
   startOrResumePrAgentWorkflow(input: CompatibilityTrajectoryInput): RuntimeStartResult {
     const existing = this.store.findResumableCompatibilityTrajectory(input.repo_name, input.pr_number);
     if (!existing) return this.startPrAgentWorkflow(input);
+    return this.resumePrAgentWorkflowFromIds(input, existing);
+  }
+
+  resumePrAgentWorkflow(input: CompatibilityTrajectoryInput): RuntimeStartResult {
+    const existing = this.store.findResumableCompatibilityTrajectory(input.repo_name, input.pr_number);
+    if (!existing) {
+      throw new Error(`No resumable trajectory for ${input.repo_name} PR #${input.pr_number}`);
+    }
+    return this.resumePrAgentWorkflowFromIds(input, existing);
+  }
+
+  private resumePrAgentWorkflowFromIds(
+    input: CompatibilityTrajectoryInput,
+    existing: CompatibilityTrajectoryIds,
+  ): RuntimeStartResult {
     const ids = this.store.resumeCompatibilityTrajectory(existing, input.session_id ?? randomUUID(), input.model ?? null);
     this.store.appendTrajectoryEvent(
       ids.run_id,

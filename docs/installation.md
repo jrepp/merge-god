@@ -12,7 +12,7 @@ order: 2
 | **Node.js 22+** | Runtime | Check with `node --version` |
 | **npm / npx** | Package runner | Ships with Node.js |
 | **[gh](https://cli.github.com/)** | GitHub API access | Existing token auth is fine; use `gh auth login` only if needed |
-| **`pi`** | The AI coding agent | Must be on your `PATH`. merge-god talks to it through a [coordination API](./how-it-works/) and the `merge-god` extension (`pi/extensions/merge-god`). |
+| **`pi`** | The AI coding agent | Must be on your `PATH`. Follow [Pi provider setup](./pi-provider-setup/) to configure credentials and a default model. |
 | **Git** | Repo operations | With a GitHub remote |
 
 > All dependencies are declared in `package.json` and installed with
@@ -44,16 +44,26 @@ gh auth token >/dev/null || gh auth login
 
 ## 3. Initialize merge-god
 
+Install the command globally, or substitute `npx merge-god@latest` in the
+commands below:
+
+```bash
+npm install --global merge-god
+```
+
+The package includes merge-god's internal GitHub synchronization workspace;
+you do not install repository workspace packages separately.
+
 Create `config.yaml` in the current directory:
 
 ```bash
-npx merge-god@latest init
+merge-god init
 ```
 
 You can seed one or more repos explicitly:
 
 ```bash
-npx merge-god@latest init --repo /path/to/repo --repo /path/to/another-repo
+merge-god init --repo /path/to/repo --repo /path/to/another-repo
 ```
 
 ## 4. Verify
@@ -61,7 +71,7 @@ npx merge-god@latest init --repo /path/to/repo --repo /path/to/another-repo
 Run the doctor before starting the dashboard:
 
 ```bash
-npx merge-god@latest doctor
+merge-god doctor
 ```
 
 ## 5. Run
@@ -69,7 +79,7 @@ npx merge-god@latest doctor
 Run the dashboard (best inside `tmux` or `screen` for long sessions):
 
 ```bash
-npx merge-god@latest dashboard
+merge-god dashboard
 ```
 
 You're ready — head to the [Quickstart](./quickstart/).
@@ -82,8 +92,12 @@ For development, clone the repo and run scripts directly:
 git clone https://github.com/jrepp/merge-god.git
 cd merge-god
 npm install
+npm link
 npm run dashboard
 ```
+
+`npm link` exposes the same `merge-god` command from the checkout. Packaging is
+verified by an isolated tarball install with `npm run test:package`.
 
 ## Why npm + tsx?
 
