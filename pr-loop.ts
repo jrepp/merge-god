@@ -11,6 +11,7 @@
  * Label contract:
  *   - PRs labeled `for-review` get comprehensive review + improvements.
  *   - PRs labeled `for-landing` get basic processing toward a merge.
+ *   - PRs labeled `duplicate` are held for evidence-based duplicate analysis.
  *   - Issues labeled `for-impl` get implemented (when --watch-issues is set).
  *   - No label = the PR is skipped.
  */
@@ -85,6 +86,11 @@ import {
   withTelemetrySpan,
 } from "./telemetry";
 import { TrajectoryRuntime, type RuntimeStartResult } from "./trajectory_runtime";
+import {
+  parseRepositoryIdentity,
+  repositoryIdentityMatches,
+  type RepositoryIdentity,
+} from "./repository_identity_model";
 
 export { renderReviewGateStatusComment } from "./evidence_comment";
 export { validateGitRef } from "./git_ref";
@@ -772,10 +778,10 @@ export function inferredAgentAnnotationLabelsFromFailure(
   if (/\b(?:too\s+large|oversized|large\s+diff|split|smaller\s+prs?|separate\s+prs?)\b/.test(text)) {
     labels.add("needs-split");
   }
-  if (/\b(?:ci|check|checks|status|workflow|action|actions|build|test|tests|lint|typecheck|validation)\b/.test(text)) {
+  if (/\b(?:(?:ci|status\s+checks?|workflows?|actions?|build|tests?|lint|typecheck|validation)\s+(?:failed|failing|blocked|required|missing|pending|unknown|errored?)|(?:failed|failing|blocked|required|missing|pending|unknown|errored?)\s+(?:ci|status\s+checks?|workflows?|actions?|build|tests?|lint|typecheck|validation)|needs?\s+(?:ci|checks?|build|tests?|lint|typecheck|validation))\b/.test(text)) {
     labels.add("needs-ci");
   }
-  if (/\b(?:rebase|behind|out[-\s]+of[-\s]+date|update(?:d)?\s+from\s+(?:base|main|master)|base\s+branch)\b/.test(text)) {
+  if (/\b(?:rebase|behind|out[-\s]+of[-\s]+date|update(?:d)?\s+from\s+(?:base|main|master)|base\s+branch\s+(?:is\s+)?(?:behind|out[-\s]+of[-\s]+date|requires?\s+an?\s+update))\b/.test(text)) {
     labels.add("needs-rebase");
   }
   if (/\b(?:conflict|conflicts|merge\s+conflict|dirty|not\s+mergeable)\b/.test(text)) {
@@ -1853,6 +1859,7 @@ export async function processPr(
       timeout: 3600,
       gitObserver: createGitOpsObserver(),
       agentObserver: createAgentObservationObserver(),
+      progressObserver: (progress) => logJson("agent_progress", { pr_number: prNumber, ...progress }),
       trajectory: trajectoryRuntime && trajectoryStart
         ? trajectoryRuntime.bridgeForPiAgent(trajectoryStart.ids)
         : undefined,
@@ -1920,8 +1927,8 @@ export async function processPr(
       duration,
       reason: agentDecision.failure_reason,
       returncode: piResult.returncode,
-      stdout: piResult.stdout,
-      stderr: piResult.stderr,
+      stdout_bytes: Buffer.byteLength(piResult.stdout, "utf8"),
+      stderr_bytes: Buffer.byteLength(piResult.stderr, "utf8"),
       result: piResult.result,
       token_usage: agentUsage,
       annotation_labels: annotationLabels,
@@ -2215,8 +2222,49 @@ export async function processIssue(
 
 // --- Repository validation --------------------------------------------------
 
-/** Validate that the path is a valid git repository with GitHub auth available. */
-export function validateRepository(repoPath: string): boolean {
+export function inspectRepositoryIdentity(repoPath: string): RepositoryIdentity | null {
+  const [returncode, stdout, stderr] = runCommand(
+    ["gh", "repo", "view", "--json", "nameWithOwner,url"],
+    repoPath,
+    30,
+  );
+  if (returncode !== 0) {
+    logJson("validation_error", {
+      error: "Could not resolve the GitHub repository from the checkout remote.",
+      path: repoPath,
+      stderr,
+    });
+    return null;
+  }
+  try {
+    const payload = JSON.parse(stdout) as { nameWithOwner?: unknown; url?: unknown };
+    if (typeof payload.url !== "string" || typeof payload.nameWithOwner !== "string") return null;
+    const identity = parseRepositoryIdentity(payload.url);
+    if (!identity || identity.name_with_owner.toLowerCase() !== payload.nameWithOwner.toLowerCase()) return null;
+    return identity;
+  } catch (e) {
+    logJson("validation_error", {
+      error: "GitHub returned invalid repository identity JSON.",
+      path: repoPath,
+      detail: errMsg(e),
+    });
+    return null;
+  }
+}
+
+/** Return tracked changes that would make branch synchronization unsafe. */
+export function trackedWorktreeChanges(repoPath: string): string[] {
+  const [returncode, stdout] = runCommand(
+    ["git", "status", "--porcelain", "--untracked-files=no"],
+    repoPath,
+    10,
+  );
+  if (returncode !== 0) return ["<git status failed>"];
+  return stdout.split("\n").map((line) => line.trimEnd()).filter(Boolean);
+}
+
+/** Validate that the path is the expected GitHub repository with host-correct auth. */
+export function validateRepository(repoPath: string, expectedRepo?: string): boolean {
   if (!existsSync(repoPath)) {
     logJson("validation_error", { error: "Repository path does not exist", path: repoPath });
     return false;
@@ -2248,8 +2296,35 @@ export function validateRepository(repoPath: string): boolean {
     return false;
   }
 
+  const identity = inspectRepositoryIdentity(repoPath);
+  if (!identity) return false;
+  if (identity.host) process.env.GH_HOST = identity.host;
+
+  if (expectedRepo) {
+    const expectedIdentity = parseRepositoryIdentity(expectedRepo);
+    if (!expectedIdentity) {
+      logJson("validation_error", {
+        error: "Invalid expected repository. Use a GitHub URL, HOST/OWNER/REPO, or OWNER/REPO.",
+        expected_repo: expectedRepo,
+      });
+      return false;
+    }
+    if (!repositoryIdentityMatches(identity, expectedIdentity)) {
+      logJson("validation_error", {
+        error: "Checkout repository does not match the requested queue repository.",
+        path: repoPath,
+        actual_repo: `${identity.host}/${identity.name_with_owner}`,
+        expected_repo: expectedRepo,
+        hint: "Point repo_path at a checkout of the requested repository or correct the config repo field.",
+      });
+      return false;
+    }
+  }
+
   const hasTokenEnv = Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
-  const [ghRc, ghStdout, ghStderr] = runCommand(["gh", "auth", "token"]);
+  const authArgs = ["gh", "auth", "token"];
+  if (identity.host) authArgs.push("--hostname", identity.host);
+  const [ghRc, ghStdout, ghStderr] = runCommand(authArgs);
   if (!hasTokenEnv && (ghRc !== 0 || ghStdout.trim().length === 0)) {
     logJson("validation_error", {
       error: "GitHub API auth unavailable. Set GITHUB_TOKEN/GH_TOKEN or run 'gh auth login'.",
@@ -2258,7 +2333,12 @@ export function validateRepository(repoPath: string): boolean {
     return false;
   }
 
-  logJson("validation", { success: true, path: repoPath });
+  logJson("validation", {
+    success: true,
+    path: repoPath,
+    repository: identity.name_with_owner,
+    host: identity.host,
+  });
   return true;
 }
 
@@ -2266,6 +2346,8 @@ export function validateRepository(repoPath: string): boolean {
 
 interface CliArgs {
   repoPath: string;
+  repo?: string;
+  dbPath?: string;
   watchIssues: boolean;
   interactive: boolean;
   once: boolean;
@@ -2298,6 +2380,8 @@ export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
       "idle-sleep-seconds": { type: "string" },
       "sync-failure-sleep-seconds": { type: "string" },
       "between-items-sleep-seconds": { type: "string" },
+      repo: { type: "string" },
+      db: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -2311,6 +2395,8 @@ export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
   const once = !!parsed.values.once;
   return {
     repoPath,
+    ...(parsed.values.repo ? { repo: parsed.values.repo } : {}),
+    ...(parsed.values.db ? { dbPath: parsed.values.db } : {}),
     watchIssues: !!parsed.values["watch-issues"],
     interactive: !!parsed.values.interactive,
     once,
@@ -2345,9 +2431,23 @@ export async function main(): Promise<void> {
     process.exit(2);
   }
   const repoPath = resolve(args.repoPath);
+  const requestedDbPath = args.dbPath ? resolve(args.dbPath) : null;
 
-  if (!validateRepository(repoPath)) {
+  if (!validateRepository(repoPath, args.repo)) {
     process.exit(1);
+  }
+
+  if (!args.dryRun) {
+    const changes = trackedWorktreeChanges(repoPath);
+    if (changes.length > 0) {
+      logJson("validation_error", {
+        error: "Tracked worktree changes would make queue synchronization unsafe.",
+        path: repoPath,
+        changes,
+        hint: "Commit, stash, or move these changes, then rerun merge-god. Dry-run remains available without syncing branches.",
+      });
+      process.exit(1);
+    }
   }
 
   process.chdir(repoPath);
@@ -2373,9 +2473,9 @@ export async function main(): Promise<void> {
   let db: SyncStore | null = null;
   let appStore: AppStore | null = null;
   let repoName: string | null = null;
-  if (DB_AVAILABLE) {
+  if (DB_AVAILABLE && !args.dryRun) {
     try {
-      const dbPath = resolve("merge-god-state.db");
+      const dbPath = requestedDbPath ?? resolve("merge-god-state.db");
       db = new SyncStore(dbPath);
       await db.initialize();
       appStore = new AppStore(dbPath);
@@ -2392,7 +2492,9 @@ export async function main(): Promise<void> {
   } else {
     logJson("startup", {
       database_enabled: false,
-      warning: "Database operations module not available",
+      ...(args.dryRun
+        ? { reason: "dry_run", message: "Dry-run does not open or create repository state." }
+        : { warning: "Database operations module not available" }),
     });
   }
 
@@ -2417,7 +2519,13 @@ export async function main(): Promise<void> {
     iteration++;
     logJson("iteration", { number: iteration, action: "start" });
 
-    if (!syncRepo(defaultBranch)) {
+    if (args.dryRun) {
+      logJson("sync_repo", {
+        action: "skipped",
+        reason: "dry_run",
+        message: "Dry-run inspects the current checkout and GitHub queue without changing branches or pulling.",
+      });
+    } else if (!syncRepo(defaultBranch)) {
       logJson("iteration", { number: iteration, action: "sync_failed", sleep_seconds: args.syncFailureSleepSeconds });
       if (shouldStopLoop(iteration, args)) {
         logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });

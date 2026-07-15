@@ -27,7 +27,8 @@ node --import tsx --test tests/state_tracker.test.ts --test-name-pattern="state 
 node --import tsx --test tests/*.test.ts
 ```
 
-Or via the CLI: `npx tsx merge-god.ts test`.
+Testing is a source-checkout workflow rather than an installed CLI command;
+the npm artifact intentionally excludes repository test fixtures.
 
 ## What lives in `tests/`
 

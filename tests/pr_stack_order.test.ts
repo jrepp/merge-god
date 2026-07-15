@@ -107,6 +107,12 @@ describe("planStackedPrMergeOrder", () => {
 });
 
 describe("suggestProcessingLabel", () => {
+  test("does not suggest a processing label for an explicit duplicate candidate", () => {
+    const candidate = pr(8, "feature/duplicate");
+    candidate["labels"] = [{ name: "duplicate" }];
+    assert.equal(suggestProcessingLabel(candidate), null);
+  });
+
   test("suggests for-review when title or labels indicate review work", () => {
     assert.deepEqual(suggestProcessingLabel(pr(9, "docs/review", "main", "docs(review): new review")), {
       pr_number: 9,

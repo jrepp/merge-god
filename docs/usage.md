@@ -134,12 +134,39 @@ The comment is **not** a source of truth. Merge decisions must use the durable
 trajectory/database state and validation evidence. If the comment update fails,
 processing continues and the failure is logged.
 
+## Process or resume one PR
+
+From inside a repository checkout, one command syncs current PR context and
+runs the agent:
+
+```bash
+npx tsx merge-god.ts pr 123
+```
+
+The current checkout is preferred over repositories in `config.yaml`. Pass
+`--repo-path` only when invoking the command from somewhere else. If PR 123 has
+an unfinished trajectory, `pr` resumes it automatically instead of creating a
+second run.
+
+Resume interrupted work without looking up a database run ID:
+
+```bash
+npx tsx merge-god.ts resume      # latest resumable PR in this checkout
+npx tsx merge-god.ts resume 123  # require resumable work for PR 123
+```
+
+`resume` fails cleanly when no matching trajectory is resumable. Add
+`--dry-run` to either command to inspect the inferred repository, database, and
+operation without syncing or invoking an agent. The lower-level `scan` and
+`agent` commands remain available for process-isolation debugging.
+
 ## Bounded loop runs
 
 Use bounded controls when testing merge-god against a whole repository without
 starting a long-running daemon:
 
 ```bash
+npx tsx merge-god.ts repo --once --dry-run
 npx tsx merge-god.ts run --once
 npx tsx merge-god.ts run --once --dry-run
 npx tsx merge-god.ts duplicates
@@ -147,11 +174,12 @@ npx tsx pr-loop.ts /path/to/repo --once --dry-run
 npx tsx merge-god.ts pr-loop /path/to/repo --max-iterations 3 --idle-sleep-seconds 30
 ```
 
-`run` uses the sole enabled repository from `config.yaml`, including its
-optional `repo` identity guard. Pass a path to `pr-loop` explicitly when more
-than one repository is enabled. The root CLI and dashboard pass one central
-state database to repository workers; target checkouts no longer receive a
-stray `merge-god-state.db`.
+`repo` infers the current git checkout. `run` uses the sole enabled repository
+from `config.yaml`, including its optional `repo` identity guard, for dashboards
+and automation. Pass a path to `pr-loop` explicitly when more than one
+repository is enabled. The root CLI and dashboard pass one central state
+database to repository workers; target checkouts no longer receive a stray
+`merge-god-state.db`.
 
 - `--once` runs one loop iteration and exits.
 - `--max-iterations N` runs at most `N` loop iterations.

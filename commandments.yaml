@@ -30,6 +30,7 @@ rules:
 
   # Final decision
   - Commits added by merge-god must use Conventional Commits format, such as `fix:`, `feat:`, `docs:`, `test:`, `refactor:`, `chore:`, or another conventional type appropriate to the change.
+  - Preserve collaborator ancestry by merging the base branch into PR branches and landing PRs with merge commits; do not rebase, force-push, or otherwise rewrite existing commits unless an explicit repository rule requires it.
   - Commits, PR comments, review responses, documentation, and code must not include AI/model/assistant branding, attribution, signatures, or generated-by trailers.
   - Remediation must preserve the PR's retained scope and stop before unrelated redesign.
   - Final decisions must include evidence for skipped, failed, remediated, and passing gates.

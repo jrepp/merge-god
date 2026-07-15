@@ -68,6 +68,7 @@ export interface ProcessingLabelSuggestion {
 export interface FilteredPrSummary {
   draft: unknown[];
   wip: unknown[];
+  duplicate: unknown[];
   invalid: unknown[];
   state: unknown[];
 }
@@ -167,7 +168,7 @@ export function suggestProcessingLabel(pr: Record<string, unknown>): ProcessingL
   const prNumber = prDetailsNumber(pr);
   if (prNumber === null) return null;
   const labels = labelNames(pr);
-  if (labels.includes("for-review") || labels.includes("for-landing")) return null;
+  if (labels.includes("duplicate") || labels.includes("for-review") || labels.includes("for-landing")) return null;
   const title = prDetailsTitle(pr).toLowerCase();
   const suggestedLabel: ProcessingMode =
     labels.some((label) => label.includes("review")) || /\breview\b/.test(title)
@@ -328,6 +329,7 @@ export function categorizeOpenPrs(allPrs: unknown[]): CategorizeOpenPrsResult {
   const filteredPrs: FilteredPrSummary = {
     draft: [],
     wip: [],
+    duplicate: [],
     invalid: [],
     state: [],
   };
@@ -360,6 +362,18 @@ export function categorizeOpenPrs(allPrs: unknown[]): CategorizeOpenPrsResult {
         pr_number: prNumber,
         title: prTitle,
         wip_label: wipLabel,
+      });
+      continue;
+    }
+
+    if (labels.includes("duplicate")) {
+      filteredPrs.duplicate.push({ number: prNumber, title: prTitle, label: "duplicate" });
+      events.push({
+        action: "skip_duplicate_candidate",
+        pr_number: prNumber,
+        title: prTitle,
+        label: "duplicate",
+        hint: "Run `merge-god duplicates` to verify patch equivalence and base containment.",
       });
       continue;
     }
@@ -418,6 +432,7 @@ export function categorizeOpenPrs(allPrs: unknown[]): CategorizeOpenPrsResult {
       untagged: categorized.untagged.length,
       filtered_draft: filteredPrs.draft.length,
       filtered_wip: filteredPrs.wip.length,
+      filtered_duplicate: filteredPrs.duplicate.length,
       filtered_invalid: filteredPrs.invalid.length,
       filtered_state: filteredPrs.state.length,
       filtered_prs: filteredPrs,

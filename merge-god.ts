@@ -12,14 +12,17 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
 import { DatabaseSync } from "node:sqlite";
-import { basename, isAbsolute, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import chalk from "chalk";
 import YAML from "yaml";
+
+const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
+const TSX_LOADER = createRequire(import.meta.url).resolve("tsx");
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -51,7 +54,7 @@ function logText(message: string, level: LogLevel = "info"): void {
 /** Run a sibling .ts script in a child process (process isolation). */
 function runChild(script: string, args: string[]): number {
   try {
-    const result = spawnSync(process.execPath, ["--import", "tsx", script, ...args], {
+    const result = spawnSync(process.execPath, ["--import", TSX_LOADER, resolve(REPO_ROOT, script), ...args], {
       stdio: "inherit",
     });
     if (result.error) {
@@ -134,10 +137,108 @@ function cmdDashboard(g: GlobalArgs): number {
   }
 }
 
+function hasCommand(command: string, args = ["--version"]): boolean {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 5000, stdio: "ignore" });
+  return result.status === 0;
+}
+
+function hasGitHubAuth(): boolean {
+  if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) return true;
+  const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5000 });
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+function isGitRepository(repoPath: string): boolean {
+  if (!repoPath) return false;
+  const result = spawnSync("git", ["-C", repoPath, "rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf8",
+    timeout: 5000,
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+function discoverCurrentRepository(): { path: string; name: string; enabled: true }[] {
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  const repoPath = result.status === 0 ? result.stdout.trim() : "";
+  return repoPath ? [{ path: repoPath, name: basename(repoPath), enabled: true }] : [];
+}
+
+function cmdInit(g: GlobalArgs): number {
+  const parsed = parseArgs({
+    args: g.rest,
+    options: {
+      config: { type: "string" },
+      repo: { type: "string", multiple: true },
+      force: { type: "boolean", default: false },
+    },
+    allowPositionals: true,
+  });
+  const configPath = resolvePath(parsed.values.config ?? g.config, "config.yaml");
+  if (existsSync(configPath) && !parsed.values.force) {
+    logText(`Config already exists: ${configPath}`, "warning");
+    logText("Use --force to overwrite it.");
+    return 1;
+  }
+  const explicitRepos = parsed.values.repo ?? parsed.positionals;
+  const repos = explicitRepos.length > 0
+    ? explicitRepos.map((value) => {
+        const repoPath = resolve(value);
+        return { path: repoPath, name: basename(repoPath), enabled: true };
+      })
+    : discoverCurrentRepository();
+  const config = {
+    repos: repos.length > 0 ? repos : [{ path: "/absolute/path/to/repo", name: "my-repo", enabled: true }],
+  };
+  writeFileSync(
+    configPath,
+    "# merge-god configuration\n# Label PRs with for-landing or for-review. Unlabeled PRs are skipped.\n\n" +
+      YAML.stringify(config),
+  );
+  logText(`Created ${configPath}`, "success");
+  if (repos.length === 0) logText("Edit repos[0].path before running merge-god.", "warning");
+  logText("Next: merge-god doctor");
+  return 0;
+}
+
 function cmdDoctor(g: GlobalArgs): number {
-  const args = ["doctor", ...g.rest];
-  if (g.config) args.push("--config", g.config);
-  return runChild("merge_god/cli.ts", args);
+  const configPath = resolvePath(g.config, "config.yaml");
+  let failures = 0;
+  const check = (ok: boolean, label: string, fix?: string): void => {
+    logText(label, ok ? "success" : "error");
+    if (!ok) {
+      failures++;
+      if (fix) logText(`  ${fix}`);
+    }
+  };
+  check(Number(process.versions.node.split(".")[0] ?? 0) >= 22, `Node.js ${process.versions.node}`);
+  check(hasCommand("git"), "git is available", "Install git and ensure it is on PATH.");
+  check(hasCommand("gh"), "gh is available", "Install GitHub CLI: https://cli.github.com/");
+  check(hasGitHubAuth(), "GitHub API auth is available", "Set GH_TOKEN or run gh auth login.");
+  check(hasCommand("pi"), "pi is available", "Install pi and ensure it is on PATH.");
+  if (!existsSync(configPath)) {
+    check(false, `Config missing: ${configPath}`, "Run: merge-god init");
+  } else {
+    try {
+      const config = YAML.parse(readFileSync(configPath, "utf8")) as
+        | { repos?: { path?: unknown; enabled?: boolean }[] }
+        | null;
+      const repos = config?.repos ?? [];
+      check(repos.length > 0, `Configured repos: ${repos.length}`, "Add at least one repo to config.yaml.");
+      for (const repo of repos.filter((item) => item.enabled ?? true)) {
+        const repoPath = typeof repo.path === "string" ? resolve(dirname(configPath), repo.path) : "";
+        check(isGitRepository(repoPath), `Repo path is a git repo: ${repo.path ?? "(missing path)"}`);
+      }
+    } catch (error) {
+      check(false, `Could not parse ${configPath}: ${errMsg(error)}`);
+    }
+  }
+  if (failures === 0) logText("Ready. Run: merge-god repo", "success");
+  else logText(`${failures} check(s) failed.`, "error");
+  return failures === 0 ? 0 : 1;
 }
 
 function cmdScan(g: GlobalArgs): number {
@@ -179,6 +280,7 @@ function cmdAgent(g: GlobalArgs): number {
       mode: { type: "string" },
       runtime: { type: "string" },
       timeout: { type: "string" },
+      resume: { type: "string" },
       db: { type: "string" },
       "repo-path": { type: "string" },
     },
@@ -194,6 +296,7 @@ function cmdAgent(g: GlobalArgs): number {
   const args = ["run_agent_from_db.ts", repo, pr, "--mode", parsed.values.mode ?? "for-landing"];
   if (parsed.values.runtime) args.push("--runtime", parsed.values.runtime);
   if (parsed.values.timeout) args.push("--timeout", parsed.values.timeout);
+  if (parsed.values.resume) args.push("--resume", parsed.values.resume);
   const db = parsed.values.db ?? g.db;
   if (db) args.push("--db", db);
   if (parsed.values["repo-path"]) args.push("--repo-path", parsed.values["repo-path"]);
@@ -203,7 +306,30 @@ function cmdAgent(g: GlobalArgs): number {
   return rc;
 }
 
+function cmdPrWorkflow(g: GlobalArgs, action: "pr" | "resume"): number {
+  const args = [action, ...g.rest];
+  if (g.config) args.push("--config", g.config);
+  if (g.db) args.push("--db", g.db);
+  return runChild("pr_workflow_cli.ts", args);
+}
+
+function cmdCurrentRepo(g: GlobalArgs): number {
+  if (prLoopChildArgs(g.rest)) return cmdPrLoop(g);
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const repoPath = result.status === 0 ? result.stdout.trim() : "";
+  if (!repoPath) {
+    logText("Not inside a git checkout; pass a checkout path or use 'merge-god run' with config.yaml", "error");
+    return 1;
+  }
+  return cmdPrLoop({ ...g, rest: [repoPath, ...g.rest] });
+}
+
 const PR_LOOP_VALUE_OPTIONS = new Set([
+  "--repo",
+  "--db",
   "--max-iterations",
   "--idle-sleep-seconds",
   "--sync-failure-sleep-seconds",
@@ -226,13 +352,60 @@ export function prLoopChildArgs(rest: string[]): string[] | null {
   return [rest[repoPathIndex]!, ...rest.slice(0, repoPathIndex), ...rest.slice(repoPathIndex + 1)];
 }
 
+function hasCliOption(rest: string[], name: string): boolean {
+  return rest.some((arg) => arg === name || arg.startsWith(`${name}=`));
+}
+
+/** Resolve a single configured repository when the operator omits repo_path. */
+export function configuredPrLoopChildArgs(rest: string[], configPath: string): string[] {
+  const explicit = prLoopChildArgs(rest);
+  if (explicit) return explicit;
+  if (!existsSync(configPath)) {
+    throw new Error(`repo_path was omitted and config was not found at ${configPath}`);
+  }
+  const parsed = YAML.parse(readFileSync(configPath, "utf8")) as
+    | { repos?: { path?: unknown; repo?: unknown; enabled?: boolean }[] }
+    | null;
+  const repos = (parsed?.repos ?? []).filter((repo) => repo.enabled ?? true);
+  if (repos.length !== 1) {
+    throw new Error(
+      `repo_path was omitted, but ${repos.length} enabled repositories are configured; pass a checkout path explicitly`,
+    );
+  }
+  const selected = repos[0]!;
+  if (typeof selected.path !== "string" || !selected.path.trim()) {
+    throw new Error("the enabled repository is missing repos[].path");
+  }
+  const args = [selected.path, ...rest];
+  if (typeof selected.repo === "string" && selected.repo.trim() && !hasCliOption(rest, "--repo")) {
+    args.push("--repo", selected.repo);
+  }
+  return args;
+}
+
 function cmdPrLoop(g: GlobalArgs): number {
-  const args = prLoopChildArgs(g.rest);
-  if (!args) {
-    logText("repo_path is required for pr-loop command", "error");
+  let args: string[];
+  try {
+    args = configuredPrLoopChildArgs(g.rest, resolvePath(g.config, "config.yaml"));
+  } catch (e) {
+    logText(errMsg(e), "error");
     return 1;
   }
+  if (!prLoopChildArgs(g.rest)) logText(`Using configured repository: ${args[0]}`, "info");
+  if (!hasCliOption(args, "--db")) args.push("--db", resolvePath(g.db, "merge-god-state.db"));
   return runChild("pr-loop.ts", args);
+}
+
+function cmdDuplicates(g: GlobalArgs): number {
+  let args: string[];
+  try {
+    args = configuredPrLoopChildArgs(g.rest, resolvePath(g.config, "config.yaml"));
+  } catch (e) {
+    logText(errMsg(e), "error");
+    return 1;
+  }
+  if (!prLoopChildArgs(g.rest)) logText(`Using configured repository: ${args[0]}`, "info");
+  return runChild("analyze_duplicates.ts", args);
 }
 
 function cmdProfile(g: GlobalArgs): number {
@@ -262,48 +435,8 @@ function cmdCohort(g: GlobalArgs): number {
   return runChild(args[0]!, args.slice(1));
 }
 
-function cmdValidate(g: GlobalArgs): number {
-  logText("Validating process isolation and data flow...");
-  const parsed = parseArgs({
-    args: g.rest,
-    options: { db: { type: "string" }, repo: { type: "string" }, pr: { type: "string" } },
-    allowPositionals: true,
-  });
-  const args = ["tests/validate_process_flow.ts"];
-  const db = parsed.values.db ?? g.db;
-  if (db) args.push("--db", db);
-  if (parsed.values.repo) args.push("--repo", parsed.values.repo);
-  if (parsed.values.pr) args.push("--pr", parsed.values.pr);
-  const rc = runChild(args[0]!, args.slice(1));
-  if (rc === 0) logText("Validation passed", "success");
-  else logText("Validation failed", "error");
-  return rc;
-}
-
-function cmdTest(g: GlobalArgs): number {
-  logText("Running test suite...");
-  const parsed = parseArgs({
-    args: g.rest,
-    options: { type: { type: "string", default: "all" } },
-    allowPositionals: true,
-  });
-  const testType = parsed.values.type ?? "all";
-  let script: string | null = null;
-  if (testType === "all") script = "tests/test_all.ts";
-  else if (testType === "isolation") script = "tests/test_process_isolation.ts";
-  else if (testType === "db") script = "tests/stores.test.ts";
-  else if (testType === "agent") script = "tests/test_agent_integration.ts";
-  else {
-    logText(`Unknown test type: ${testType}`, "error");
-    return 1;
-  }
-  // node:test runner
-  const rc = spawnSync(process.execPath, ["--import", "tsx", "--test", script!], {
-    stdio: "inherit",
-  }).status ?? 1;
-  if (rc === 0) logText("Tests passed", "success");
-  else logText("Tests failed", "error");
-  return rc;
+function cmdSendApproval(): number {
+  return runChild("send_approval.ts", []);
 }
 
 function cmdStatus(g: GlobalArgs): number {
@@ -378,11 +511,10 @@ function cmdStatus(g: GlobalArgs): number {
     ["dashboard.ts", "TUI Dashboard"],
     ["run_agent_from_db.ts", "Agent Runner"],
     ["sync_pr_context.ts", "PR Sync"],
-    ["tests/validate_process_flow.ts", "Validator"],
   ];
   logText("Scripts:", "info");
   for (const [script, desc] of scripts) {
-    if (existsSync(script)) logText(`  ${String.fromCharCode(0x2713)} ${desc}: ${script}`, "success");
+    if (existsSync(resolve(REPO_ROOT, script))) logText(`  ${String.fromCharCode(0x2713)} ${desc}: ${script}`, "success");
     else logText(`  ${String.fromCharCode(0x2717)} ${desc}: ${script} (missing)`, "error");
   }
 
@@ -407,27 +539,34 @@ OVERVIEW:
     Process 2: PR context gathering and database caching
     Process 3: Agent invocation and PR processing
 
-COMMANDS:
-  (default)   Run the World HUD TUI dashboard.
-  dashboard   Run the full TUI dashboard with all processes.
+PRIMARY COMMANDS:
+  init        Create config.yaml for the current checkout.
+  doctor      Check local prerequisites and configured repository paths.
+  status      Show system status and statistics.
+  repo        Process the current repository queue.
+  pr          Sync and process one PR; resumes interrupted work automatically.
+  resume      Resume the latest interrupted PR, or a specified PR number.
+  dashboard   Run the World HUD TUI dashboard (also the default command).
+  duplicates  Analyze duplicate PRs; optionally close patches already on base.
+
+ADVANCED COMMANDS:
+  run         Run the configured repository queue.
   scan        Scan PRs and sync their context to the database.
   agent       Run agent on cached PR data (Process 3 isolation).
-  validate    Validate process boundaries and data flow.
-  test        Run test suite (--type all|isolation|db|agent).
-  status      Show system status and statistics.
   pr-loop     Run bounded or continuous PR processing loop.
-  doctor      Check local prerequisites and config paths.
   profile     Profile a shallow PR inventory without agent or mutation calls.
   cohort      Inspect, approve, or evidence-recover an embark cohort.
+  send-approval  Approve a waiting interactive processing loop.
   help        Show this help message.
 
 Dashboard screens: --screen world|prs|agents (default: world).
-Quick self-test:
-  tsx merge-god.ts scan --repo-path . --pr 14
-  tsx merge-god.ts agent --repo-path . --pr 14 --mode for-review
-  tsx merge-god.ts pr-loop . --once --dry-run
-  tsx merge-god.ts cohort status --run RUN_ID
-Run 'tsx merge-god.ts help' for details.
+COMMON WORKFLOWS:
+  merge-god doctor
+  merge-god repo --once --dry-run
+  merge-god pr 14
+  merge-god resume
+  merge-god status
+Run 'merge-god help' for details.
 `;
 
 function cmdHelp(): number {
@@ -443,7 +582,7 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function main(): number {
+export function main(): number {
   const argv = process.argv.slice(2);
   const g = parseGlobal(argv);
 
@@ -453,16 +592,21 @@ function main(): number {
   }
 
   const handlers: Record<string, () => number> = {
+    init: () => cmdInit(g),
     dashboard: () => cmdDashboard(g),
+    repo: () => cmdCurrentRepo(g),
+    pr: () => cmdPrWorkflow(g, "pr"),
+    resume: () => cmdPrWorkflow(g, "resume"),
     scan: () => cmdScan(g),
     agent: () => cmdAgent(g),
-    validate: () => cmdValidate(g),
-    test: () => cmdTest(g),
     status: () => cmdStatus(g),
     "pr-loop": () => cmdPrLoop(g),
+    run: () => cmdPrLoop(g),
+    duplicates: () => cmdDuplicates(g),
     doctor: () => cmdDoctor(g),
     profile: () => cmdProfile(g),
     cohort: () => cmdCohort(g),
+    "send-approval": () => cmdSendApproval(),
     help: () => cmdHelp(),
   };
 

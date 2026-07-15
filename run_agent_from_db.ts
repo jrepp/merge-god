@@ -39,6 +39,8 @@ import { TrajectoryRuntime } from "./trajectory_runtime";
 import type { CompatibilityTrajectoryIds } from "./trajectory";
 import { initializeTelemetry, shutdownTelemetry } from "./telemetry";
 
+export type AgentResumeMode = "auto" | "required" | "never";
+
 function logJson(eventType: string, data: Record<string, unknown>): void {
   const logEntry = {
     timestamp: new Date().toISOString().replace("+00:00", "Z"),
@@ -130,6 +132,7 @@ export async function runAgentFromDb(
   repoPath: string | null = null,
   runtime: "pi" | "claude" = "pi",
   timeoutSeconds = 3600,
+  resumeMode: AgentResumeMode = "auto",
 ): Promise<boolean> {
   if (!repoName || typeof repoName !== "string") {
     logJson("agent_from_db", {
@@ -163,6 +166,7 @@ export async function runAgentFromDb(
     db_path: dbPath,
     runtime,
     timeout_seconds: timeoutSeconds,
+    resume_mode: resumeMode,
   });
 
   const syncStore = new SyncStore(dbPath);
@@ -256,7 +260,7 @@ export async function runAgentFromDb(
     const model = "pi";
     let trajectoryIds: CompatibilityTrajectoryIds | null = null;
     try {
-      const workflow = trajectoryRuntime.startPrAgentWorkflow({
+      const trajectoryInput = {
         repo_name: repoName,
         repo_path: repoPath ?? process.cwd(),
         pr_number: prNumber,
@@ -268,16 +272,30 @@ export async function runAgentFromDb(
         head_ref: stringValue(prDetails["headRefName"]) ?? stringValue(prDetails["head_branch"]),
         current_sha: stringValue(prDetails["head_sha"]),
         model,
-      });
+      };
+      const workflow = resumeMode === "never"
+        ? trajectoryRuntime.startPrAgentWorkflow(trajectoryInput)
+        : resumeMode === "required"
+          ? trajectoryRuntime.resumePrAgentWorkflow(trajectoryInput)
+          : trajectoryRuntime.startOrResumePrAgentWorkflow(trajectoryInput);
       trajectoryIds = workflow.ids;
       logJson("agent_from_db", {
-        action: "trajectory_created",
+        action: workflow.resumed ? "trajectory_resumed" : "trajectory_created",
         run_id: trajectoryIds.run_id,
         workflow_id: workflow.workflow.id,
         work_item_id: trajectoryIds.work_item_id,
         activity_id: trajectoryIds.activity_id,
+        resumed: workflow.resumed,
       });
     } catch (e) {
+      if (resumeMode === "required") {
+        logJson("agent_from_db", {
+          action: "error",
+          error: String(e),
+          hint: "Run 'merge-god pr <number>' to start new work instead",
+        });
+        return false;
+      }
       logJson("agent_from_db", {
         action: "warning",
         warning: `Failed to create trajectory record: ${String(e)}`,
@@ -410,7 +428,7 @@ export async function runAgentFromDb(
 
   try {
     const workItem = replayTrajectoryWorkItemFromContext(prDetails, prContextDict);
-    const workflow = trajectoryRuntime.startPrAgentWorkflow({
+    const trajectoryInput = {
       repo_name: repoName,
       repo_path: repoPath ?? process.cwd(),
       pr_number: prNumber,
@@ -418,16 +436,30 @@ export async function runAgentFromDb(
       ...workItem,
       session_id: sessionId,
       model,
-    });
+    };
+    const workflow = resumeMode === "never"
+      ? trajectoryRuntime.startPrAgentWorkflow(trajectoryInput)
+      : resumeMode === "required"
+        ? trajectoryRuntime.resumePrAgentWorkflow(trajectoryInput)
+        : trajectoryRuntime.startOrResumePrAgentWorkflow(trajectoryInput);
     trajectoryIds = workflow.ids;
     logJson("agent_from_db", {
-      action: "trajectory_created",
+      action: workflow.resumed ? "trajectory_resumed" : "trajectory_created",
       run_id: trajectoryIds.run_id,
       workflow_id: workflow.workflow.id,
       work_item_id: trajectoryIds.work_item_id,
       activity_id: trajectoryIds.activity_id,
+      resumed: workflow.resumed,
     });
   } catch (e) {
+    if (resumeMode === "required") {
+      logJson("agent_from_db", {
+        action: "error",
+        error: String(e),
+        hint: "Run 'merge-god pr <number>' to start new work instead",
+      });
+      return false;
+    }
     logJson("agent_from_db", {
       action: "warning",
       warning: `Failed to create trajectory record: ${String(e)}`,
@@ -552,7 +584,7 @@ export async function runAgentFromDb(
 }
 
 const USAGE =
-  "Usage: run_agent_from_db <repo_name> <pr_number> [--mode for-review|for-landing] [--runtime pi|claude] [--timeout SECONDS] [--db PATH] [--repo-path PATH]";
+  "Usage: run_agent_from_db <repo_name> <pr_number> [--mode for-review|for-landing] [--runtime pi|claude] [--resume auto|required|never] [--timeout SECONDS] [--db PATH] [--repo-path PATH]";
 
 export async function main(): Promise<boolean> {
   const parsed = parseArgs({
@@ -562,6 +594,7 @@ export async function main(): Promise<boolean> {
       mode: { type: "string", default: "for-landing" },
       runtime: { type: "string", default: "pi" },
       timeout: { type: "string", default: "3600" },
+      resume: { type: "string", default: "auto" },
       db: { type: "string", default: "merge-god-state.db" },
       "repo-path": { type: "string" },
     },
@@ -585,6 +618,7 @@ export async function main(): Promise<boolean> {
   const mode = parsed.values.mode ?? "for-landing";
   const runtimeRaw = parsed.values.runtime ?? "pi";
   const timeoutRaw = parsed.values.timeout ?? "3600";
+  const resumeRaw = parsed.values.resume ?? "auto";
   const dbPath = parsed.values.db ?? "merge-god-state.db";
   const repoPath = parsed.values["repo-path"] ?? null;
 
@@ -602,6 +636,13 @@ export async function main(): Promise<boolean> {
     });
     process.exit(2);
   }
+  if (resumeRaw !== "auto" && resumeRaw !== "required" && resumeRaw !== "never") {
+    logJson("error", {
+      error: `Invalid resume mode: ${resumeRaw}`,
+      hint: "Resume mode must be 'auto', 'required', or 'never'",
+    });
+    process.exit(2);
+  }
   const timeoutSeconds = Number.parseInt(timeoutRaw, 10);
   if (!Number.isInteger(timeoutSeconds) || timeoutSeconds <= 0) {
     logJson("error", {
@@ -612,7 +653,7 @@ export async function main(): Promise<boolean> {
   }
 
   const prNumber = Number(prNumberRaw);
-  if (!Number.isInteger(prNumber)) {
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
     logJson("error", {
       error: `Invalid PR number: ${prNumberRaw}`,
       hint: "PR number must be a positive integer",
@@ -623,7 +664,7 @@ export async function main(): Promise<boolean> {
   if (!existsSync(dbPath)) {
     logJson("error", {
       error: `Database not found: ${dbPath}`,
-      hint: "Run pr-loop.py first to create and populate the database",
+      hint: "Run 'merge-god scan' first to create and populate the database",
     });
     process.exit(1);
   }
@@ -656,7 +697,7 @@ export async function main(): Promise<boolean> {
     process.exit(1);
   }
 
-  return runAgentFromDb(dbPath, repoName, prNumber, mode, repoPath, runtimeRaw, timeoutSeconds);
+  return runAgentFromDb(dbPath, repoName, prNumber, mode, repoPath, runtimeRaw, timeoutSeconds, resumeRaw);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

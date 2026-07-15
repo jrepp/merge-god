@@ -5,7 +5,12 @@ group: Getting Started
 order: 3
 ---
 
-Make sure Node.js 22+, `gh`, and `pi` are on your `PATH`.
+Make sure Node.js 22+, `gh`, and `pi` are on your `PATH`. If Pi does not have a
+working default model yet, follow [Pi provider setup](./pi-provider-setup/).
+
+```bash
+npm install --global merge-god
+```
 
 ## 1. Initialize
 
@@ -13,13 +18,13 @@ Create `config.yaml` in the current directory. The CLI writes the runtime file
 from the same shape documented in `config.example.yaml`:
 
 ```bash
-npx merge-god@latest init
+merge-god init
 ```
 
 Or seed it with known repo paths:
 
 ```bash
-npx merge-god@latest init --repo /Users/you/dev/my-project
+merge-god init --repo /Users/you/dev/my-project
 ```
 
 The generated config is plain YAML:
@@ -38,7 +43,7 @@ See [Configuration](./configuration/) for every option.
 `doctor` verifies Node, git, `gh`, GitHub API auth, `pi`, and repo paths:
 
 ```bash
-npx merge-god@latest doctor
+merge-god doctor
 ```
 
 It accepts existing GitHub auth from `GITHUB_TOKEN`, `GH_TOKEN`, or
@@ -49,9 +54,9 @@ It accepts existing GitHub auth from `GITHUB_TOKEN`, `GH_TOKEN`, or
 Run the dashboard (ideally inside `tmux` or `screen` so it persists):
 
 ```bash
-npx merge-god@latest dashboard
+merge-god dashboard
 # or point at a specific config:
-npx merge-god@latest --config path/to/config.yaml dashboard
+merge-god --config path/to/config.yaml dashboard
 ```
 
 You'll see a live, color-coded view of every repo, the PRs being processed, and
