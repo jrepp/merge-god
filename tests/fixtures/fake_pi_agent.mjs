@@ -137,12 +137,31 @@ async function callTool(name, params = {}) {
 }
 
 async function startTurn() {
+  await emit("agent_start", { type: "agent_start" });
   await emit("session_start", { type: "session_start", reason: "startup" });
   await emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() });
+  await emit("message_end", {
+    type: "message_end",
+    message: assistantMessage,
+  });
 }
 
+const assistantMessage = {
+  role: "assistant",
+  model: "fake-pi-model",
+  usage: {
+    input: 10,
+    output: 5,
+    cacheRead: 2,
+    cacheWrite: 1,
+    totalTokens: 15,
+    cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+  },
+};
+
 async function endTurn() {
-  await emit("turn_end", { type: "turn_end", turnIndex: 0, message: {}, toolResults: [] });
+  await emit("turn_end", { type: "turn_end", turnIndex: 0, message: assistantMessage, toolResults: [] });
+  await emit("agent_end", { type: "agent_end", messages: [] });
 }
 
 async function waitForOrchestratorShutdown() {
@@ -221,15 +240,6 @@ async function runSuccessScenario() {
     status: "success",
     summary: "fake pi used merge-god coordination trajectory state",
     annotations: { labels: ["large", "embark-candidate"] },
-    telemetry: {
-      model: "fake-pi-model",
-      usage: {
-        input_tokens: 10,
-        output_tokens: 5,
-        total_tokens: 15,
-        source: "fake-pi-provider",
-      },
-    },
   });
   await endTurn();
   await waitForOrchestratorShutdown();

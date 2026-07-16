@@ -614,6 +614,8 @@ export interface AgentTokenUsage {
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
   total_tokens?: number;
+  estimated_cost?: number;
+  cost_source?: string;
   source?: string;
 }
 
@@ -838,6 +840,8 @@ export function agentTokenUsageFromResult(result: unknown): AgentTokenUsage | nu
       ? (inputTokens ?? 0) + (outputTokens ?? 0)
       : undefined;
   const totalTokens = explicitTotal ?? summedTotal;
+  const estimatedCost = [usage["cost_usd"], usage["estimated_cost"], telemetryObj["cost_usd"], telemetryObj["estimated_cost"]]
+    .find((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
 
   if (
     modelValue(resultObj, telemetryObj, usage) === undefined &&
@@ -861,6 +865,12 @@ export function agentTokenUsageFromResult(result: unknown): AgentTokenUsage | nu
       typeof usage["source"] === "string" && usage["source"].trim()
         ? usage["source"].trim()
         : PI_TOOL_NAMES.complete,
+    ...(estimatedCost === undefined ? {} : {
+      estimated_cost: estimatedCost,
+      cost_source: typeof usage["cost_source"] === "string" && usage["cost_source"].trim()
+        ? usage["cost_source"].trim()
+        : "provider-reported",
+    }),
   };
 }
 
