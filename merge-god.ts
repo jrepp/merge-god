@@ -313,6 +313,10 @@ function cmdPrWorkflow(g: GlobalArgs, action: "pr" | "resume"): number {
   return runChild("pr_workflow_cli.ts", args);
 }
 
+function cmdNewPr(g: GlobalArgs): number {
+  return runChild("new_pr_cli.ts", g.rest);
+}
+
 function cmdCurrentRepo(g: GlobalArgs): number {
   if (prLoopChildArgs(g.rest)) return cmdPrLoop(g);
   const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
@@ -546,6 +550,7 @@ PRIMARY COMMANDS:
   repo        Process the current repository queue.
   pr          Sync and process one PR; resumes interrupted work automatically.
   resume      Resume the latest interrupted PR, or a specified PR number.
+  new-pr      Prepare a branch/worktree and open a tagged draft PR.
   dashboard   Run the World HUD TUI dashboard (also the default command).
   duplicates  Analyze duplicate PRs; optionally close patches already on base.
 
@@ -564,6 +569,7 @@ COMMON WORKFLOWS:
   merge-god doctor
   merge-god repo --once --dry-run
   merge-god pr 14
+  merge-god new-pr feat/my-change --worktree ../my-change
   merge-god resume
   merge-god status
 Run 'merge-god help' for details.
@@ -597,6 +603,7 @@ export function main(): number {
     repo: () => cmdCurrentRepo(g),
     pr: () => cmdPrWorkflow(g, "pr"),
     resume: () => cmdPrWorkflow(g, "resume"),
+    "new-pr": () => cmdNewPr(g),
     scan: () => cmdScan(g),
     agent: () => cmdAgent(g),
     status: () => cmdStatus(g),

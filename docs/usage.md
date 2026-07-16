@@ -134,6 +134,42 @@ The comment is **not** a source of truth. Merge decisions must use the durable
 trajectory/database state and validation evidence. If the comment update fails,
 processing continues and the failure is logged.
 
+## Start a pull request
+
+`new-pr` prepares a branch and opens or updates its pull request with exactly
+one processing-mode label. The default is the safer `for-review` mode and a
+draft PR, so merge-god will not process partially written work.
+
+Prepare a branch in the current checkout:
+
+```bash
+merge-god new-pr feat/clear-status-output
+```
+
+Or keep the current checkout untouched by using a new worktree:
+
+```bash
+merge-god new-pr feat/clear-status-output \
+  --worktree ../merge-god-clear-status
+```
+
+The first invocation fetches the base branch and prepares the branch. If the
+branch has no commits beyond the base, it stops and prints the path where work
+should continue. After committing, rerun the same command to push without
+force, create the draft PR, and apply `for-review`:
+
+```bash
+merge-god new-pr feat/clear-status-output \
+  --title "feat(cli): clarify status output"
+```
+
+Use `--mode for-landing` for the basic landing pass, `--label NAME` for
+additional labels, and `--ready` only when the PR should enter merge-god's
+queue immediately. On an existing PR, the command repairs its mode labels and
+marks it ready when requested. `--dry-run` prints the inferred repository,
+base, worktree, labels, and planned operations without fetching or changing
+local or GitHub state.
+
 ## Process or resume one PR
 
 From inside a repository checkout, one command syncs current PR context and
