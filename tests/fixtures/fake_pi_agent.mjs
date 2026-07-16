@@ -146,17 +146,21 @@ async function startTurn() {
   });
 }
 
+const assistantUsage = {
+  input: 10,
+  output: 5,
+  cacheRead: 2,
+  cacheWrite: 1,
+  totalTokens: 15,
+  ...(scenario === "success_without_cost" ? {} : {
+    cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
+  }),
+};
+
 const assistantMessage = {
   role: "assistant",
   model: "fake-pi-model",
-  usage: {
-    input: 10,
-    output: 5,
-    cacheRead: 2,
-    cacheWrite: 1,
-    totalTokens: 15,
-    cost: { input: 0.001, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.002 },
-  },
+  usage: assistantUsage,
 };
 
 async function endTurn() {
@@ -251,7 +255,7 @@ if (scenario === "agent_stall_before_session") {
 
 await startTurn();
 
-if (scenario === "success") {
+if (scenario === "success" || scenario === "success_without_cost") {
   await runSuccessScenario();
 } else if (scenario === "agent_reported_failure") {
   await callTool(PI_TOOL_NAMES.complete, {

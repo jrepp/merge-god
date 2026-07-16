@@ -1755,6 +1755,25 @@ describe("agent flow: runPiAgent result contract", () => {
     }
   });
 
+  test("runtime message telemetry preserves unknown provider cost", async () => {
+    const harness = new PiAgentHarness();
+    try {
+      const run = await harness.run("success_without_cost");
+      assert.equal(run.result.returncode, 0, run.result.stderr || run.result.stdout);
+      assert.equal(run.result.result?.["status"], "success");
+      const telemetry = run.result.result?.["telemetry"] as Record<string, unknown> | undefined;
+      const usage = telemetry?.["usage"] as Record<string, unknown> | undefined;
+      assert.equal(usage?.["total_tokens"], 15);
+      assert.equal(usage?.["cost_usd"], null);
+      assert.equal(usage?.["cost_source"], null);
+      const agentCompletion = run.state.events.find((event) => event.event_type === "pi.agent.completed");
+      assert.equal(agentCompletion?.payload["total_tokens"], 15);
+      assert.equal(agentCompletion?.payload["cost_usd"], null);
+    } finally {
+      harness.close();
+    }
+  });
+
   test("detached agent worktrees can start from an explicit PR-head ref", () => {
     const repoDir = mkdtempSync(path.join(tmpdir(), "mg-agent-worktree-ref-"));
     let worktree: ReturnType<GitOps["createDetachedWorktree"]> | null = null;

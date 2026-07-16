@@ -78,6 +78,7 @@ export function registerMergeGodPiExtension(
     cache_read_input_tokens: 0,
     total_tokens: 0,
     cost_usd: 0,
+    cost_messages: 0,
     messages: 0,
   };
 
@@ -154,8 +155,8 @@ export function registerMergeGodPiExtension(
           cache_creation_input_tokens: runtimeUsage.cache_creation_input_tokens,
           cache_read_input_tokens: runtimeUsage.cache_read_input_tokens,
           total_tokens: runtimeUsage.total_tokens,
-          cost_usd: runtimeUsage.cost_usd,
-          cost_source: "pi-message-usage",
+          cost_usd: runtimeUsage.cost_messages === runtimeUsage.messages ? runtimeUsage.cost_usd : null,
+          cost_source: runtimeUsage.cost_messages === runtimeUsage.messages ? "pi-message-usage" : null,
           source: "pi-message-usage",
         },
       };
@@ -197,6 +198,7 @@ export function registerMergeGodPiExtension(
         cache_read_input_tokens: 0,
         total_tokens: 0,
         cost_usd: 0,
+        cost_messages: 0,
         messages: 0,
       });
       await reportTrajectoryEvent("pi.agent.started", {
@@ -213,7 +215,10 @@ export function registerMergeGodPiExtension(
       runtimeUsage.cache_creation_input_tokens += Number(telemetry["cache_creation_input_tokens"] ?? 0);
       runtimeUsage.cache_read_input_tokens += Number(telemetry["cache_read_input_tokens"] ?? 0);
       runtimeUsage.total_tokens += Number(telemetry["total_tokens"] ?? 0);
-      runtimeUsage.cost_usd += Number(telemetry["cost_usd"] ?? 0);
+      if (typeof telemetry["cost_usd"] === "number") {
+        runtimeUsage.cost_usd += telemetry["cost_usd"];
+        runtimeUsage.cost_messages++;
+      }
       runtimeUsage.messages++;
       if (typeof telemetry["model"] === "string") runtimeModel = telemetry["model"];
     });
