@@ -433,6 +433,12 @@ function cmdProfile(g: GlobalArgs): number {
   return runChild(args[0]!, args.slice(1));
 }
 
+function cmdHistory(g: GlobalArgs): number {
+  const args = [...g.rest];
+  if (g.db) args.push("--db", g.db);
+  return runChild("trajectory_history.ts", args);
+}
+
 function cmdCohort(g: GlobalArgs): number {
   const args = ["embark_cohort.ts", ...g.rest];
   if (g.db) args.push("--db", g.db);
@@ -547,6 +553,7 @@ PRIMARY COMMANDS:
   init        Create config.yaml for the current checkout.
   doctor      Check local prerequisites and configured repository paths.
   status      Show system status and statistics.
+  history     Show trajectory timing/cost history; drill down or profile it.
   repo        Process the current repository queue.
   pr          Sync and process one PR; resumes interrupted work automatically.
   resume      Resume the latest interrupted PR, or a specified PR number.
@@ -572,6 +579,7 @@ COMMON WORKFLOWS:
   merge-god new-pr feat/my-change --worktree ../my-change
   merge-god resume
   merge-god status
+  merge-god history --profile
 Run 'merge-god help' for details.
 `;
 
@@ -607,6 +615,7 @@ export function main(): number {
     scan: () => cmdScan(g),
     agent: () => cmdAgent(g),
     status: () => cmdStatus(g),
+    history: () => cmdHistory(g),
     "pr-loop": () => cmdPrLoop(g),
     run: () => cmdPrLoop(g),
     duplicates: () => cmdDuplicates(g),

@@ -225,6 +225,8 @@ report results back over HTTP.
 - Powerful, tool-mediated agent capabilities
 - Can handle complex multi-step tasks
 - Clean boundary between merge-god and the agent (extensible, swappable)
+- Durable Pi lifecycle events for agent, turn, and tool-call timing, with exact
+  message usage and cost projected into queryable spans
 
 **Negative:**
 
@@ -232,6 +234,12 @@ report results back over HTTP.
 - API costs for LLM usage
 - Non-deterministic outcomes
 - May need prompt/tool tuning
+
+The coordination API preserves the source trajectory events and projects their
+start/completion pairs into `trajectory_spans`. `merge-god history` reads these
+spans as a one-shot historical view; its drill-down and aggregate profile views
+do not poll the database. This keeps raw evidence available while making p95
+latency, failures, token use, and provider-reported cost directly queryable.
 
 ---
 

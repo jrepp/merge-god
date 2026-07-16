@@ -112,6 +112,27 @@ request is what verifies provider authentication and model access. Once both
 checks pass, run a labelled test PR through `merge-god pr 123` for an end-to-end
 check.
 
+## 5. Verify trajectory telemetry
+
+The bundled merge-god Pi extension records lifecycle events at the source. It
+times the agent, each turn, and every tool call, and accumulates the model,
+input/output/cache tokens, and exact cost reported on Pi assistant messages.
+The agent does not have to estimate or manually report these values.
+
+After processing the labelled test PR, inspect the result:
+
+```bash
+merge-god history
+merge-god history <run-prefix>
+merge-god history --profile
+```
+
+For a custom provider, configure accurate model prices in Pi so its
+message-level `usage.cost.total` is meaningful. Provider costs use the Pi model
+definition's input, output, cache-read, and cache-write rates. A free local
+model may legitimately report zero; unavailable usage or cost remains unknown
+in merge-god instead of being inferred from wall-clock time.
+
 ## Environment note
 
 Pi inherits the environment of the merge-god process, so credentials exported

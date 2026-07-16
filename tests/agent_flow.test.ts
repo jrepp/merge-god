@@ -1755,6 +1755,25 @@ describe("agent flow: runPiAgent result contract", () => {
     }
   });
 
+  test("runtime message telemetry preserves unknown provider cost", async () => {
+    const harness = new PiAgentHarness();
+    try {
+      const run = await harness.run("success_without_cost");
+      assert.equal(run.result.returncode, 0, run.result.stderr || run.result.stdout);
+      assert.equal(run.result.result?.["status"], "success");
+      const telemetry = run.result.result?.["telemetry"] as Record<string, unknown> | undefined;
+      const usage = telemetry?.["usage"] as Record<string, unknown> | undefined;
+      assert.equal(usage?.["total_tokens"], 15);
+      assert.equal(usage?.["cost_usd"], null);
+      assert.equal(usage?.["cost_source"], null);
+      const agentCompletion = run.state.events.find((event) => event.event_type === "pi.agent.completed");
+      assert.equal(agentCompletion?.payload["total_tokens"], 15);
+      assert.equal(agentCompletion?.payload["cost_usd"], null);
+    } finally {
+      harness.close();
+    }
+  });
+
   test("detached agent worktrees can start from an explicit PR-head ref", () => {
     const repoDir = mkdtempSync(path.join(tmpdir(), "mg-agent-worktree-ref-"));
     let worktree: ReturnType<GitOps["createDetachedWorktree"]> | null = null;
@@ -1803,8 +1822,12 @@ describe("agent flow: runPiAgent result contract", () => {
         usage: {
           input_tokens: 10,
           output_tokens: 5,
+          cache_creation_input_tokens: 1,
+          cache_read_input_tokens: 2,
           total_tokens: 15,
-          source: "fake-pi-provider",
+          cost_usd: 0.002,
+          cost_source: "pi-message-usage",
+          source: "pi-message-usage",
         },
       });
       assert.match(result.stdout, /"tool":"mg_context"/);
@@ -1833,7 +1856,14 @@ describe("agent flow: runPiAgent result contract", () => {
       assert.ok(state.events.some((event) => event.event_type === "activity.child_created"));
       assert.ok(state.events.some((event) => event.event_type === "activity.completed"));
       assert.ok(state.events.some((event) => event.event_type === "pi.agent_turn.started"));
-      assert.ok(state.events.some((event) => event.event_type === "pi.agent_turn.completed"));
+      const completedTurn = state.events.find((event) => event.event_type === "pi.agent_turn.completed");
+      assert.equal(completedTurn?.payload["total_tokens"], 15);
+      assert.equal(completedTurn?.payload["estimated_cost"], 0.002);
+      const agentCompletion = state.events.find((event) => event.event_type === "pi.agent.completed");
+      assert.equal(agentCompletion?.payload["model"], "fake-pi-model");
+      assert.equal(agentCompletion?.payload["total_tokens"], 15);
+      assert.equal(agentCompletion?.payload["turn_count"], 1);
+      assert.equal(agentCompletion?.payload["tool_call_count"], 9);
       assert.ok(state.events.some((event) => event.event_type === "pi.extension.injected"));
       assert.ok(state.events.some((event) => event.event_type === "pi.tool_surface.registered"));
       const completedToolEvents = state.events.filter((event) => event.event_type === "pi.tool_call.completed");
@@ -1845,6 +1875,7 @@ describe("agent flow: runPiAgent result contract", () => {
       assert.equal(completedToolEvents[0]?.payload["turn_id"], `${started.ids.activity_session_id}:turn:0`);
       assert.ok(state.hierarchy.some((node) => node.level === "agent_turn" && node.state === "closed"));
       assert.equal(state.hierarchy.filter((node) => node.level === "tool_call").length, 9);
+      assert.equal(state.activity_sessions[0]?.total_tokens, 15);
       assert.ok(state.activities.some((activity) =>
         activity.parent_activity_id === started.ids.activity_id && activity.type === "ci_diagnosis"
       ));

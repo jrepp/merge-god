@@ -65,6 +65,49 @@ export function registerMergeGodPiExtension(
     typeof runtimePi.getAllTools === "function" && typeof runtimePi.getActiveTools === "function";
   const runtimeCallStarts = new Map<string, { started_at: string; started_ms: number }>();
   let currentTurnId: string | null = null;
+  let agentStartedAt: string | null = null;
+  let agentStartedMs: number | null = null;
+  let runtimeModel: string | null = null;
+  let runtimeTurnCount = 0;
+  let runtimeToolCallCount = 0;
+  let runtimeToolFailureCount = 0;
+  const runtimeUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    total_tokens: 0,
+    cost_usd: 0,
+    cost_messages: 0,
+    messages: 0,
+  };
+
+  const messageTelemetry = (value: unknown): Record<string, unknown> | null => {
+    const message = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+    if (message["role"] !== "assistant") return null;
+    const usage = typeof message["usage"] === "object" && message["usage"] !== null
+      ? message["usage"] as Record<string, unknown>
+      : null;
+    if (!usage) return null;
+    const cost = typeof usage["cost"] === "object" && usage["cost"] !== null
+      ? usage["cost"] as Record<string, unknown>
+      : {};
+    const valueOrZero = (key: string): number =>
+      typeof usage[key] === "number" && usage[key] >= 0 ? usage[key] : 0;
+    return {
+      model: typeof message["model"] === "string" && message["model"].trim()
+        ? message["model"].trim()
+        : null,
+      input_tokens: valueOrZero("input"),
+      output_tokens: valueOrZero("output"),
+      cache_creation_input_tokens: valueOrZero("cacheWrite"),
+      cache_read_input_tokens: valueOrZero("cacheRead"),
+      total_tokens: valueOrZero("totalTokens"),
+      cost_usd: typeof cost["total"] === "number" && cost["total"] >= 0 ? cost["total"] : null,
+      cost_source: "pi-message-usage",
+      usage_source: "pi-message-usage",
+    };
+  };
 
   const publishToolSurface = (
     tools: Array<Record<string, unknown>>,
@@ -95,7 +138,107 @@ export function registerMergeGodPiExtension(
     body: payload,
   }).then((response) => response.ok).catch(() => false);
 
+  const reportTrajectoryEvent = (eventType: string, payload: Record<string, unknown>): Promise<boolean> =>
+    client.request({
+      path: "/trajectory/event",
+      method: "POST",
+      body: { event_type: eventType, actor: "pi-extension", payload },
+    }).then((response) => response.ok).catch(() => false);
+
+  const exactRuntimeTelemetry = (): Record<string, unknown> | null => runtimeUsage.messages === 0
+    ? null
+    : {
+        model: runtimeModel,
+        usage: {
+          input_tokens: runtimeUsage.input_tokens,
+          output_tokens: runtimeUsage.output_tokens,
+          cache_creation_input_tokens: runtimeUsage.cache_creation_input_tokens,
+          cache_read_input_tokens: runtimeUsage.cache_read_input_tokens,
+          total_tokens: runtimeUsage.total_tokens,
+          cost_usd: runtimeUsage.cost_messages === runtimeUsage.messages ? runtimeUsage.cost_usd : null,
+          cost_source: runtimeUsage.cost_messages === runtimeUsage.messages ? "pi-message-usage" : null,
+          source: "pi-message-usage",
+        },
+      };
+
+  const mergeRuntimeTelemetry = (params: unknown): Record<string, unknown> => {
+    const input = typeof params === "object" && params !== null ? params as Record<string, unknown> : {};
+    const automatic = exactRuntimeTelemetry();
+    if (!automatic) return input;
+    const reportedTelemetry = typeof input["telemetry"] === "object" && input["telemetry"] !== null
+      ? input["telemetry"] as Record<string, unknown>
+      : {};
+    const reportedUsage = typeof reportedTelemetry["usage"] === "object" && reportedTelemetry["usage"] !== null
+      ? reportedTelemetry["usage"] as Record<string, unknown>
+      : {};
+    const automaticUsage = automatic["usage"] as Record<string, unknown>;
+    return {
+      ...input,
+      telemetry: {
+        ...reportedTelemetry,
+        model: automatic["model"] ?? reportedTelemetry["model"],
+        usage: { ...reportedUsage, ...automaticUsage },
+      },
+    };
+  };
+
   if (supportsRuntimeTooling) {
+    runtimePi.on!("agent_start", async () => {
+      const started = now();
+      agentStartedAt = started.toISOString();
+      agentStartedMs = started.getTime();
+      runtimeModel = null;
+      runtimeTurnCount = 0;
+      runtimeToolCallCount = 0;
+      runtimeToolFailureCount = 0;
+      Object.assign(runtimeUsage, {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        total_tokens: 0,
+        cost_usd: 0,
+        cost_messages: 0,
+        messages: 0,
+      });
+      await reportTrajectoryEvent("pi.agent.started", {
+        status: "started",
+        started_at: agentStartedAt,
+        trace_context: traceContext(),
+      });
+    });
+    runtimePi.on!("message_end", async (event) => {
+      const telemetry = messageTelemetry(event?.message);
+      if (!telemetry) return;
+      runtimeUsage.input_tokens += Number(telemetry["input_tokens"] ?? 0);
+      runtimeUsage.output_tokens += Number(telemetry["output_tokens"] ?? 0);
+      runtimeUsage.cache_creation_input_tokens += Number(telemetry["cache_creation_input_tokens"] ?? 0);
+      runtimeUsage.cache_read_input_tokens += Number(telemetry["cache_read_input_tokens"] ?? 0);
+      runtimeUsage.total_tokens += Number(telemetry["total_tokens"] ?? 0);
+      if (typeof telemetry["cost_usd"] === "number") {
+        runtimeUsage.cost_usd += telemetry["cost_usd"];
+        runtimeUsage.cost_messages++;
+      }
+      runtimeUsage.messages++;
+      if (typeof telemetry["model"] === "string") runtimeModel = telemetry["model"];
+    });
+    runtimePi.on!("agent_end", async () => {
+      const completed = now();
+      const automatic = exactRuntimeTelemetry();
+      const usage = automatic?.["usage"] as Record<string, unknown> | undefined;
+      await reportTrajectoryEvent("pi.agent.completed", {
+        status: "completed",
+        started_at: agentStartedAt ?? completed.toISOString(),
+        completed_at: completed.toISOString(),
+        duration_ms: agentStartedMs === null ? 0 : Math.max(0, completed.getTime() - agentStartedMs),
+        model: automatic?.["model"] ?? null,
+        ...(usage ?? {}),
+        turn_count: runtimeTurnCount,
+        tool_call_count: runtimeToolCallCount,
+        failed_tool_call_count: runtimeToolFailureCount,
+        trace_context: traceContext(),
+      });
+    });
     runtimePi.on!("session_start", async () => {
       const activeTools = new Set(runtimePi.getActiveTools!());
       const configuredTools = runtimePi.getAllTools!().map((tool) => ({
@@ -128,10 +271,13 @@ export function registerMergeGodPiExtension(
         phase: "completed",
         turn_id: turnId,
         turn_index: event.turnIndex,
+        ...(messageTelemetry(event.message) ?? {}),
       });
+      runtimeTurnCount++;
       currentTurnId = null;
     });
     runtimePi.on!("tool_execution_start", async (event) => {
+      runtimeToolCallCount++;
       const startedAt = now().toISOString();
       runtimeCallStarts.set(event.toolCallId, { started_at: startedAt, started_ms: now().getTime() });
       await reportToolCall({
@@ -150,6 +296,7 @@ export function registerMergeGodPiExtension(
         ? event.result.details as Record<string, unknown>
         : {};
       const failed = event.isError === true || details["ok"] === false;
+      if (failed) runtimeToolFailureCount++;
       await reportToolCall({
         phase: "completed",
         call_id: event.toolCallId,
@@ -478,6 +625,14 @@ export function registerMergeGodPiExtension(
                   type: "number",
                   description: "Exact total tokens consumed, when reported by the provider.",
                 },
+                cost_usd: {
+                  type: "number",
+                  description: "Exact provider-reported cost in USD, when available. Do not estimate.",
+                },
+                cost_source: {
+                  type: "string",
+                  description: "Source of the exact cost value, for example provider response usage.",
+                },
                 source: {
                   type: "string",
                   description: "Usage source, for example pi usage metadata or provider response usage.",
@@ -512,6 +667,14 @@ export function registerMergeGodPiExtension(
               type: "number",
               description: "Exact total tokens consumed, when reported by the provider.",
             },
+            cost_usd: {
+              type: "number",
+              description: "Exact provider-reported cost in USD, when available. Do not estimate.",
+            },
+            cost_source: {
+              type: "string",
+              description: "Source of the exact cost value.",
+            },
             source: {
               type: "string",
               description: "Usage source, for example pi usage metadata or provider response usage.",
@@ -524,7 +687,7 @@ export function registerMergeGodPiExtension(
       additionalProperties: false,
     } as any,
     async execute(_toolCallId, params) {
-      return executeInteraction(PI_TOOL_NAMES.complete, params);
+      return executeInteraction(PI_TOOL_NAMES.complete, mergeRuntimeTelemetry(params));
     },
   } as any);
 
