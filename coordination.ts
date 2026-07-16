@@ -147,12 +147,83 @@ export interface PiAgentTurnMeasurement {
   started_at: string;
   completed_at: string | null;
   tool_call_ids: string[];
+  model?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  total_tokens?: number | null;
+  estimated_cost?: number | null;
+  usage_source?: string | null;
+  cost_source?: string | null;
 }
 
 export interface PiAgentProgress {
   action: "agent_started" | "tool_started" | "tool_completed";
   tool?: string;
   success?: boolean;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function nonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Normalize exact provider telemetry reported through mg_complete. */
+export function piAgentCompletionTelemetry(
+  result: JsonResult,
+  startedAt: string,
+  completedAt: string,
+  durationMs: number,
+  tooling: PiToolingSnapshot,
+): Record<string, unknown> {
+  const resultRecord = recordValue(result);
+  const telemetry = recordValue(resultRecord["telemetry"]);
+  const telemetryUsage = recordValue(telemetry["usage"]);
+  const legacyUsage = recordValue(resultRecord["usage"]);
+  const usage = Object.keys(telemetryUsage).length > 0
+    ? telemetryUsage
+    : Object.keys(legacyUsage).length > 0 ? legacyUsage : resultRecord;
+  const inputTokens = nonNegativeNumber(usage["input_tokens"]);
+  const outputTokens = nonNegativeNumber(usage["output_tokens"]);
+  const explicitTotal = nonNegativeNumber(usage["total_tokens"]);
+  const totalTokens = explicitTotal ?? (inputTokens !== null || outputTokens !== null
+    ? (inputTokens ?? 0) + (outputTokens ?? 0)
+    : null);
+  const estimatedCost = nonNegativeNumber(usage["cost_usd"])
+    ?? nonNegativeNumber(usage["estimated_cost"])
+    ?? nonNegativeNumber(telemetry["cost_usd"])
+    ?? nonNegativeNumber(telemetry["estimated_cost"]);
+  const model = [usage["model"], telemetry["model"], resultRecord["model"]]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return {
+    status: typeof resultRecord["status"] === "string" ? resultRecord["status"] : "unknown",
+    started_at: startedAt,
+    completed_at: completedAt,
+    duration_ms: Math.max(0, durationMs),
+    model: model?.trim() ?? null,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: nonNegativeNumber(usage["cache_creation_input_tokens"]),
+    cache_read_input_tokens: nonNegativeNumber(usage["cache_read_input_tokens"]),
+    total_tokens: totalTokens,
+    estimated_cost: estimatedCost,
+    usage_source: typeof usage["source"] === "string" ? usage["source"] : null,
+    cost_source: estimatedCost === null
+      ? null
+      : typeof usage["cost_source"] === "string" ? usage["cost_source"] : "provider-reported",
+    turn_count: tooling.turns.length,
+    tool_call_count: tooling.reliability.started,
+    tool_call_failure_count: tooling.reliability.failed,
+    tool_call_incomplete_count: tooling.reliability.incomplete,
+    tool_call_protocol_error_count: tooling.reliability.protocol_errors,
+    tool_call_completion_ratio: tooling.reliability.completion_ratio,
+  };
 }
 
 /** Reduce pi's verbose JSON event stream to safe, operator-facing progress. */
@@ -904,6 +975,17 @@ export class CoordinationServer {
       started_at: existing?.started_at ?? (typeof body["started_at"] === "string" ? body["started_at"] : new Date().toISOString()),
       completed_at: phase === "completed" ? new Date().toISOString() : null,
       tool_call_ids: existing?.tool_call_ids ?? [],
+      ...(phase === "completed" ? {
+        model: typeof body["model"] === "string" ? body["model"] : null,
+        input_tokens: nonNegativeNumber(body["input_tokens"]),
+        output_tokens: nonNegativeNumber(body["output_tokens"]),
+        cache_creation_input_tokens: nonNegativeNumber(body["cache_creation_input_tokens"]),
+        cache_read_input_tokens: nonNegativeNumber(body["cache_read_input_tokens"]),
+        total_tokens: nonNegativeNumber(body["total_tokens"]),
+        estimated_cost: nonNegativeNumber(body["estimated_cost"]) ?? nonNegativeNumber(body["cost_usd"]),
+        usage_source: typeof body["usage_source"] === "string" ? body["usage_source"] : null,
+        cost_source: typeof body["cost_source"] === "string" ? body["cost_source"] : null,
+      } : {}),
     };
     this._agentTurns.set(turnId, turn);
     if (this._trajectory) {
@@ -1210,6 +1292,7 @@ export async function runPiAgent(
   };
   if (extraEnv) Object.assign(env, extraEnv);
   const startedAt = Date.now();
+  const startedAtIso = new Date(startedAt).toISOString();
   recordPromptRendered("pi_work_item", workItem.prompt, {
     "merge_god.work_item_kind": workItem.kind ?? "unknown",
     "merge_god.pr_number": workItem.pr_number,
@@ -1322,7 +1405,8 @@ export async function runPiAgent(
     };
     const resultStatus = typeof result.result?.["status"] === "string" ? result.result["status"] : null;
     const success = result.returncode === 0 && resultStatus === "success";
-    const duration = (Date.now() - startedAt) / 1000;
+    const completedAt = new Date();
+    const duration = (completedAt.getTime() - startedAt) / 1000;
     const resultSummary =
       typeof result.result?.["summary"] === "string"
         ? result.result["summary"]
@@ -1351,6 +1435,19 @@ export async function runPiAgent(
       "merge_god.mode": workItem.mode,
       "merge_god.returncode": result.returncode,
     });
+    if (trajectory) {
+      await Promise.resolve(trajectory.appendEvent({
+        event_type: "pi.agent.completed",
+        actor: "merge-god",
+        payload: piAgentCompletionTelemetry(
+          result.result,
+          startedAtIso,
+          completedAt.toISOString(),
+          completedAt.getTime() - startedAt,
+          tooling,
+        ),
+      }));
+    }
     return result;
   } finally {
     await server.stop();

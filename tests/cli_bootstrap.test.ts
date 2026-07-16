@@ -71,6 +71,7 @@ test("packaged compatibility entrypoint uses the canonical CLI surface", () => {
   assert.equal(compatibility.stdout, root.stdout);
   assert.match(root.stdout, /PRIMARY COMMANDS:/);
   assert.match(root.stdout, /merge-god pr 14/);
+  assert.match(root.stdout, /merge-god history --profile/);
   assert.doesNotMatch(root.stdout, /^\s+(?:test|validate)\s/m);
 });
 

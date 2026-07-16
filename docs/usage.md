@@ -206,6 +206,22 @@ This lets you turn a backlog issue into a landed change end-to-end.
 
 ## Observability
 
+- **Trajectory history** — inspect elapsed time, exact Pi-reported cost, token
+  usage, turn count, and tool reliability without polling the database:
+
+  ```bash
+  merge-god history
+  merge-god history <run-prefix>
+  merge-god history --profile
+  merge-god history --repo owner/repo --limit 100 --json
+  ```
+
+  The default view is a compact historical run table. A run ID or unique prefix
+  drills into its agent, turn, and tool-call timeline. `--profile` aggregates
+  average and p95 run duration, total cost and tokens, slowest runs, and per-tool
+  latency and failures for profile-guided optimization. In-progress and
+  interrupted work remains visible; unavailable provider usage or cost is shown
+  as `—` rather than estimated.
 - **Structured logging** — every run emits JSON events with timestamps and repo
   context to `merge-god-dashboard.log` (configurable).
 - **Notifications** — send real-time updates (start, complete, errors) to an

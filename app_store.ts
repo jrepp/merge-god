@@ -44,6 +44,13 @@ import type {
   WorksetRecord,
 } from "./trajectory";
 import { planEmbarkRecovery } from "./embark_recovery_model";
+import {
+  buildTrajectoryOptimizationProfile,
+  type TrajectoryOptimizationProfile,
+  type TrajectoryRunDrilldown,
+  type TrajectoryRunProfile,
+  type TrajectoryTimingSpan,
+} from "./trajectory_telemetry";
 
 export class DatabaseError extends Error {}
 
@@ -410,6 +417,37 @@ export class AppStore {
 
       CREATE INDEX IF NOT EXISTS idx_trajectory_events_run
       ON trajectory_events(run_id, id);
+
+      CREATE TABLE IF NOT EXISTS trajectory_spans (
+          span_id TEXT PRIMARY KEY,
+          operation_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          activity_id TEXT,
+          activity_session_id TEXT,
+          parent_span_id TEXT,
+          kind TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at TIMESTAMP NOT NULL,
+          completed_at TIMESTAMP,
+          duration_ms REAL,
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          cache_creation_input_tokens INTEGER,
+          cache_read_input_tokens INTEGER,
+          total_tokens INTEGER,
+          estimated_cost REAL,
+          metadata TEXT NOT NULL DEFAULT '{}',
+          FOREIGN KEY (run_id) REFERENCES orchestration_runs(run_id),
+          FOREIGN KEY (activity_id) REFERENCES activities(activity_id),
+          FOREIGN KEY (activity_session_id) REFERENCES activity_sessions(activity_session_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_trajectory_spans_run
+      ON trajectory_spans(run_id, started_at, kind);
+
+      CREATE INDEX IF NOT EXISTS idx_trajectory_spans_operation
+      ON trajectory_spans(kind, name, started_at);
 
       CREATE TABLE IF NOT EXISTS context_captures (
           context_capture_id TEXT PRIMARY KEY,
@@ -2458,6 +2496,122 @@ export class AppStore {
     return rows.map((row) => this.parseOrchestrationRun(row));
   }
 
+  /** Return recent trajectory summaries with timing, usage, cost, turn, and tool totals. */
+  getTrajectoryRunProfiles(repoName: string | null = null, limit: number = 20): TrajectoryRunProfile[] {
+    const rows = repoName
+      ? this.db.prepare("SELECT * FROM orchestration_runs WHERE repo_name = ? ORDER BY started_at DESC LIMIT ?")
+          .all(repoName, limit) as Record<string, unknown>[]
+      : this.db.prepare("SELECT * FROM orchestration_runs ORDER BY started_at DESC LIMIT ?")
+          .all(limit) as Record<string, unknown>[];
+    return rows.map((row) => this.buildTrajectoryRunProfile(row));
+  }
+
+  /** Load one trajectory summary and its normalized Pi timing spans. */
+  getTrajectoryRunDrilldown(runReference: string): TrajectoryRunDrilldown | null {
+    const matches = this.db.prepare(
+      `SELECT * FROM orchestration_runs
+       WHERE run_id = ? OR run_id LIKE ?
+       ORDER BY CASE WHEN run_id = ? THEN 0 ELSE 1 END, started_at DESC
+       LIMIT 2`,
+    ).all(runReference, `${runReference}%`, runReference) as Record<string, unknown>[];
+    if (matches.length > 1 && String(matches[0]?.["run_id"]) !== runReference) {
+      throw new DatabaseError(`Trajectory run prefix is ambiguous: ${runReference}`);
+    }
+    const row = matches[0];
+    if (!row) return null;
+    const runId = String(row["run_id"]);
+    return {
+      summary: this.buildTrajectoryRunProfile(row),
+      spans: this.getTrajectoryTimingSpans(runId),
+    };
+  }
+
+  /** Aggregate recent runs into bottleneck-oriented optimization evidence. */
+  getTrajectoryOptimizationProfile(
+    repoName: string | null = null,
+    limit: number = 100,
+  ): TrajectoryOptimizationProfile {
+    const runs = this.getTrajectoryRunProfiles(repoName, limit);
+    const spans = runs.flatMap((run) => this.getTrajectoryTimingSpans(run.run_id));
+    return buildTrajectoryOptimizationProfile(runs, spans);
+  }
+
+  private getTrajectoryTimingSpans(runId: string): TrajectoryTimingSpan[] {
+    const rows = this.db
+      .prepare("SELECT * FROM trajectory_spans WHERE run_id = ? ORDER BY started_at, kind, span_id")
+      .all(runId) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      span_id: String(row["span_id"]),
+      operation_id: String(row["operation_id"]),
+      run_id: String(row["run_id"]),
+      activity_id: strOrNull(row["activity_id"]),
+      activity_session_id: strOrNull(row["activity_session_id"]),
+      parent_span_id: strOrNull(row["parent_span_id"]),
+      kind: row["kind"] as TrajectoryTimingSpan["kind"],
+      name: String(row["name"]),
+      status: String(row["status"]),
+      started_at: String(row["started_at"]),
+      completed_at: strOrNull(row["completed_at"]),
+      duration_ms: numOrNull(row["duration_ms"]),
+      input_tokens: numOrNull(row["input_tokens"]),
+      output_tokens: numOrNull(row["output_tokens"]),
+      cache_creation_input_tokens: numOrNull(row["cache_creation_input_tokens"]),
+      cache_read_input_tokens: numOrNull(row["cache_read_input_tokens"]),
+      total_tokens: numOrNull(row["total_tokens"]),
+      estimated_cost: numOrNull(row["estimated_cost"]),
+      metadata: parseJsonObject(row["metadata"]),
+    }));
+  }
+
+  private buildTrajectoryRunProfile(row: Record<string, unknown>): TrajectoryRunProfile {
+    const runId = String(row["run_id"]);
+    const spans = this.getTrajectoryTimingSpans(runId);
+    const agentSpans = spans.filter((span) => span.kind === "agent");
+    const toolSpans = spans.filter((span) => span.kind === "tool_call");
+    const turnSpans = spans.filter((span) => span.kind === "agent_turn");
+    const startedAt = String(row["started_at"]);
+    const completedAt = strOrNull(row["completed_at"]);
+    const endMs = completedAt ? Date.parse(completedAt) : Date.now();
+    const startMs = Date.parse(startedAt);
+    const durationMs = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(0, endMs - startMs) : 0;
+    const sumNullable = (values: Array<number | null>): number | null => {
+      const known = values.filter((value): value is number => value !== null);
+      return known.length === 0 ? null : known.reduce((sum, value) => sum + value, 0);
+    };
+    const prRows = this.db.prepare(
+      `SELECT wi.number
+       FROM work_items wi JOIN worksets ws ON ws.workset_id = wi.workset_id
+       WHERE ws.run_id = ? ORDER BY wi.priority, wi.number`,
+    ).all(runId) as Array<{ number: number }>;
+    const latestAgent = agentSpans.at(-1) ?? null;
+    const modelPolicy = parseJsonObject(row["model_policy"]);
+    return {
+      run_id: runId,
+      repo_name: String(row["repo_name"]),
+      pr_numbers: prRows.map((item) => Number(item.number)),
+      status: String(row["status"]),
+      current_phase: String(row["current_phase"]),
+      started_at: startedAt,
+      completed_at: completedAt,
+      duration_ms: durationMs,
+      agent_duration_ms: sumNullable(agentSpans.map((span) => span.duration_ms)),
+      model: typeof latestAgent?.metadata["model"] === "string"
+        ? latestAgent.metadata["model"]
+        : strOrNull(modelPolicy["model"]),
+      input_tokens: sumNullable(agentSpans.map((span) => span.input_tokens)),
+      output_tokens: sumNullable(agentSpans.map((span) => span.output_tokens)),
+      cache_creation_input_tokens: sumNullable(agentSpans.map((span) => span.cache_creation_input_tokens)),
+      cache_read_input_tokens: sumNullable(agentSpans.map((span) => span.cache_read_input_tokens)),
+      total_tokens: sumNullable(agentSpans.map((span) => span.total_tokens)),
+      estimated_cost: sumNullable(agentSpans.map((span) => span.estimated_cost)),
+      turn_count: turnSpans.length,
+      tool_call_count: toolSpans.length,
+      failed_tool_call_count: toolSpans.filter((span) => span.status === "failed").length,
+      incomplete_tool_call_count: toolSpans.filter((span) => span.status === "incomplete").length,
+      tool_duration_ms: toolSpans.reduce((sum, span) => sum + (span.duration_ms ?? 0), 0),
+    };
+  }
+
   /** Load the most relevant trajectory for a repository, preferring active runs. */
   getLatestTrajectoryStateForRepo(repoName: string, repoPath: string | null = null): TrajectoryState | null {
     const params: string[] = [repoName];
@@ -2725,6 +2879,7 @@ export class AppStore {
     payload: JsonObject;
   }): string {
     const eventId = randomUUID();
+    const createdAt = nowIso();
     this.db
       .prepare(
         `
@@ -2744,9 +2899,127 @@ export class AppStore {
         input.event_type,
         input.actor,
         stringifyJson(input.payload),
-        nowIso(),
+        createdAt,
       );
+    this.projectTrajectoryTimingEvent(input, createdAt);
     return eventId;
+  }
+
+  private projectTrajectoryTimingEvent(
+    input: {
+      run_id: string;
+      activity_id?: string | null;
+      activity_session_id?: string | null;
+      event_type: string;
+      payload: JsonObject;
+    },
+    createdAt: string,
+  ): void {
+    const lifecycle = /^(pi\.agent|pi\.agent_turn|pi\.tool_call)\.(completed|started|interrupted|incomplete)$/.exec(
+      input.event_type,
+    );
+    if (!lifecycle) return;
+    const family = lifecycle[1]!;
+    const phase = lifecycle[2]!;
+    const kind = family === "pi.agent" ? "agent" : family === "pi.agent_turn" ? "agent_turn" : "tool_call";
+    const activitySessionId = input.activity_session_id ?? null;
+    const operationId = kind === "agent"
+      ? activitySessionId ?? input.run_id
+      : kind === "agent_turn"
+        ? strOrNull(input.payload["turn_id"])
+        : strOrNull(input.payload["call_id"]);
+    if (!operationId) return;
+    const spanId = `${input.run_id}:${kind}:${operationId}`;
+    const turnId = strOrNull(input.payload["turn_id"]);
+    const parentSpanId = kind === "agent"
+      ? null
+      : kind === "tool_call" && turnId
+        ? `${input.run_id}:agent_turn:${turnId}`
+        : activitySessionId
+          ? `${input.run_id}:agent:${activitySessionId}`
+          : null;
+    const payloadStartedAt = strOrNull(input.payload["started_at"]);
+    const payloadCompletedAt = strOrNull(input.payload["completed_at"]);
+    const terminal = phase === "completed" || phase === "interrupted" || phase === "incomplete";
+    const startedAt = payloadStartedAt && Number.isFinite(Date.parse(payloadStartedAt)) ? payloadStartedAt : createdAt;
+    const completedAt = terminal
+      ? payloadCompletedAt && Number.isFinite(Date.parse(payloadCompletedAt)) ? payloadCompletedAt : createdAt
+      : null;
+    const explicitDuration = numOrNull(input.payload["duration_ms"]);
+    const calculatedDuration = completedAt === null ? null : Math.max(0, Date.parse(completedAt) - Date.parse(startedAt));
+    const durationMs = explicitDuration !== null && explicitDuration >= 0 ? explicitDuration : calculatedDuration;
+    const payloadStatus = strOrNull(input.payload["status"]);
+    const status = phase === "interrupted" || phase === "incomplete"
+      ? phase
+      : payloadStatus ?? phase;
+    const name = kind === "agent"
+      ? "pi-agent"
+      : kind === "agent_turn"
+        ? `turn-${String(input.payload["turn_index"] ?? operationId)}`
+        : strOrNull(input.payload["tool_name"]) ?? "unknown-tool";
+    const numberOrNull = (key: string): number | null => {
+      const value = numOrNull(input.payload[key]);
+      return value !== null && value >= 0 ? value : null;
+    };
+    const estimatedCost = numberOrNull("estimated_cost") ?? numberOrNull("cost_usd");
+    this.db.prepare(
+      `INSERT INTO trajectory_spans (
+         span_id, operation_id, run_id, activity_id, activity_session_id,
+         parent_span_id, kind, name, status, started_at, completed_at,
+         duration_ms, input_tokens, output_tokens, cache_creation_input_tokens,
+         cache_read_input_tokens, total_tokens, estimated_cost, metadata
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(span_id) DO UPDATE SET
+         status = excluded.status,
+         name = excluded.name,
+         completed_at = COALESCE(trajectory_spans.completed_at, excluded.completed_at),
+         duration_ms = COALESCE(trajectory_spans.duration_ms, excluded.duration_ms),
+         input_tokens = COALESCE(excluded.input_tokens, trajectory_spans.input_tokens),
+         output_tokens = COALESCE(excluded.output_tokens, trajectory_spans.output_tokens),
+         cache_creation_input_tokens = COALESCE(excluded.cache_creation_input_tokens, trajectory_spans.cache_creation_input_tokens),
+         cache_read_input_tokens = COALESCE(excluded.cache_read_input_tokens, trajectory_spans.cache_read_input_tokens),
+         total_tokens = COALESCE(excluded.total_tokens, trajectory_spans.total_tokens),
+         estimated_cost = COALESCE(excluded.estimated_cost, trajectory_spans.estimated_cost),
+         metadata = excluded.metadata`,
+    ).run(
+      spanId,
+      operationId,
+      input.run_id,
+      input.activity_id ?? null,
+      activitySessionId,
+      parentSpanId,
+      kind,
+      name,
+      status,
+      startedAt,
+      completedAt,
+      durationMs,
+      numberOrNull("input_tokens"),
+      numberOrNull("output_tokens"),
+      numberOrNull("cache_creation_input_tokens"),
+      numberOrNull("cache_read_input_tokens"),
+      numberOrNull("total_tokens"),
+      estimatedCost,
+      stringifyJson(input.payload),
+    );
+    if (kind === "agent" && activitySessionId) {
+      this.db.prepare(
+        `UPDATE activity_sessions SET
+           model = COALESCE(?, model),
+           input_tokens = COALESCE(?, input_tokens),
+           output_tokens = COALESCE(?, output_tokens),
+           total_tokens = COALESCE(?, total_tokens),
+           estimated_cost = COALESCE(?, estimated_cost)
+         WHERE activity_session_id = ?`,
+      ).run(
+        strOrNull(input.payload["model"]),
+        numberOrNull("input_tokens"),
+        numberOrNull("output_tokens"),
+        numberOrNull("total_tokens"),
+        estimatedCost,
+        activitySessionId,
+      );
+    }
   }
 
   private parseOrchestrationRun(row: Record<string, unknown>): OrchestrationRunRecord {

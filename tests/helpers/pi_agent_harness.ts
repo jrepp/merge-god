@@ -11,6 +11,7 @@ import { TrajectoryRuntime, type RuntimeStartResult } from "../../trajectory_run
 
 export type PiAgentScenario =
   | "success"
+  | "success_without_cost"
   | "agent_crash_before_session"
   | "agent_stall_before_session"
   | "agent_reported_failure"
