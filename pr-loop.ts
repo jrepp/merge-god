@@ -16,14 +16,13 @@
  *   - No label = the PR is skipped.
  */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 import YAML from "yaml";
-import { runPiAgent, type AgentObservation, type WorkItem } from "./coordination";
+import { runPiAgent, type AgentObservation, type PiAgentResult, type WorkItem } from "./coordination";
 import { AppStore } from "./app_store";
 import { PI_TOOL_NAMES } from "./pi/tool_contract";
 import {
@@ -38,6 +37,12 @@ import { SyncStore } from "@merge-god/github-sync";
 import type { DiffAvailability } from "./merge_pr_model";
 import { parseMergeTreeConflicts } from "./merge_tree_conflict_model";
 import { createSpawnCommandRunner } from "./command_runner";
+import {
+  enableDryRun,
+  ExecutionPolicy,
+  dryRunFromEnv,
+  type OperationTrace,
+} from "./execution_policy";
 import { validateGitRef } from "./git_ref";
 import { analyzeCiStatus, gatherPrContextFromSource } from "./pr_context_gatherer";
 import { GhCliPullRequestContextSource } from "./pr_context_source";
@@ -81,6 +86,7 @@ import {
   addTelemetryEvent,
   initializeTelemetry,
   recordPromptRendered,
+  recordOperation,
   shutdownTelemetry,
   sanitizeSpanAttributes,
   withTelemetrySpan,
@@ -97,6 +103,36 @@ export { validateGitRef } from "./git_ref";
 export { classifyPrFailureState, piAgentFailureReason } from "./pr_processor_model";
 export { buildIssuePrompt, buildPrPrompt, buildReviewPrompt } from "./pr_prompt";
 export type { PrProcessingState } from "./pr_state";
+
+export interface ProcessingDependencies {
+  executionPolicy?: ExecutionPolicy;
+  runAgent?: typeof runPiAgent;
+}
+
+async function executeAgent(
+  workItem: WorkItem,
+  repoPath: string,
+  options: Parameters<typeof runPiAgent>[2],
+  dependencies: ProcessingDependencies,
+) {
+  const policy = dependencies.executionPolicy ?? currentExecutionPolicy();
+  return policy.perform<PiAgentResult>(
+    {
+      kind: "agent",
+      name: "run pi agent",
+      effect: "mutation",
+      target: workItem.kind === "pr" ? `pr:${workItem.pr_number}` : `issue:${workItem.issue_number}`,
+      metadata: {
+        work_item_kind: workItem.kind,
+        pr_number: workItem.pr_number,
+        issue_number: workItem.issue_number,
+        mode: workItem.mode,
+        prompt_size: workItem.prompt.length,
+      },
+    },
+    () => (dependencies.runAgent ?? runPiAgent)(workItem, repoPath, options),
+  );
+}
 
 // SyncStore persists PR context for offline agent runs.
 const DB_AVAILABLE: boolean = true;
@@ -132,20 +168,37 @@ function errMsg(e: unknown): string {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return currentExecutionPolicy().perform(
+    {
+      kind: "delay",
+      name: "sleep",
+      effect: "mutation",
+      target: `${ms}ms`,
+      metadata: { duration_ms: ms },
+    },
+    () => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+  ).then(() => undefined);
 }
 
 // --- Logging ----------------------------------------------------------------
 
 /** Emit structured JSON logs with timestamp. */
 export function logJson(eventType: string, data: Record<string, unknown>): void {
+  const enriched = { dry_run: dryRunFromEnv(), ...data };
   const entry = {
     timestamp: new Date().toISOString().replace("+00:00", "Z"),
     event: eventType,
-    data,
+    data: enriched,
   };
-  addTelemetryEvent(`log.${eventType}`, logTelemetryAttributes(eventType, data));
+  addTelemetryEvent(`log.${eventType}`, logTelemetryAttributes(eventType, enriched));
+  if (eventType === "operation_trace") recordOperation(enriched);
   console.log(JSON.stringify(entry));
+}
+
+function currentExecutionPolicy(): ExecutionPolicy {
+  return new ExecutionPolicy({
+    observer: (event: OperationTrace) => logJson("operation_trace", { ...event }),
+  });
 }
 
 function logTelemetryAttributes(eventType: string, data: Record<string, unknown>): Record<string, unknown> {
@@ -208,46 +261,57 @@ export async function requestConfirmation(
     details: details ?? {},
   });
 
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (val: boolean): void => {
-      if (settled) return;
-      settled = true;
-      rl.close();
-      clearTimeout(timeoutHandle);
-      resolve(val);
-    };
+  const execution = await currentExecutionPolicy().perform(
+    {
+      kind: "confirmation",
+      name: actionType,
+      effect: "mutation",
+      target: prNumber === null ? undefined : `pr:${prNumber}`,
+      metadata: { description, details: details ?? {}, timeout_seconds: timeout },
+    },
+    () => new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (val: boolean): void => {
+        if (settled) return;
+        settled = true;
+        rl.close();
+        clearTimeout(timeoutHandle);
+        resolve(val);
+      };
 
-    const rl = readline.createInterface({ input: process.stdin, terminal: false });
+      const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
-    const timeoutHandle = setTimeout(() => {
-      logJson("confirmation_timeout", { action_type: actionType, timeout_seconds: timeout });
-      finish(false);
-    }, timeout * 1000);
-
-    rl.on("line", (line: string) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      try {
-        const response = JSON.parse(trimmed) as { approved?: boolean };
-        const approved = !!response.approved;
-        logJson("confirmation_received", { action_type: actionType, approved });
-        finish(approved);
-      } catch (e) {
-        logJson("confirmation_error", {
-          action_type: actionType,
-          error: `JSON decode error: ${errMsg(e)}`,
-          line: trimmed.slice(0, 100),
-        });
+      const timeoutHandle = setTimeout(() => {
+        logJson("confirmation_timeout", { action_type: actionType, timeout_seconds: timeout });
         finish(false);
-      }
-    });
+      }, timeout * 1000);
 
-    rl.on("error", (e) => {
-      logJson("confirmation_error", { action_type: actionType, error: errMsg(e) });
-      finish(false);
-    });
-  });
+      rl.on("line", (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          const response = JSON.parse(trimmed) as { approved?: boolean };
+          const approved = !!response.approved;
+          logJson("confirmation_received", { action_type: actionType, approved });
+          finish(approved);
+        } catch (e) {
+          logJson("confirmation_error", {
+            action_type: actionType,
+            error: `JSON decode error: ${errMsg(e)}`,
+            line: trimmed.slice(0, 100),
+          });
+          finish(false);
+        }
+      });
+
+      rl.on("error", (e) => {
+        logJson("confirmation_error", { action_type: actionType, error: errMsg(e) });
+        finish(false);
+      });
+    }),
+    true,
+  );
+  return execution.value ?? true;
 }
 
 /**
@@ -270,12 +334,23 @@ export async function sendNotification(
     if (priority) headers["Priority"] = priority;
     if (tags) headers["Tags"] = tags.join(",");
 
-    const response = await fetch(topicUrl, {
-      method: "POST",
-      headers,
-      body: message,
-      signal: AbortSignal.timeout(10_000),
-    });
+    const execution = await currentExecutionPolicy().perform(
+      {
+        kind: "notification",
+        name: "send ntfy notification",
+        effect: "mutation",
+        target: topicUrl,
+        metadata: { title, priority, tags, message_length: message.length },
+      },
+      () => fetch(topicUrl, {
+        method: "POST",
+        headers,
+        body: message,
+        signal: AbortSignal.timeout(10_000),
+      }),
+    );
+    if (execution.outcome === "would_execute") return true;
+    const response = execution.value!;
 
     if (response.status === 200) {
       logJson("notification", {
@@ -316,27 +391,14 @@ export function runCommand(
   maxOutputSize = 50 * 1024 * 1024,
 ): [number, string, string] {
   try {
-    const result = spawnSync(cmd[0] ?? "", cmd.slice(1), {
+    const result = currentExecutionPolicy().runCommandSync(cmd[0] ?? "", cmd.slice(1), {
       cwd,
-      encoding: "utf8",
-      timeout: timeout * 1000,
+      timeoutMs: timeout * 1000,
       maxBuffer: maxOutputSize + Math.max(1024 * 1024, Math.floor(maxOutputSize / 10)),
     });
 
-    if (result.error) {
-      const code = (result.error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
-        return [-1, "", `Command not found: ${cmd[0] ?? "unknown"}`];
-      }
-      return [-1, "", `Command failed: ${errMsg(result.error)}`];
-    }
-
-    let stdout = result.stdout ?? "";
-    let stderr = result.stderr ?? "";
-
-    if (result.signal === "SIGTERM") {
-      return [-1, stdout, stderr || `Command timed out after ${timeout} seconds`];
-    }
+    let stdout = result.stdout;
+    let stderr = result.stderr;
 
     const stdoutSize = Buffer.byteLength(stdout, "utf8");
     const stderrSize = Buffer.byteLength(stderr, "utf8");
@@ -361,7 +423,7 @@ export function runCommand(
       stderr = stderr.slice(0, Math.floor(maxOutputSize / 2)) + "\n... [truncated] ...";
     }
 
-    return [result.status ?? -1, stdout, stderr];
+    return [result.status, stdout, stderr];
   } catch (e) {
     return [-1, "", `Command failed: ${errMsg(e)}`];
   }
@@ -1625,6 +1687,7 @@ export async function processPr(
   repoName: string | null = null,
   mergeRules = "",
   appStore: AppStore | null = null,
+  dependencies: ProcessingDependencies = {},
 ): Promise<boolean> {
   const inputResult = normalizePrProcessingInput(pr, defaultBranch, mode);
 
@@ -1865,7 +1928,7 @@ export async function processPr(
 
   try {
     const startedAt = Date.now();
-    const piResult = await runPiAgent(workItem, process.cwd(), {
+    const agentExecution = await executeAgent(workItem, process.cwd(), {
       timeout: 3600,
       gitObserver: createGitOpsObserver(),
       agentObserver: createAgentObservationObserver(),
@@ -1873,7 +1936,21 @@ export async function processPr(
       trajectory: trajectoryRuntime && trajectoryStart
         ? trajectoryRuntime.bridgeForPiAgent(trajectoryStart.ids)
         : undefined,
-    });
+    }, dependencies);
+    if (agentExecution.outcome === "would_execute") {
+      span.setAttributes({
+        "merge_god.dry_run": true,
+        "merge_god.result_status": "would_execute",
+      });
+      logJson("process_pr", {
+        action: "would_execute_agent",
+        pr_number: prNumber,
+        mode,
+        prompt_size: prompt.length,
+      });
+      return true;
+    }
+    const piResult = agentExecution.value!;
     const duration = (Date.now() - startedAt) / 1000;
     const agentUsage = {
       ...(agentTokenUsageFromResult(piResult.result) ?? {}),
@@ -2045,6 +2122,7 @@ export async function processIssue(
   defaultBranch = "main",
   interactive = false,
   mergeRules = "",
+  dependencies: ProcessingDependencies = {},
 ): Promise<boolean> {
   const issueNumber = issue["number"] as number | undefined;
   const title = (issue["title"] as string | undefined) ?? "Unknown";
@@ -2176,11 +2254,25 @@ export async function processIssue(
     repo_path: process.cwd(),
   };
 
-  const piResult = await runPiAgent(workItem, process.cwd(), {
+  const agentExecution = await executeAgent(workItem, process.cwd(), {
     timeout: 3600,
     gitObserver: createGitOpsObserver(),
     agentObserver: createAgentObservationObserver(),
-  });
+  }, dependencies);
+  if (agentExecution.outcome === "would_execute") {
+    span.setAttributes({
+      "merge_god.dry_run": true,
+      "merge_god.result_status": "would_execute",
+    });
+    logJson("process_issue", {
+      action: "would_execute_agent",
+      issue_number: issueNumber,
+      branch: branchName,
+      prompt_size: prompt.length,
+    });
+    return true;
+  }
+  const piResult = agentExecution.value!;
   const { returncode: rc, stdout, stderr: piStderr, result: piResultObj } = piResult;
 
   logJson("process_issue", {
@@ -2410,7 +2502,7 @@ export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
     watchIssues: !!parsed.values["watch-issues"],
     interactive: !!parsed.values.interactive,
     once,
-    dryRun: !!parsed.values["dry-run"],
+    dryRun: !!parsed.values["dry-run"] || dryRunFromEnv(),
     maxIterations: once ? 1 : explicitMaxIterations,
     idleSleepSeconds: positiveIntegerOption(parsed.values["idle-sleep-seconds"], "--idle-sleep-seconds") ?? 300,
     syncFailureSleepSeconds: positiveIntegerOption(parsed.values["sync-failure-sleep-seconds"], "--sync-failure-sleep-seconds") ?? 60,
@@ -2429,7 +2521,6 @@ export async function main(): Promise<void> {
     void shutdownTelemetry().finally(() => process.exit(0));
   });
 
-  initializeTelemetry(undefined, logJson);
   let args: CliArgs;
   try {
     args = parseCliArgs();
@@ -2440,6 +2531,11 @@ export async function main(): Promise<void> {
     );
     process.exit(2);
   }
+  if (args.dryRun) enableDryRun();
+  initializeTelemetry(undefined, logJson);
+  const processingDependencies: ProcessingDependencies = {
+    executionPolicy: currentExecutionPolicy(),
+  };
   const repoPath = resolve(args.repoPath);
   const requestedDbPath = args.dbPath ? resolve(args.dbPath) : null;
 
@@ -2462,7 +2558,7 @@ export async function main(): Promise<void> {
 
   process.chdir(repoPath);
 
-  if (!args.dryRun && !ensureRemediationModeLabels()) {
+  if (!ensureRemediationModeLabels()) {
     logJson("startup", {
       warning: "One or more remediation mode labels could not be ensured",
     });
@@ -2529,13 +2625,7 @@ export async function main(): Promise<void> {
     iteration++;
     logJson("iteration", { number: iteration, action: "start" });
 
-    if (args.dryRun) {
-      logJson("sync_repo", {
-        action: "skipped",
-        reason: "dry_run",
-        message: "Dry-run inspects the current checkout and GitHub queue without changing branches or pulling.",
-      });
-    } else if (!syncRepo(defaultBranch)) {
+    if (!syncRepo(defaultBranch)) {
       logJson("iteration", { number: iteration, action: "sync_failed", sleep_seconds: args.syncFailureSleepSeconds });
       if (shouldStopLoop(iteration, args)) {
         logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });
@@ -2574,6 +2664,7 @@ export async function main(): Promise<void> {
               defaultBranch,
               args.interactive,
               mergeRules,
+              processingDependencies,
             );
             if (success && issueNumber) processingIssues.delete(issueNumber);
             issuesProcessed++;
@@ -2645,7 +2736,7 @@ export async function main(): Promise<void> {
     if (args.dryRun) {
       logJson("iteration", {
         number: iteration,
-        action: "dry_run",
+        action: "dry_run_plan",
         planned_prs: stackMergeOrderPlan.ordered.map((item) => ({
           pr_number: prDetailsNumber(item.pr),
           mode: item.mode,
@@ -2653,47 +2744,47 @@ export async function main(): Promise<void> {
           stack_dependents: item.stack_dependent_numbers,
         })),
       });
-    } else {
-      for (const planned of stackMergeOrderPlan.ordered) {
-        const pr = planned.pr;
-        const mode = planned.mode;
-        const prNumber = prDetailsNumber(pr) ?? undefined;
+    }
+    for (const planned of stackMergeOrderPlan.ordered) {
+      const pr = planned.pr;
+      const mode = planned.mode;
+      const prNumber = prDetailsNumber(pr) ?? undefined;
 
-        if (prNumber && processingPrs.has(prNumber)) {
-          logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
-          continue;
-        }
-
-        if (prNumber) processingPrs.add(prNumber);
-
-        try {
-          const success = await processPr(
-            pr,
-            guidelines,
-            commitExamples,
-            defaultBranch,
-            mode,
-            args.interactive,
-            db,
-            repoName,
-            mergeRules,
-            appStore,
-          );
-          if (success && prNumber) processingPrs.delete(prNumber);
-          totalProcessed++;
-        } catch (e) {
-          const reason = errMsg(e);
-          logJson("process_pr", {
-            action: "exception",
-            pr_number: prNumber,
-            mode,
-            error: reason,
-          });
-          if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
-          if (prNumber) processingPrs.delete(prNumber);
-        }
-        await sleep(args.betweenItemsSleepSeconds * 1000);
+      if (prNumber && processingPrs.has(prNumber)) {
+        logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
+        continue;
       }
+
+      if (prNumber) processingPrs.add(prNumber);
+
+      try {
+        const success = await processPr(
+          pr,
+          guidelines,
+          commitExamples,
+          defaultBranch,
+          mode,
+          args.interactive,
+          db,
+          repoName,
+          mergeRules,
+          appStore,
+          processingDependencies,
+        );
+        if (success && prNumber) processingPrs.delete(prNumber);
+        totalProcessed++;
+      } catch (e) {
+        const reason = errMsg(e);
+        logJson("process_pr", {
+          action: "exception",
+          pr_number: prNumber,
+          mode,
+          error: reason,
+        });
+        if (prNumber) setPrStateLabel(prNumber, classifyPrFailureState(reason), reason);
+        if (prNumber) processingPrs.delete(prNumber);
+      }
+      await sleep(args.betweenItemsSleepSeconds * 1000);
     }
     processingPrs.clear();
 
@@ -2712,6 +2803,7 @@ export async function main(): Promise<void> {
 
     await sleep(args.idleSleepSeconds * 1000);
   }
+  await shutdownTelemetry();
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
