@@ -24,6 +24,7 @@ import { prDetailsBaseBranch, prDetailsHeadBranch, prDetailsUrl } from "./pr_det
 import { categorizedPrNumbers, planStackedPrMergeOrder, suggestProcessingLabel } from "./pr_loop_model";
 import { pullRequestSnapshotFromDetails } from "./pr_snapshot_model";
 import { gather_pr_context, getOpenPrs, getPrDetails } from "./pr-loop";
+import { parseOperatorConfig } from "./schemas/config";
 
 interface RepoConfig {
   path?: string;
@@ -63,14 +64,7 @@ function loadConfig(configPath: string): Record<string, unknown> {
     throw new Error(`Config file not found: ${configPath}`);
   }
   const text = readFileSync(configPath, "utf8");
-  const config = YAML.parse(text);
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error("Invalid config file: expected a mapping at the top level");
-  }
-  if (!("repos" in (config as Record<string, unknown>))) {
-    throw new Error("Invalid config file: missing 'repos' section");
-  }
-  return config as Record<string, unknown>;
+  return parseOperatorConfig(YAML.parse(text));
 }
 
 async function syncPrToDatabase(

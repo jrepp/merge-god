@@ -35,6 +35,14 @@ import {
   sanitizeSpanAttributes,
   withTelemetrySpan,
 } from "./telemetry";
+import {
+  childActivityBodySchema,
+  closeActivityBodySchema,
+  CoordinationBodyError,
+  parseCoordinationBody,
+  trajectoryEventBodySchema,
+  trajectoryProposalBodySchema,
+} from "./schemas/coordination";
 
 export interface WorkItem {
   kind?: string;
@@ -621,27 +629,21 @@ export class CoordinationServer {
         }
         this._readBody(req)
           .then((body) => {
-            const eventType = typeof body["event_type"] === "string" ? body["event_type"] : "";
-            if (!eventType) {
-              this._send(res, 400, { ok: false, error: "event_type is required" });
-              return;
-            }
-            const refs = typeof body["refs"] === "object" && body["refs"] !== null
-              ? (body["refs"] as Record<string, unknown>)
-              : {};
-            const payload = typeof body["payload"] === "object" && body["payload"] !== null
-              ? (body["payload"] as Record<string, unknown>)
-              : {};
+            const input = parseCoordinationBody(trajectoryEventBodySchema, body);
             return Promise.resolve(
               this._trajectory!.appendEvent({
-                event_type: eventType,
-                actor: typeof body["actor"] === "string" ? body["actor"] : "pi-agent",
-                payload,
-                refs,
+                event_type: input.event_type,
+                actor: input.actor,
+                payload: input.payload,
+                refs: input.refs,
               }),
             ).then((event) => this._send(res, 200, { ok: true, event }));
           })
-          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+          .catch((err: unknown) => this._send(
+            res,
+            err instanceof CoordinationBodyError ? 400 : 500,
+            { ok: false, error: String(err) },
+          ));
         return;
       }
       if (url === "/trajectory/heartbeat") {
@@ -662,28 +664,16 @@ export class CoordinationServer {
         }
         this._readBody(req)
           .then((body) => {
-            const nextAction = typeof body["next_action"] === "string" ? body["next_action"] : "";
-            const rationale = typeof body["rationale"] === "string" ? body["rationale"] : "";
-            if (!nextAction || !rationale) {
-              this._send(res, 400, { ok: false, error: "next_action and rationale are required" });
-              return;
-            }
-            const blockers = Array.isArray(body["blockers"])
-              ? body["blockers"].filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
-              : [];
-            const evidenceRefs = Array.isArray(body["evidence_refs"])
-              ? body["evidence_refs"].filter((item): item is string => typeof item === "string")
-              : [];
+            const input = parseCoordinationBody(trajectoryProposalBodySchema, body);
             return Promise.resolve(
-              this._trajectory!.proposeNext!({
-                next_action: nextAction,
-                rationale,
-                blockers,
-                evidence_refs: evidenceRefs,
-              }),
+              this._trajectory!.proposeNext!(input),
             ).then((proposal) => this._send(res, 200, { ok: true, proposal }));
           })
-          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+          .catch((err: unknown) => this._send(
+            res,
+            err instanceof CoordinationBodyError ? 400 : 500,
+            { ok: false, error: String(err) },
+          ));
         return;
       }
       if (url === "/trajectory/child-activity") {
@@ -693,40 +683,16 @@ export class CoordinationServer {
         }
         this._readBody(req)
           .then((body) => {
-            const type = typeof body["type"] === "string" ? body["type"] : "";
-            const summary = typeof body["summary"] === "string" ? body["summary"] : "";
-            const modelTier = typeof body["model_tier"] === "string" ? body["model_tier"] : "";
-            const modelReason = typeof body["model_reason"] === "string" ? body["model_reason"] : "";
-            if (!type || !summary || !modelTier || !modelReason) {
-              this._send(res, 400, {
-                ok: false,
-                error: "type, summary, model_tier, and model_reason are required",
-              });
-              return;
-            }
-            const contextPackRefs = Array.isArray(body["context_pack_refs"])
-              ? body["context_pack_refs"].filter((item): item is string => typeof item === "string")
-              : [];
-            const evidenceRefs = Array.isArray(body["evidence_refs"])
-              ? body["evidence_refs"].filter((item): item is string => typeof item === "string")
-              : [];
-            const metadata = typeof body["metadata"] === "object" && body["metadata"] !== null
-              ? (body["metadata"] as Record<string, unknown>)
-              : {};
+            const input = parseCoordinationBody(childActivityBodySchema, body);
             return Promise.resolve(
-              this._trajectory!.createChildActivity!({
-                type,
-                summary,
-                model_tier: modelTier,
-                model_reason: modelReason,
-                prompt_runtime_ref: typeof body["prompt_runtime_ref"] === "string" ? body["prompt_runtime_ref"] : null,
-                context_pack_refs: contextPackRefs,
-                evidence_refs: evidenceRefs,
-                metadata,
-              }),
+              this._trajectory!.createChildActivity!(input),
             ).then((activity) => this._send(res, 200, { ok: true, activity }));
           })
-          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+          .catch((err: unknown) => this._send(
+            res,
+            err instanceof CoordinationBodyError ? 400 : 500,
+            { ok: false, error: String(err) },
+          ));
         return;
       }
       if (url === "/trajectory/close-activity") {
@@ -736,20 +702,15 @@ export class CoordinationServer {
         }
         this._readBody(req)
           .then((body) => {
-            const activityId = typeof body["activity_id"] === "string" ? body["activity_id"].trim() : "";
-            const summary = typeof body["summary"] === "string" ? body["summary"].trim() : "";
-            if (!activityId || !summary || typeof body["success"] !== "boolean") {
-              this._send(res, 400, { ok: false, error: "activity_id, success, and summary are required" });
-              return;
-            }
-            return Promise.resolve(this._trajectory!.closeActivity!({
-              activity_id: activityId,
-              success: body["success"] as boolean,
-              summary,
-              error_message: typeof body["error_message"] === "string" ? body["error_message"] : null,
-            })).then((activity) => this._send(res, 200, { ok: true, activity }));
+            const input = parseCoordinationBody(closeActivityBodySchema, body);
+            return Promise.resolve(this._trajectory!.closeActivity!(input))
+              .then((activity) => this._send(res, 200, { ok: true, activity }));
           })
-          .catch((err: unknown) => this._send(res, 500, { ok: false, error: String(err) }));
+          .catch((err: unknown) => this._send(
+            res,
+            err instanceof CoordinationBodyError ? 400 : 500,
+            { ok: false, error: String(err) },
+          ));
         return;
       }
       if (url === "/tool-surface") {
