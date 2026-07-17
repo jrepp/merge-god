@@ -11,7 +11,6 @@
  *   Process 3: Agent invocation and PR processing
  */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
@@ -19,7 +18,10 @@ import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import chalk from "chalk";
+import { Command, CommanderError, Option } from "commander";
 import YAML from "yaml";
+import { dryRunFromEnv, enableDryRun, ExecutionPolicy } from "./execution_policy";
+import { parseOperatorConfig } from "./schemas/config";
 
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
 const TSX_LOADER = createRequire(import.meta.url).resolve("tsx");
@@ -51,16 +53,28 @@ function logText(message: string, level: LogLevel = "info"): void {
   console.error(colors[level](`${prefix[level]} ${message}`));
 }
 
+function projectMutation(g: GlobalArgs, kind: string, name: string, target: string): number | null {
+  if (!g.dryRun) return null;
+  logJson("operation_trace", {
+    action: "would_execute",
+    outcome: "would_execute",
+    dry_run: true,
+    kind,
+    name,
+    effect: "mutation",
+    target,
+  });
+  return 0;
+}
+
 /** Run a sibling .ts script in a child process (process isolation). */
 function runChild(script: string, args: string[]): number {
   try {
-    const result = spawnSync(process.execPath, ["--import", TSX_LOADER, resolve(REPO_ROOT, script), ...args], {
-      stdio: "inherit",
-    });
-    if (result.error) {
-      logText(`Failed to start ${script}: ${result.error.message}`, "error");
-      return 1;
-    }
+    const result = new ExecutionPolicy().runCommandSync(
+      process.execPath,
+      ["--import", TSX_LOADER, resolve(REPO_ROOT, script), ...args],
+      { stdio: "inherit" },
+    );
     return result.status ?? 1;
   } catch (e) {
     logText(`Failed to run ${script}: ${e instanceof Error ? e.message : String(e)}`, "error");
@@ -80,33 +94,9 @@ function inferRepoName(repoPath: string | undefined): string {
 interface GlobalArgs {
   config?: string;
   db?: string;
+  dryRun: boolean;
   command: string | undefined;
   rest: string[];
-}
-
-function parseGlobal(argv: string[]): GlobalArgs {
-  // Extract optional --config/--db (globals) and the first positional subcommand.
-  const rest: string[] = [];
-  let config: string | undefined;
-  let db: string | undefined;
-  let command: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--config" || a === "--db") {
-      const val = argv[++i];
-      if (a === "--config") config = val;
-      else db = val;
-    } else if (a.startsWith("--config=")) {
-      config = a.slice("--config=".length);
-    } else if (a.startsWith("--db=")) {
-      db = a.slice("--db=".length);
-    } else if (!command && !a.startsWith("-")) {
-      command = a;
-    } else {
-      rest.push(a);
-    }
-  }
-  return { config, db, command, rest };
 }
 
 function cmdDashboard(g: GlobalArgs): number {
@@ -125,6 +115,7 @@ function cmdDashboard(g: GlobalArgs): number {
   if (parsed.values["non-interactive"]) args.push("--non-interactive");
   if (parsed.values["log-file"]) args.push("--log-file", parsed.values["log-file"]);
   if (parsed.values.screen) args.push("--screen", parsed.values.screen);
+  if (g.dryRun) args.push("--dry-run");
   try {
     return runChild(args[0]!, args.slice(1));
   } catch (e) {
@@ -138,31 +129,28 @@ function cmdDashboard(g: GlobalArgs): number {
 }
 
 function hasCommand(command: string, args = ["--version"]): boolean {
-  const result = spawnSync(command, args, { encoding: "utf8", timeout: 5000, stdio: "ignore" });
+  const result = new ExecutionPolicy().runCommandSync(command, args, { timeoutMs: 5000, stdio: "ignore" });
   return result.status === 0;
 }
 
 function hasGitHubAuth(): boolean {
   if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) return true;
-  const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5000 });
+  const result = new ExecutionPolicy().runCommandSync("gh", ["auth", "token"], { timeoutMs: 5000 });
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
 function isGitRepository(repoPath: string): boolean {
   if (!repoPath) return false;
-  const result = spawnSync("git", ["-C", repoPath, "rev-parse", "--is-inside-work-tree"], {
-    encoding: "utf8",
-    timeout: 5000,
-    stdio: "ignore",
-  });
+  const result = new ExecutionPolicy().runCommandSync(
+    "git",
+    ["-C", repoPath, "rev-parse", "--is-inside-work-tree"],
+    { timeoutMs: 5000, stdio: "ignore" },
+  );
   return result.status === 0;
 }
 
 function discoverCurrentRepository(): { path: string; name: string; enabled: true }[] {
-  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-    timeout: 5000,
-  });
+  const result = new ExecutionPolicy().runCommandSync("git", ["rev-parse", "--show-toplevel"], { timeoutMs: 5000 });
   const repoPath = result.status === 0 ? result.stdout.trim() : "";
   return repoPath ? [{ path: repoPath, name: basename(repoPath), enabled: true }] : [];
 }
@@ -193,6 +181,8 @@ function cmdInit(g: GlobalArgs): number {
   const config = {
     repos: repos.length > 0 ? repos : [{ path: "/absolute/path/to/repo", name: "my-repo", enabled: true }],
   };
+  const projected = projectMutation(g, "filesystem", "write configuration", configPath);
+  if (projected !== null) return projected;
   writeFileSync(
     configPath,
     "# merge-god configuration\n# Label PRs with for-landing or for-review. Unlabeled PRs are skipped.\n\n" +
@@ -223,10 +213,8 @@ function cmdDoctor(g: GlobalArgs): number {
     check(false, `Config missing: ${configPath}`, "Run: merge-god init");
   } else {
     try {
-      const config = YAML.parse(readFileSync(configPath, "utf8")) as
-        | { repos?: { path?: unknown; enabled?: boolean }[] }
-        | null;
-      const repos = config?.repos ?? [];
+      const config = parseOperatorConfig(YAML.parse(readFileSync(configPath, "utf8")));
+      const repos = config.repos;
       check(repos.length > 0, `Configured repos: ${repos.length}`, "Add at least one repo to config.yaml.");
       for (const repo of repos.filter((item) => item.enabled ?? true)) {
         const repoPath = typeof repo.path === "string" ? resolve(dirname(configPath), repo.path) : "";
@@ -265,6 +253,8 @@ function cmdScan(g: GlobalArgs): number {
     if (!parsed.values.repo) args.push("--repo", inferRepoName(parsed.values["repo-path"]));
   }
   if (parsed.values.pr) args.push("--pr", parsed.values.pr);
+  const projected = projectMutation(g, "command", "sync PR context", args.join(" "));
+  if (projected !== null) return projected;
   const rc = runChild(args[0]!, args.slice(1));
   if (rc === 0) logText("PR context synced successfully", "success");
   else logText(`Sync failed with exit code ${rc}`, "error");
@@ -300,6 +290,8 @@ function cmdAgent(g: GlobalArgs): number {
   const db = parsed.values.db ?? g.db;
   if (db) args.push("--db", db);
   if (parsed.values["repo-path"]) args.push("--repo-path", parsed.values["repo-path"]);
+  const projected = projectMutation(g, "agent", "run cached PR agent", `${repo}#${pr}`);
+  if (projected !== null) return projected;
   const rc = runChild(args[0]!, args.slice(1));
   if (rc === 0) logText("Agent completed successfully", "success");
   else logText(`Agent failed with exit code ${rc}`, "error");
@@ -319,10 +311,7 @@ function cmdNewPr(g: GlobalArgs): number {
 
 function cmdCurrentRepo(g: GlobalArgs): number {
   if (prLoopChildArgs(g.rest)) return cmdPrLoop(g);
-  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-    timeout: 10_000,
-  });
+  const result = new ExecutionPolicy().runCommandSync("git", ["rev-parse", "--show-toplevel"], { timeoutMs: 10_000 });
   const repoPath = result.status === 0 ? result.stdout.trim() : "";
   if (!repoPath) {
     logText("Not inside a git checkout; pass a checkout path or use 'merge-god run' with config.yaml", "error");
@@ -367,10 +356,8 @@ export function configuredPrLoopChildArgs(rest: string[], configPath: string): s
   if (!existsSync(configPath)) {
     throw new Error(`repo_path was omitted and config was not found at ${configPath}`);
   }
-  const parsed = YAML.parse(readFileSync(configPath, "utf8")) as
-    | { repos?: { path?: unknown; repo?: unknown; enabled?: boolean }[] }
-    | null;
-  const repos = (parsed?.repos ?? []).filter((repo) => repo.enabled ?? true);
+  const parsed = parseOperatorConfig(YAML.parse(readFileSync(configPath, "utf8")));
+  const repos = parsed.repos.filter((repo) => repo.enabled ?? true);
   if (repos.length !== 1) {
     throw new Error(
       `repo_path was omitted, but ${repos.length} enabled repositories are configured; pass a checkout path explicitly`,
@@ -409,6 +396,8 @@ function cmdDuplicates(g: GlobalArgs): number {
     return 1;
   }
   if (!prLoopChildArgs(g.rest)) logText(`Using configured repository: ${args[0]}`, "info");
+  const projected = projectMutation(g, "command", "analyze duplicate PR resolutions", args.join(" "));
+  if (projected !== null) return projected;
   return runChild("analyze_duplicates.ts", args);
 }
 
@@ -442,10 +431,14 @@ function cmdHistory(g: GlobalArgs): number {
 function cmdCohort(g: GlobalArgs): number {
   const args = ["embark_cohort.ts", ...g.rest];
   if (g.db) args.push("--db", g.db);
+  const projected = projectMutation(g, "command", "run cohort operation", args.join(" "));
+  if (projected !== null) return projected;
   return runChild(args[0]!, args.slice(1));
 }
 
-function cmdSendApproval(): number {
+function cmdSendApproval(g: GlobalArgs): number {
+  const projected = projectMutation(g, "command", "send interactive approval", "send_approval.ts");
+  if (projected !== null) return projected;
   return runChild("send_approval.ts", []);
 }
 
@@ -505,8 +498,8 @@ function cmdStatus(g: GlobalArgs): number {
   if (existsSync(configPath)) {
     logText(`Config: ${configPath}`, "success");
     try {
-      const config = YAML.parse(readFileSync(configPath, "utf8")) as { repos?: { enabled?: boolean }[] } | null;
-      const repos = config?.repos ?? [];
+      const config = parseOperatorConfig(YAML.parse(readFileSync(configPath, "utf8")));
+      const repos = config.repos;
       const repoCount = repos.length;
       const enabledCount = repos.filter((r) => r.enabled ?? true).length;
       logText(`  Repositories: ${enabledCount}/${repoCount} enabled`, "info");
@@ -540,54 +533,6 @@ function countRows(db: DatabaseSync, table: string): number {
   }
 }
 
-const HELP_TEXT = `
-merge-god - Unified CLI for PR automation pipeline
-
-OVERVIEW:
-  merge-god automates PR review and landing. It consists of 3 isolated processes:
-    Process 1: PR/branch scanning and state management
-    Process 2: PR context gathering and database caching
-    Process 3: Agent invocation and PR processing
-
-PRIMARY COMMANDS:
-  init        Create config.yaml for the current checkout.
-  doctor      Check local prerequisites and configured repository paths.
-  status      Show system status and statistics.
-  history     Show trajectory timing/cost history; drill down or profile it.
-  repo        Process the current repository queue.
-  pr          Sync and process one PR; resumes interrupted work automatically.
-  resume      Resume the latest interrupted PR, or a specified PR number.
-  new-pr      Prepare a branch/worktree and open a tagged draft PR.
-  dashboard   Run the World HUD TUI dashboard (also the default command).
-  duplicates  Analyze duplicate PRs; optionally close patches already on base.
-
-ADVANCED COMMANDS:
-  run         Run the configured repository queue.
-  scan        Scan PRs and sync their context to the database.
-  agent       Run agent on cached PR data (Process 3 isolation).
-  pr-loop     Run bounded or continuous PR processing loop.
-  profile     Profile a shallow PR inventory without agent or mutation calls.
-  cohort      Inspect, approve, or evidence-recover an embark cohort.
-  send-approval  Approve a waiting interactive processing loop.
-  help        Show this help message.
-
-Dashboard screens: --screen world|prs|agents (default: world).
-COMMON WORKFLOWS:
-  merge-god doctor
-  merge-god repo --once --dry-run
-  merge-god pr 14
-  merge-god new-pr feat/my-change --worktree ../my-change
-  merge-god resume
-  merge-god status
-  merge-god history --profile
-Run 'merge-god help' for details.
-`;
-
-function cmdHelp(): number {
-  console.log(HELP_TEXT);
-  return 0;
-}
-
 function isKeyboardInterrupt(e: unknown): boolean {
   return e instanceof Error && e.name === "KeyboardInterrupt";
 }
@@ -596,44 +541,50 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function main(): number {
-  const argv = process.argv.slice(2);
-  const g = parseGlobal(argv);
+interface CommanderGlobals {
+  config?: string;
+  db?: string;
+  dryRun?: boolean;
+}
 
-  if (!g.command) {
-    if (argv.includes("--help") || argv.includes("-h")) return cmdHelp();
-    return cmdDashboard(g);
-  }
+type CommandHandler = (args: GlobalArgs) => number;
 
-  const handlers: Record<string, () => number> = {
-    init: () => cmdInit(g),
-    dashboard: () => cmdDashboard(g),
-    repo: () => cmdCurrentRepo(g),
-    pr: () => cmdPrWorkflow(g, "pr"),
-    resume: () => cmdPrWorkflow(g, "resume"),
-    "new-pr": () => cmdNewPr(g),
-    scan: () => cmdScan(g),
-    agent: () => cmdAgent(g),
-    status: () => cmdStatus(g),
-    history: () => cmdHistory(g),
-    "pr-loop": () => cmdPrLoop(g),
-    run: () => cmdPrLoop(g),
-    duplicates: () => cmdDuplicates(g),
-    doctor: () => cmdDoctor(g),
-    profile: () => cmdProfile(g),
-    cohort: () => cmdCohort(g),
-    "send-approval": () => cmdSendApproval(),
-    help: () => cmdHelp(),
+const COMMANDS: ReadonlyArray<readonly [string, string, CommandHandler]> = [
+  ["init", "Create config.yaml for the current checkout", cmdInit],
+  ["doctor", "Check prerequisites and configured repository paths", cmdDoctor],
+  ["status", "Show system status and statistics", cmdStatus],
+  ["history", "Show trajectory timing and cost history", cmdHistory],
+  ["repo", "Process the current repository queue", cmdCurrentRepo],
+  ["pr", "Sync and process one pull request", (g) => cmdPrWorkflow(g, "pr")],
+  ["resume", "Resume interrupted pull-request work", (g) => cmdPrWorkflow(g, "resume")],
+  ["new-pr", "Prepare a branch or worktree and open a tagged draft PR", cmdNewPr],
+  ["dashboard", "Run the World HUD TUI dashboard", cmdDashboard],
+  ["duplicates", "Analyze duplicate pull requests", cmdDuplicates],
+  ["run", "Run the configured repository queue", cmdPrLoop],
+  ["scan", "Scan PRs and sync their context", cmdScan],
+  ["agent", "Run the agent on cached PR data", cmdAgent],
+  ["pr-loop", "Run the bounded or continuous PR loop", cmdPrLoop],
+  ["profile", "Profile a shallow PR inventory", cmdProfile],
+  ["cohort", "Inspect or operate on an embark cohort", cmdCohort],
+  ["send-approval", "Approve a waiting interactive loop", cmdSendApproval],
+];
+
+function globalArgs(command: Command, name: string, rest: string[]): GlobalArgs {
+  const local = command.opts<CommanderGlobals>();
+  const root = command.parent?.opts<CommanderGlobals>() ?? {};
+  return {
+    config: local.config ?? root.config,
+    db: local.db ?? root.db,
+    dryRun: local.dryRun === true || root.dryRun === true || dryRunFromEnv(),
+    command: name,
+    rest,
   };
+}
 
-  const handler = handlers[g.command];
-  if (!handler) {
-    logText(`Unknown command: ${g.command}`, "error");
-    return 1;
-  }
-
+function invoke(handler: CommandHandler, args: GlobalArgs): number {
+  if (args.dryRun) enableDryRun();
   try {
-    return handler();
+    return handler(args);
   } catch (e) {
     if (isKeyboardInterrupt(e)) {
       logText("Interrupted by user", "warning");
@@ -642,6 +593,67 @@ export function main(): number {
     logText(`Command failed: ${errMsg(e)}`, "error");
     return 1;
   }
+}
+
+function buildProgram(onResult: (status: number) => void): Command {
+  const program = new Command()
+    .name("merge-god")
+    .description("Automated pull-request review and landing")
+    .enablePositionalOptions()
+    .showHelpAfterError()
+    .option("--config <path>", "operator configuration file")
+    .option("--db <path>", "state database file")
+    .option("--dry-run", "trace reads and projected mutations without changing state", dryRunFromEnv())
+    .addHelpText("after", `
+Common workflows:
+  merge-god --dry-run repo --once
+  merge-god doctor
+  merge-god pr 14
+  merge-god new-pr feat/my-change --worktree ../my-change
+  merge-god resume
+  merge-god history --profile`);
+
+  for (const [name, description, handler] of COMMANDS) {
+    const command = program
+      .command(name)
+      .description(description)
+      .allowUnknownOption(true)
+      .allowExcessArguments(true)
+      .argument("[args...]");
+    for (const option of [
+      new Option("--config <path>").hideHelp(),
+      new Option("--db <path>").hideHelp(),
+      new Option("--dry-run").hideHelp(),
+    ]) command.addOption(option);
+    command.action((rest: string[]) => {
+      onResult(invoke(handler, globalArgs(command, name, rest)));
+    });
+  }
+  return program;
+}
+
+export function main(argv = process.argv.slice(2)): number {
+  if (argv.length === 0) {
+    return invoke(cmdDashboard, {
+      dryRun: dryRunFromEnv(),
+      command: "dashboard",
+      rest: [],
+    });
+  }
+  let status = 0;
+  const program = buildProgram((result) => {
+    status = result;
+  });
+  program.exitOverride();
+  try {
+    program.parse(argv, { from: "user" });
+  } catch (error) {
+    if (error instanceof CommanderError) {
+      return error.code === "commander.helpDisplayed" || error.code === "commander.help" ? 0 : 1;
+    }
+    throw error;
+  }
+  return status;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /** One-command PR sync/process and trajectory resume workflow. */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -18,6 +17,8 @@ import {
   type PrWorkflowAction,
 } from "./pr_cli_model";
 import { parseRepositoryIdentity, repositoryIdentityMatches } from "./repository_identity_model";
+import { dryRunFromEnv, ExecutionPolicy } from "./execution_policy";
+import { parseOperatorConfig } from "./schemas/config";
 
 const TSX_LOADER = createRequire(import.meta.url).resolve("tsx");
 
@@ -27,25 +28,22 @@ interface ResumeTarget {
 }
 
 function gitRoot(cwd: string): string | null {
-  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+  const result = new ExecutionPolicy().runCommandSync("git", ["rev-parse", "--show-toplevel"], {
     cwd,
-    encoding: "utf8",
-    timeout: 10_000,
+    timeoutMs: 10_000,
   });
   return result.status === 0 && result.stdout.trim() ? resolve(result.stdout.trim()) : null;
 }
 
 function configuredRepos(configPath: string): ConfiguredCliRepository[] {
   if (!existsSync(configPath)) return [];
-  const parsed = YAML.parse(readFileSync(configPath, "utf8")) as { repos?: ConfiguredCliRepository[] } | null;
-  return Array.isArray(parsed?.repos) ? parsed.repos : [];
+  return parseOperatorConfig(YAML.parse(readFileSync(configPath, "utf8"))).repos as ConfiguredCliRepository[];
 }
 
 function validateTargetIdentity(repoPath: string, expectedRepo: string | null): void {
-  const remote = spawnSync("git", ["remote", "get-url", "origin"], {
+  const remote = new ExecutionPolicy().runCommandSync("git", ["remote", "get-url", "origin"], {
     cwd: repoPath,
-    encoding: "utf8",
-    timeout: 10_000,
+    timeoutMs: 10_000,
   });
   if (remote.status !== 0) throw new Error(`Could not inspect origin for ${repoPath}`);
   const actual = parseRepositoryIdentity(remote.stdout.trim());
@@ -89,12 +87,11 @@ function findResumeTarget(dbPath: string, repoName: string, requestedPr: number 
 
 function runTsScript(script: string, args: string[], cwd: string): number {
   const scriptPath = fileURLToPath(new URL(script, import.meta.url));
-  const result = spawnSync(process.execPath, ["--import", TSX_LOADER, scriptPath, ...args], {
-    cwd,
-    stdio: "inherit",
-    env: process.env,
-  });
-  if (result.error) throw result.error;
+  const result = new ExecutionPolicy().runCommandSync(
+    process.execPath,
+    ["--import", TSX_LOADER, scriptPath, ...args],
+    { cwd, stdio: "inherit" },
+  );
   return result.status ?? 1;
 }
 
@@ -170,7 +167,7 @@ export function main(argv = process.argv.slice(2), cwd = process.cwd()): number 
       sync: !parsed.values["no-sync"],
       resume: action === "resume" ? "required" : "auto",
     };
-    if (parsed.values["dry-run"]) {
+    if (parsed.values["dry-run"] || dryRunFromEnv()) {
       console.log(JSON.stringify({ workflow: "pr", plan }, null, 2));
       return 0;
     }

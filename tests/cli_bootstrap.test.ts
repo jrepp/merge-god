@@ -27,6 +27,26 @@ test("merge-god init writes config with explicit repo", () => {
   }
 });
 
+test("global dry-run projects init without writing config", () => {
+  const dir = mkdtempSync(join(tmpdir(), "merge-god-cli-dry-init-"));
+  try {
+    const config = join(dir, "config.yaml");
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "merge-god.ts", "--dry-run", "init", "--config", config, "--repo", "."],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(config), false);
+    const trace = JSON.parse(result.stdout) as { data?: Record<string, unknown> };
+    assert.equal(trace.data?.outcome, "would_execute");
+    assert.equal(trace.data?.target, config);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("merge-god doctor reports missing config", () => {
   const dir = mkdtempSync(join(tmpdir(), "merge-god-cli-"));
   try {
@@ -72,7 +92,7 @@ test("packaged compatibility entrypoint uses the canonical CLI surface", () => {
   assert.equal(root.status, 0, root.stderr);
   assert.equal(compatibility.status, 0, compatibility.stderr);
   assert.equal(compatibility.stdout, root.stdout);
-  assert.match(root.stdout, /PRIMARY COMMANDS:/);
+  assert.match(root.stdout, /Commands:/);
   assert.match(root.stdout, /merge-god pr 14/);
   assert.match(root.stdout, /merge-god history --profile/);
   assert.match(root.stdout, /merge-god new-pr feat\/my-change/);
@@ -108,6 +128,24 @@ test("new-pr dry-run plans a labeled worktree without changing checkout", () => 
     encoding: "utf8",
   }).stdout.trim();
   assert.equal(branchAfter, branchBefore);
+});
+
+test("global dry-run switch works before the subcommand", () => {
+  const worktree = join(tmpdir(), `merge-god-global-dry-run-${process.pid}`);
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import", "tsx", "merge-god.ts", "--dry-run", "new-pr", "test/global-dry-run",
+      "--worktree", worktree,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout) as Record<string, unknown>;
+  assert.equal(plan.workflow, "new-pr");
+  assert.equal(plan.branch, "test/global-dry-run");
+  assert.equal(existsSync(worktree), false);
 });
 
 test("new-pr rejects conflicting processing labels", () => {
