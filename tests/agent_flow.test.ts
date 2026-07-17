@@ -1756,6 +1756,7 @@ describe("agent flow: runPiAgent result contract", () => {
         defaultProvider: "project-provider",
         defaultModel: "project-model",
         endpoint: "https://user:password@example.test/v1?token=secret",
+        backupEndpoints: ["https://user:array-secret@backup.example.test/v1?token=backup-token"],
       }));
       writeFileSync(path.join(configDir, "models.json"), JSON.stringify({
         providers: { custom: { apiKey: "model-secret", baseUrl: "https://example.test/v1?key=secret" } },
@@ -1792,7 +1793,8 @@ describe("agent flow: runPiAgent result contract", () => {
       assert.match(serialized, /<instruction:46 chars>/);
       assert.match(serialized, /ANTHROPIC_API_KEY/);
       assert.match(serialized, /https:\/\/example\.test\/v1/);
-      assert.doesNotMatch(serialized, /global-secret|model-secret|environment-secret|password|token=secret|private prompt/);
+      assert.match(serialized, /https:\/\/backup\.example\.test\/v1/);
+      assert.doesNotMatch(serialized, /global-secret|model-secret|environment-secret|array-secret|backup-token|password|token=secret|private prompt/);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

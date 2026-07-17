@@ -207,7 +207,7 @@ function sanitizedUrl(value: string): string {
 
 function sanitizedPiConfig(value: unknown, key = ""): unknown {
   if (SENSITIVE_CONFIG_KEY.test(key)) return "<redacted>";
-  if (Array.isArray(value)) return value.map((item) => sanitizedPiConfig(item));
+  if (Array.isArray(value)) return value.map((item) => sanitizedPiConfig(item, key));
   if (typeof value === "object" && value !== null) {
     return Object.fromEntries(
       Object.entries(value).map(([childKey, childValue]) => [childKey, sanitizedPiConfig(childValue, childKey)]),
