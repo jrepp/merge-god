@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /** Read-only operations profiler for large PR inventories. */
 
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 
 import { buildOperationsProfile } from "./operations_profile_model";
+import { ExecutionPolicy } from "./execution_policy";
 
 function positiveInteger(value: string | undefined, fallback: number, option: string): number {
   if (value === undefined) return fallback;
@@ -45,8 +45,7 @@ function fetchInventory(repo: string | undefined, limit: number): unknown[] {
     "number,title,headRefName,baseRefName,isDraft,labels,url,author,createdAt,updatedAt",
   ];
   if (repo) args.push("--repo", repo);
-  const result = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  if (result.error) throw result.error;
+  const result = new ExecutionPolicy().runCommandSync("gh", args, { maxBuffer: 256 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `gh exited ${result.status ?? "unknown"}`);
   const parsed = JSON.parse(result.stdout) as unknown;
   if (!Array.isArray(parsed)) throw new Error("gh returned a non-array PR inventory");

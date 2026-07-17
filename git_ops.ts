@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { GitClient, GitClientError } from "@merge-god/github-sync";
+import { ExecutionPolicy } from "./execution_policy";
 
 export interface GitOpsCommandResult {
   status: number;
@@ -51,11 +51,17 @@ export class GitOps {
   readonly repoPath: string;
   readonly client: GitClient;
   private readonly observer: GitOpsObserver | null;
+  private readonly executionPolicy: ExecutionPolicy;
 
-  constructor(repoPath: string, observer: GitOpsObserver | null = null) {
+  constructor(
+    repoPath: string,
+    observer: GitOpsObserver | null = null,
+    executionPolicy = new ExecutionPolicy(),
+  ) {
     this.repoPath = path.resolve(repoPath);
     this.client = new GitClient(this.repoPath);
     this.observer = observer;
+    this.executionPolicy = executionPolicy;
   }
 
   runGit(args: string[], opts: { timeout?: number; check?: boolean } = {}): GitOpsCommandResult {
@@ -101,7 +107,7 @@ export class GitOps {
 
   createDetachedWorktree(ref = "HEAD"): AgentWorktree {
     const root = this.root();
-    const rootOps = new GitOps(root, this.observer);
+    const rootOps = new GitOps(root, this.observer, this.executionPolicy);
     const tempDir = mkdtempSync(path.join(tmpdir(), "merge-god-pi-"));
     const worktreePath = path.join(tempDir, "worktree");
     rootOps.runGit(["worktree", "add", "--detach", worktreePath, ref]);
@@ -138,34 +144,18 @@ export class GitOps {
     const start = Date.now();
     this.emitEvent({ event: "git.command.start", cwd: this.repoPath, command, args });
     this.emitMetric({ name: "git.command.started", value: 1, tags: { command } });
-    const result = spawnSync(command, args, {
+    const result = this.executionPolicy.runCommandSync(command, args, {
       cwd: this.repoPath,
-      encoding: "utf8",
-      timeout: timeout * 1000,
+      timeoutMs: timeout * 1000,
       maxBuffer: 10 * 1024 * 1024,
     });
     const duration = Date.now() - start;
 
-    if (result.error) {
-      const error = result.error.message;
-      this.emitEvent({
-        event: "git.command.error",
-        cwd: this.repoPath,
-        command,
-        args,
-        duration_ms: duration,
-        error,
-      });
-      this.emitMetric({ name: "git.command.duration_ms", value: duration, tags: { command } });
-      this.emitMetric({ name: "git.command.errors", value: 1, tags: { command } });
-      throw new GitOpsError(`Command error: ${command} ${args.join(" ")}\n${error}`);
-    }
-
-    const status = result.status ?? -1;
+    const status = result.status;
     const output = {
       status,
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
+      stdout: result.stdout,
+      stderr: result.stderr,
       duration_ms: duration,
     };
 

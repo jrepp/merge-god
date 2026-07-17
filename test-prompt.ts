@@ -8,7 +8,6 @@
 import { chdir } from "node:process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
 import { normalizeCiStatusCounts } from "./ci_status_model";
 import { hasActiveMergeConflicts } from "./conflict_model";
 import { prContextCiStatus, prContextCommits, prContextConflicts } from "./pr_context_access_model";
@@ -22,12 +21,15 @@ import {
   buildPrPrompt,
 } from "./pr-loop";
 import { initializeTelemetry, recordPromptRendered, shutdownTelemetry } from "./telemetry";
+import { ExecutionPolicy } from "./execution_policy";
 
 function runCommand(
   cmd: string[],
 ): { returncode: number; stdout: string; stderr: string } {
-  const r = spawnSync(cmd[0] ?? "", cmd.slice(1), { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
-  return { returncode: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  const result = new ExecutionPolicy().runCommandSync(cmd[0] ?? "", cmd.slice(1), {
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return { returncode: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
 async function main(): Promise<void> {

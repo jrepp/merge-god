@@ -7,7 +7,6 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { spawn } from "node:child_process";
 import { promises as fsp, type Stats } from "node:fs";
 import path from "node:path";
 
@@ -20,6 +19,7 @@ import {
   sanitizeSpanAttributes,
   withTelemetrySpan,
 } from "../telemetry";
+import { ExecutionPolicy } from "../execution_policy";
 
 type MessageParam = Anthropic.MessageParam;
 type Tool = Anthropic.Tool;
@@ -1766,49 +1766,13 @@ function runCommand(
   cwd: string,
   timeoutMs: number,
 ): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let notFound = false;
-    let resolved = false;
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    }, timeoutMs);
-
-    child.stdout?.on("data", (d: Buffer | string) => {
-      stdout += typeof d === "string" ? d : d.toString("utf8");
-    });
-    child.stderr?.on("data", (d: Buffer | string) => {
-      stderr += typeof d === "string" ? d : d.toString("utf8");
-    });
-
-    child.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "ENOENT") {
-        notFound = true;
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          resolve({ code: null, stdout, stderr, timedOut: false, notFound });
-        }
-      }
-    });
-
-    child.on("close", (code) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve({ code: code ?? null, stdout, stderr, timedOut, notFound });
-      }
-    });
-  });
+  return new ExecutionPolicy().runCommand(cmd, args, { cwd, timeoutMs }).then((result) => ({
+    code: result.status < 0 ? null : result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    timedOut: result.timedOut ?? false,
+    notFound: result.notFound ?? false,
+  }));
 }
 
 function errCode(e: unknown): string | undefined {

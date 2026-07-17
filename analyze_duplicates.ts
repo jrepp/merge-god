@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /** Inspect and optionally close exact, already-landed duplicate pull requests. */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -20,6 +19,7 @@ import {
   repositoryIdentityMatches,
   type RepositoryIdentity,
 } from "./repository_identity_model";
+import { ExecutionPolicy } from "./execution_policy";
 
 interface CommandResult {
   status: number;
@@ -51,22 +51,12 @@ function run(
   cwd: string,
   opts: { input?: string; timeoutSeconds?: number; maxBuffer?: number } = {},
 ): CommandResult {
-  const result = spawnSync(command, args, {
+  return new ExecutionPolicy().runCommandSync(command, args, {
     cwd,
-    encoding: "utf8",
     input: opts.input,
-    timeout: (opts.timeoutSeconds ?? 120) * 1000,
+    timeoutMs: (opts.timeoutSeconds ?? 120) * 1000,
     maxBuffer: opts.maxBuffer ?? 100 * 1024 * 1024,
-    env: process.env,
   });
-  if (result.error) {
-    return { status: -1, stdout: result.stdout ?? "", stderr: result.error.message };
-  }
-  return {
-    status: result.status ?? -1,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-  };
 }
 
 function parseArgsForAnalyzer(argv: string[]): AnalyzerArgs {
