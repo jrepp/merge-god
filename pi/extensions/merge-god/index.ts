@@ -48,6 +48,40 @@ interface RegisteredToolDefinition {
   [key: string]: unknown;
 }
 
+interface PiRuntimeContext {
+  cwd?: string;
+  model?: Record<string, unknown>;
+}
+
+function safeRuntimeUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
+function safeRuntimeModel(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const model = value as Record<string, unknown>;
+  const safe: Record<string, unknown> = {};
+  for (const key of ["id", "name", "api", "provider", "reasoning", "input", "cost", "contextWindow", "maxTokens"]) {
+    if (model[key] !== undefined) safe[key] = model[key];
+  }
+  const baseUrl = safeRuntimeUrl(model["baseUrl"]);
+  if (baseUrl !== null) safe["baseUrl"] = baseUrl;
+  if (typeof model["thinkingLevelMap"] === "object" && model["thinkingLevelMap"] !== null) {
+    safe["thinkingLevelMap"] = model["thinkingLevelMap"];
+  }
+  return Object.keys(safe).length > 0 ? safe : null;
+}
+
 export function registerMergeGodPiExtension(
   pi: ExtensionAPI,
   dependencies: MergeGodExtensionDependencies,
@@ -57,9 +91,10 @@ export function registerMergeGodPiExtension(
   const toolSurface: Array<Record<string, unknown>> = [];
   let surfaceRegistration: Promise<boolean> | null = null;
   const runtimePi = pi as unknown as {
-    on?: (event: string, handler: (event: any) => Promise<void>) => void;
+    on?: (event: string, handler: (event: any, context?: PiRuntimeContext) => Promise<void>) => void;
     getAllTools?: () => Array<Record<string, unknown>>;
     getActiveTools?: () => string[];
+    getThinkingLevel?: () => unknown;
   };
   const supportsRuntimeTooling = typeof runtimePi.on === "function" &&
     typeof runtimePi.getAllTools === "function" && typeof runtimePi.getActiveTools === "function";
@@ -239,7 +274,7 @@ export function registerMergeGodPiExtension(
         trace_context: traceContext(),
       });
     });
-    runtimePi.on!("session_start", async () => {
+    runtimePi.on!("session_start", async (event, context) => {
       const activeTools = new Set(runtimePi.getActiveTools!());
       const configuredTools = runtimePi.getAllTools!().map((tool) => ({
         name: tool["name"],
@@ -253,7 +288,24 @@ export function registerMergeGodPiExtension(
           : {},
       }));
       surfaceRegistration = publishToolSurface(configuredTools, "all-configured");
-      await surfaceRegistration;
+      const modelConfig = safeRuntimeModel(context?.model);
+      const startupRegistration = client.request({
+        path: "/startup",
+        method: "POST",
+        body: {
+          action: "configured",
+          phase: "session",
+          pi_version: process.env.MERGE_GOD_PI_VERSION ?? null,
+          provider: typeof modelConfig?.["provider"] === "string" ? modelConfig["provider"] : null,
+          model_config: modelConfig,
+          pi_configuration: {
+            session_reason: typeof event?.reason === "string" ? event.reason : "startup",
+            thinking_level: runtimePi.getThinkingLevel?.() ?? null,
+            cwd: context?.cwd ?? process.cwd(),
+          },
+        },
+      }).then((response) => response.ok).catch(() => false);
+      await Promise.all([surfaceRegistration, startupRegistration]);
     });
     runtimePi.on!("turn_start", async (event) => {
       const context = traceContext();

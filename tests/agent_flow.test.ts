@@ -22,6 +22,7 @@ import {
   buildPiExtensionInjection,
   linkNodeModulesIntoWorktree,
   loadPiDotEnv,
+  piStartupConfiguration,
   type CoordinationTrajectoryBridge,
   type PiAgentResult,
 } from "../coordination";
@@ -1739,6 +1740,64 @@ describe("agent flow: runPiAgent result contract", () => {
     }
   });
 
+  test("pi startup configuration reports resolved defaults without exposing credentials", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-startup-"));
+    const repoDir = path.join(tempDir, "repo");
+    const configDir = path.join(tempDir, "agent-config");
+    try {
+      mkdirSync(path.join(repoDir, ".pi"), { recursive: true });
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({
+        defaultProvider: "global-provider",
+        defaultModel: "global-model",
+        apiKey: "global-secret",
+      }));
+      writeFileSync(path.join(repoDir, ".pi", "settings.json"), JSON.stringify({
+        defaultProvider: "project-provider",
+        defaultModel: "project-model",
+        endpoint: "https://user:password@example.test/v1?token=secret",
+      }));
+      writeFileSync(path.join(configDir, "models.json"), JSON.stringify({
+        providers: { custom: { apiKey: "model-secret", baseUrl: "https://example.test/v1?key=secret" } },
+      }));
+      const injection = buildPiExtensionInjection({
+        extension_path: "/tmp/merge-god-extension.ts",
+        api_url: "http://127.0.0.1:1234",
+        trace_context: {
+          trace_id: "trace",
+          parent_span_id: "span",
+          traceparent: "00-00000000000000000000000000000000-0000000000000000-00",
+        },
+        instruction: "perform work containing private prompt context",
+      });
+
+      const startup = piStartupConfiguration(repoDir, injection, {
+        env: {
+          PI_CODING_AGENT_DIR: configDir,
+          ANTHROPIC_API_KEY: "environment-secret",
+        },
+        piVersion: "9.9.9-test",
+        dotenvKeys: ["ZAI_API_KEY"],
+        extraEnvKeys: ["MERGE_GOD_FAULT_SCENARIO"],
+      });
+      const serialized = JSON.stringify(startup);
+
+      assert.equal(startup.pi_version, "9.9.9-test");
+      assert.equal(startup.provider, "project-provider");
+      assert.deepEqual(startup.model_config, {
+        id: "project-model",
+        provider: "project-provider",
+        source: "settings",
+      });
+      assert.match(serialized, /<instruction:46 chars>/);
+      assert.match(serialized, /ANTHROPIC_API_KEY/);
+      assert.match(serialized, /https:\/\/example\.test\/v1/);
+      assert.doesNotMatch(serialized, /global-secret|model-secret|environment-secret|password|token=secret|private prompt/);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("linkNodeModulesIntoWorktree reuses installed dependencies when available", () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), "mg-pi-node-modules-"));
     const sourceRepo = path.join(tempDir, "repo");
@@ -1758,7 +1817,7 @@ describe("agent flow: runPiAgent result contract", () => {
   test("runtime message telemetry preserves unknown provider cost", async () => {
     const harness = new PiAgentHarness();
     try {
-      const run = await harness.run("success_without_cost");
+      const run = await harness.run("success_without_cost", { completion_grace_ms: 2000 });
       assert.equal(run.result.returncode, 0, run.result.stderr || run.result.stdout);
       assert.equal(run.result.result?.["status"], "success");
       const telemetry = run.result.result?.["telemetry"] as Record<string, unknown> | undefined;
@@ -1864,6 +1923,20 @@ describe("agent flow: runPiAgent result contract", () => {
       assert.equal(agentCompletion?.payload["total_tokens"], 15);
       assert.equal(agentCompletion?.payload["turn_count"], 1);
       assert.equal(agentCompletion?.payload["tool_call_count"], 9);
+      const runtimeStartup = state.events.find((event) => event.event_type === "pi.runtime.configured");
+      assert.equal(runtimeStartup?.payload["pi_version"], "9.9.9-test");
+      assert.doesNotMatch(JSON.stringify(runtimeStartup), /fake-zai-key/);
+      const sessionStartup = state.events.find((event) => event.event_type === "pi.session.configured");
+      assert.equal(sessionStartup?.payload["provider"], "fake-provider");
+      assert.equal(
+        (sessionStartup?.payload["model_config"] as Record<string, unknown>)?.["id"],
+        "fake-pi-model",
+      );
+      assert.equal(
+        (sessionStartup?.payload["pi_configuration"] as Record<string, unknown>)?.["thinking_level"],
+        "high",
+      );
+      assert.doesNotMatch(JSON.stringify(sessionStartup), /should-not-appear|agent:secret|token=hidden/);
       assert.ok(state.events.some((event) => event.event_type === "pi.extension.injected"));
       assert.ok(state.events.some((event) => event.event_type === "pi.tool_surface.registered"));
       const completedToolEvents = state.events.filter((event) => event.event_type === "pi.tool_call.completed");
