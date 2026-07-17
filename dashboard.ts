@@ -18,7 +18,7 @@
  * Default log file: merge-god-dashboard.log
  */
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   accessSync,
   closeSync,
@@ -49,6 +49,8 @@ import {
   practitionerWorkflowLabel,
 } from "./practitioner_language_model";
 import { prQueueInfoFromPullRequest, prQueueInfoFromRecord, type PrQueueDisplayInfo } from "./pr_queue_display_model";
+import { operatorConfigSchema } from "./schemas/config";
+import { ExecutionPolicy } from "./execution_policy";
 
 /** Combined DB-store holder: SyncStore (async, PR/repo) + AppStore (sync, processing/dashboard). */
 interface DbStores {
@@ -891,7 +893,7 @@ class RepoMonitor {
   /** Load doormat credentials if doormat is available (non-fatal on failure). */
   loadDoormatCredentials(): boolean {
     try {
-      const check = spawnSync("which", ["doormat"], { encoding: "utf8", timeout: 5000 });
+      const check = new ExecutionPolicy().runCommandSync("which", ["doormat"], { timeoutMs: 5000 });
       if (check.status !== 0) return true;
 
       const timeout = toNum(this.doormatConfig["timeout"], 30);
@@ -912,9 +914,8 @@ class RepoMonitor {
       let lastError: string | null = null;
       for (const cmd of doormatCommands) {
         try {
-          const result = spawnSync(cmd[0] ?? "", cmd.slice(1), {
-            encoding: "utf8",
-            timeout: timeout * 1000,
+          const result = new ExecutionPolicy().runCommandSync(cmd[0] ?? "", cmd.slice(1), {
+            timeoutMs: timeout * 1000,
           });
           if (result.status === 0) {
             this.logs.append(`✓ Doormat credentials loaded (${cmd.join(" ")})`);
@@ -1652,11 +1653,12 @@ class Dashboard {
       return false;
     }
 
-    const cfg = asRecord(config);
-    if (!cfg["repos"]) {
-      this.consolePrint(chalk.red(`Error: No 'repos' section in ${this.configPath}`));
+    const validated = operatorConfigSchema.safeParse(config);
+    if (!validated.success) {
+      this.consolePrint(chalk.red(`Error: Invalid operator config: ${validated.error.issues[0]?.message ?? "unknown error"}`));
       return false;
     }
+    const cfg = asRecord(validated.data);
     const repos = asArray(cfg["repos"]);
     if (repos.length === 0) {
       this.consolePrint(chalk.red("Error: 'repos' must be a non-empty list"));
@@ -2634,9 +2636,8 @@ class Dashboard {
       return result;
     }
     try {
-      spawnSync("gh", ["auth", "status"], {
-        encoding: "utf8",
-        timeout: 5000,
+      new ExecutionPolicy().runCommandSync("gh", ["auth", "status"], {
+        timeoutMs: 5000,
         stdio: "ignore",
       });
     } catch {

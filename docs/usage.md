@@ -210,6 +210,29 @@ npx tsx pr-loop.ts /path/to/repo --once --dry-run
 npx tsx merge-god.ts pr-loop /path/to/repo --max-iterations 3 --idle-sleep-seconds 30
 ```
 
+`--dry-run` is a global switch and may appear before or after the command:
+
+```bash
+merge-god --dry-run repo --once
+merge-god repo --once --dry-run
+```
+
+For repository processing, dry-run follows the normal discovery, context,
+gate, and prompt-building path. Read-only Git and GitHub commands execute so the
+plan reflects current state. Mutating commands, notifications, delays, and agent
+launches are intercepted by the injected execution policy and emitted as
+structured `operation_trace` events with `outcome: would_execute`. Every log
+event includes `dry_run: true`.
+
+When OpenTelemetry is configured, projected and executed operations are also
+recorded in the `merge_god.operation` counter and
+`merge_god.operation.duration` histogram. Their attributes include operation
+kind, effect (`read` or `mutation`), outcome (`executed` or `would_execute`),
+status, and dry-run mode. This makes planned comments, label changes, Git syncs,
+notifications, and agent launches measurable without performing them. Dry-run
+does not invoke the agent, so it cannot predict merges or other tool calls that
+the model would have chosen inside that run.
+
 `repo` infers the current git checkout. `run` uses the sole enabled repository
 from `config.yaml`, including its optional `repo` identity guard, for dashboards
 and automation. Pass a path to `pr-loop` explicitly when more than one
@@ -219,9 +242,10 @@ database to repository workers; target checkouts no longer receive a stray
 
 - `--once` runs one loop iteration and exits.
 - `--max-iterations N` runs at most `N` loop iterations.
-- `--dry-run` inspects the current checkout, discovers PRs, and plans stack
-  order without fetching, switching branches, pulling, opening a state
-  database, invoking agents, or changing PR state labels.
+- `--dry-run` inspects the current checkout, discovers PRs, gathers remote
+  context, and builds the stack/order/gate/agent plan without fetching,
+  switching branches, pulling, opening a state database, invoking agents, or
+  changing GitHub state.
 - `--idle-sleep-seconds N`, `--sync-failure-sleep-seconds N`, and
   `--between-items-sleep-seconds N` tune loop pacing for CI, local testing, or
   daemon operation.

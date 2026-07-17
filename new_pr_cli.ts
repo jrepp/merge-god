@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /** Prepare a branch (optionally in a worktree) and open a correctly labeled PR. */
 
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import { dryRunFromEnv, ExecutionPolicy, type CommandExecutionResult } from "./execution_policy";
 
-type CommandResult = SpawnSyncReturns<string>;
+type CommandResult = CommandExecutionResult;
 
 interface ExistingPr {
   url: string;
@@ -16,21 +16,18 @@ interface ExistingPr {
 }
 
 function run(command: string, args: string[], cwd: string, inherit = false): CommandResult {
-  const result = spawnSync(command, args, {
+  return new ExecutionPolicy().runCommandSync(command, args, {
     cwd,
-    encoding: "utf8",
     stdio: inherit ? "inherit" : "pipe",
   });
-  if (result.error) throw result.error;
-  return result;
 }
 
 function requireSuccess(result: CommandResult, description: string): string {
   if (result.status !== 0) {
-    const detail = result.stderr?.trim() || result.stdout?.trim();
+    const detail = result.stderr.trim() || result.stdout.trim();
     throw new Error(`${description}${detail ? `: ${detail}` : ""}`);
   }
-  return result.stdout?.trim() ?? "";
+  return result.stdout.trim();
 }
 
 function git(args: string[], cwd: string): string {
@@ -151,7 +148,7 @@ export function main(argv = process.argv.slice(2), cwd = process.cwd()): number 
         `open or update PR with ${mode}`,
       ],
     };
-    if (parsed.values["dry-run"]) {
+    if (parsed.values["dry-run"] || dryRunFromEnv()) {
       console.log(JSON.stringify(plan, null, 2));
       return 0;
     }

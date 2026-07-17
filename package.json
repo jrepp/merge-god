@@ -27,6 +27,7 @@
     "docs/",
     "commandments.yaml",
     "merge_god/",
+    "schemas/",
     "packages/github-sync/src/",
     "packages/github-sync/package.json",
     "packages/workflow-ir-core/src/",
@@ -58,7 +59,15 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
+    "@gitbeaker/rest": "^42.0.0",
     "@merge-god/github-sync": "0.1.0",
+    "@octokit/auth-token": "^5.1.0",
+    "@octokit/core": "^6.1.0",
+    "@octokit/graphql": "^8.1.0",
+    "@octokit/plugin-paginate-rest": "^11.1.0",
+    "@octokit/plugin-retry": "^7.1.0",
+    "@octokit/plugin-throttling": "^9.1.0",
+    "@octokit/rest": "^21.0.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.220.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
@@ -67,8 +76,11 @@
     "@opentelemetry/sdk-node": "^0.220.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "chalk": "^5.3.0",
+    "commander": "^14.0.3",
+    "execa": "^10.0.0",
     "tsx": "^4.19.0",
-    "yaml": "^2.5.0"
+    "yaml": "^2.5.0",
+    "zod": "^4.4.3"
   },
   "bundleDependencies": [
     "@merge-god/github-sync"

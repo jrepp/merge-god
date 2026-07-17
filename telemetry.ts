@@ -49,6 +49,8 @@ let agentRunCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCount
 let agentDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null;
 let toolCallCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null;
 let toolCallDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null;
+let operationCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null;
+let operationDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null;
 
 function envText(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name];
@@ -312,6 +314,32 @@ export function addTelemetryEvent(name: string, attributes: Record<string, unkno
   const span = trace.getActiveSpan();
   if (!span) return;
   span.addEvent(name, sanitizeSpanAttributes(attributes));
+}
+
+export function recordOperation(traceData: Record<string, unknown>): void {
+  if (!["complete", "would_execute", "error"].includes(String(traceData["action"]))) return;
+  const meter = telemetryMeter();
+  operationCounter ??= meter.createCounter("merge_god.operation", {
+    description: "Operations executed or projected by dry-run",
+    unit: "1",
+  });
+  operationDurationHistogram ??= meter.createHistogram("merge_god.operation.duration", {
+    description: "Executed or projected operation duration",
+    unit: "ms",
+  });
+  const attrs = metricAttributes({
+    "merge_god.operation.kind": traceData["kind"],
+    "merge_god.operation.name": traceData["metric_name"] ?? traceData["name"],
+    "merge_god.operation.effect": traceData["effect"],
+    "merge_god.operation.outcome": traceData["outcome"],
+    "merge_god.dry_run": traceData["dry_run"],
+    "merge_god.status": traceData["status"],
+  });
+  operationCounter.add(1, attrs);
+  if (typeof traceData["duration_ms"] === "number") {
+    operationDurationHistogram.record(traceData["duration_ms"], attrs);
+  }
+  addTelemetryEvent("merge_god.operation", traceData);
 }
 
 function metricAttributes(input: Record<string, unknown>): MetricAttributes {
