@@ -11,11 +11,12 @@
  * `bob --json <prompt>` subprocess contract.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, readFileSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -170,6 +171,133 @@ export interface PiAgentProgress {
   action: "agent_started" | "tool_started" | "tool_completed";
   tool?: string;
   success?: boolean;
+}
+
+export interface PiStartupEvent {
+  action: "configured";
+  phase: "orchestrator" | "session";
+  pi_version: string | null;
+  provider: string | null;
+  model_config: Record<string, unknown> | null;
+  pi_configuration: Record<string, unknown>;
+}
+
+interface PiConfigFileSnapshot {
+  path: string;
+  exists: boolean;
+  value?: unknown;
+  error?: string;
+}
+
+const SENSITIVE_CONFIG_KEY = /(?:api[_-]?key|token|secret|password|auth(?:entication|orization)?|credential|cookie|headers?)/i;
+const PROVIDER_CREDENTIAL_KEY = /(?:API_KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL|ACCESS_KEY_ID)/;
+
+function sanitizedUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
+function sanitizedPiConfig(value: unknown, key = ""): unknown {
+  if (SENSITIVE_CONFIG_KEY.test(key)) return "<redacted>";
+  if (Array.isArray(value)) return value.map((item) => sanitizedPiConfig(item, key));
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [childKey, sanitizedPiConfig(childValue, childKey)]),
+    );
+  }
+  if (typeof value === "string" && /(?:url|endpoint)/i.test(key)) return sanitizedUrl(value);
+  return value;
+}
+
+function configFileSnapshot(filePath: string): PiConfigFileSnapshot {
+  if (!existsSync(filePath)) return { path: filePath, exists: false };
+  try {
+    return {
+      path: filePath,
+      exists: true,
+      value: sanitizedPiConfig(JSON.parse(readFileSync(filePath, "utf8"))),
+    };
+  } catch (error) {
+    return {
+      path: filePath,
+      exists: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function expandHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return path.join(homedir(), value.slice(2));
+  return value;
+}
+
+export function detectPiVersion(env: NodeJS.ProcessEnv = process.env): string | null {
+  const versionEnv = { ...env };
+  delete versionEnv["MERGE_GOD_API"];
+  delete versionEnv["MERGE_GOD_TRACEPARENT"];
+  delete versionEnv["MERGE_GOD_TRACE_CONTEXT"];
+  const result = spawnSync("pi", ["--version"], {
+    encoding: "utf8",
+    env: versionEnv,
+    timeout: 1000,
+  });
+  if (result.status !== 0) return null;
+  const version = result.stdout.trim();
+  return version || null;
+}
+
+export function piStartupConfiguration(
+  repoPath: string,
+  injection: PiExtensionInjectionPlan,
+  options: {
+    env?: NodeJS.ProcessEnv;
+    piVersion?: string | null;
+    dotenvKeys?: string[];
+    extraEnvKeys?: string[];
+  } = {},
+): PiStartupEvent {
+  const env = options.env ?? process.env;
+  const configuredDir = env.PI_CODING_AGENT_DIR;
+  const configDir = configuredDir ? path.resolve(expandHome(configuredDir)) : path.join(homedir(), ".pi", "agent");
+  const globalSettings = configFileSnapshot(path.join(configDir, "settings.json"));
+  const projectSettings = configFileSnapshot(path.join(repoPath, ".pi", "settings.json"));
+  const models = configFileSnapshot(path.join(configDir, "models.json"));
+  const projectValue = recordValue(projectSettings.value);
+  const globalValue = recordValue(globalSettings.value);
+  const provider = [projectValue["defaultProvider"], globalValue["defaultProvider"]]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? null;
+  const model = [projectValue["defaultModel"], globalValue["defaultModel"]]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0) ?? null;
+  return {
+    action: "configured",
+    phase: "orchestrator",
+    pi_version: options.piVersion ?? detectPiVersion(env),
+    provider,
+    model_config: model ? { id: model, provider, source: "settings" } : null,
+    pi_configuration: {
+      cli_args: injection.cli_args.map((arg, index) =>
+        index === injection.cli_args.length - 1 ? `<instruction:${arg.length} chars>` : arg),
+      extension_path: injection.extension_path,
+      expected_tools: injection.expected_tools,
+      config_dir: configDir,
+      config_dir_source: configuredDir ? "PI_CODING_AGENT_DIR" : "default",
+      global_settings: globalSettings,
+      project_settings: projectSettings,
+      models,
+      dotenv_keys_loaded: [...(options.dotenvKeys ?? [])].sort(),
+      extra_env_keys: [...(options.extraEnvKeys ?? [])].sort(),
+      provider_environment_keys_present: Object.keys(env).filter((key) => PROVIDER_CREDENTIAL_KEY.test(key) && env[key]).sort(),
+    },
+  };
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -367,6 +495,8 @@ export class CoordinationServer {
   private _repoPath: string | null;
   private _gitObserver: GitOpsObserver | null;
   private _agentObserver: ((observation: AgentObservation) => void) | null;
+  private _startupObserver: ((event: PiStartupEvent) => void) | null;
+  private _startupEvents: PiStartupEvent[] = [];
   private _resultListeners = new Set<(result: Record<string, unknown>) => void>();
   private _toolSurface: PiToolSurfaceEntry[] = [];
   private _toolCalls = new Map<string, PiToolCallMeasurement>();
@@ -384,6 +514,7 @@ export class CoordinationServer {
     repoPath: string | null = null,
     gitObserver: GitOpsObserver | null = null,
     agentObserver: ((observation: AgentObservation) => void) | null = null,
+    startupObserver: ((event: PiStartupEvent) => void) | null = null,
   ) {
     this._server = http.createServer((req, res) => this._handleRequest(req, res));
     // Synchronously grab a port by listening; we use the returned address below.
@@ -396,6 +527,7 @@ export class CoordinationServer {
     this._repoPath = repoPath;
     this._gitObserver = gitObserver;
     this._agentObserver = agentObserver;
+    this._startupObserver = startupObserver;
   }
 
   start(): Promise<void> {
@@ -524,6 +656,33 @@ export class CoordinationServer {
     return [...this._observations];
   }
 
+  getStartupEvents(): PiStartupEvent[] {
+    return [...this._startupEvents];
+  }
+
+  async recordStartup(input: Record<string, unknown> | PiStartupEvent): Promise<PiStartupEvent> {
+    const modelConfig = recordValue(sanitizedPiConfig(input.model_config));
+    const event: PiStartupEvent = {
+      action: "configured",
+      phase: input.phase === "session" ? "session" : "orchestrator",
+      pi_version: typeof input.pi_version === "string" ? input.pi_version : null,
+      provider: typeof input.provider === "string" ? input.provider : null,
+      model_config: Object.keys(modelConfig).length > 0 ? modelConfig : null,
+      pi_configuration: recordValue(sanitizedPiConfig(input.pi_configuration)),
+    };
+    this._startupEvents.push(event);
+    if (this._startupEvents.length > 20) this._startupEvents.shift();
+    this._startupObserver?.(event);
+    if (this._trajectory) {
+      await Promise.resolve(this._trajectory.appendEvent({
+        event_type: event.phase === "session" ? "pi.session.configured" : "pi.runtime.configured",
+        actor: event.phase === "session" ? "pi-extension" : "merge-god",
+        payload: { ...event },
+      }));
+    }
+    return event;
+  }
+
   private _send(res: ServerResponse, status: number, payload: unknown): void {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -592,6 +751,7 @@ export class CoordinationServer {
           ok: true,
           work: this.getWork(),
           observations: this.getObservations(),
+          startup_events: this.getStartupEvents(),
           trace_context: this._traceContext,
           tooling: this.getToolingSnapshot(),
           capabilities: { tools: this._toolSurface.map((tool) => tool.name), worktree_path: this._repoPath },
@@ -606,6 +766,13 @@ export class CoordinationServer {
       return;
     }
     if (req.method === "POST") {
+      if (url === "/startup") {
+        this._readBody(req)
+          .then((body) => this.recordStartup(body))
+          .then((startup) => this._send(res, 200, { ok: true, startup }))
+          .catch((err: unknown) => this._send(res, 400, { ok: false, error: String(err) }));
+        return;
+      }
       if (url === "/result") {
         this._readBody(req)
           .then((body) => {
@@ -1161,6 +1328,7 @@ export async function runPiAgent(
     gitObserver?: GitOpsObserver;
     agentObserver?: (observation: AgentObservation) => void;
     progressObserver?: (progress: PiAgentProgress) => void;
+    startupObserver?: (event: PiStartupEvent) => void;
     completionGraceMs?: number;
   } = {},
 ): Promise<PiAgentResult> {
@@ -1173,6 +1341,7 @@ export async function runPiAgent(
     gitObserver,
     agentObserver,
     progressObserver,
+    startupObserver,
     completionGraceMs = 1000,
   } = opts;
 
@@ -1236,6 +1405,7 @@ export async function runPiAgent(
     worktree.path,
     gitObserver ?? null,
     agentObserver ?? null,
+    startupObserver ?? null,
   );
   server.setAgentTraceContext(traceContext, ext);
   await server.start();
@@ -1249,9 +1419,23 @@ export async function runPiAgent(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...dotenvEnv,
-    ...injection.environment,
   };
   if (extraEnv) Object.assign(env, extraEnv);
+  const piVersion = detectPiVersion(env);
+  if (piVersion) env["MERGE_GOD_PI_VERSION"] = piVersion;
+  Object.assign(env, injection.environment);
+  if (extraEnv) Object.assign(env, extraEnv);
+  const startup = piStartupConfiguration(worktree.path, injection, {
+    env,
+    piVersion,
+    dotenvKeys: Object.keys(dotenvEnv),
+    extraEnvKeys: Object.keys(extraEnv ?? {}),
+  });
+  span.setAttributes(sanitizeSpanAttributes({
+    "merge_god.pi_version": startup.pi_version,
+    "merge_god.pi_provider": startup.provider,
+    "merge_god.pi_model": startup.model_config?.["id"],
+  }));
   const startedAt = Date.now();
   const startedAtIso = new Date(startedAt).toISOString();
   recordPromptRendered("pi_work_item", workItem.prompt, {
@@ -1268,6 +1452,7 @@ export async function runPiAgent(
       source_repo_path: workItem.repo_path ?? repoPath,
       trace_context: traceContext,
     });
+    await server.recordStartup(startup);
     if (trajectory) {
       await Promise.resolve(trajectory.appendEvent({
         event_type: "pi.extension.injected",

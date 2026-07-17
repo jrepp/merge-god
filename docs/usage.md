@@ -184,6 +184,14 @@ The current checkout is preferred over repositories in `config.yaml`. Pass
 an unfinished trajectory, `pr` resumes it automatically instead of creating a
 second run.
 
+Each agent launch emits two `pi_startup` JSON events. The `orchestrator` phase
+records the Pi version, CLI and extension configuration, configuration-file
+snapshots, and configured provider/model. The `session` phase records the
+provider, model configuration, and thinking level resolved by Pi itself. The
+same data is stored in trajectory events named `pi.runtime.configured` and
+`pi.session.configured`. Prompts and credential values are redacted; environment
+reporting contains key names only.
+
 Resume interrupted work without looking up a database run ID:
 
 ```bash

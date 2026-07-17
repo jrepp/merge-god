@@ -1,6 +1,11 @@
 import { PI_TOOL_NAMES } from "../../pi/tool_contract.ts";
 import { createFetchCoordinationClient } from "../../pi/agent_interactions.ts";
 
+if (process.argv.includes("--version")) {
+  console.log("9.9.9-test");
+  process.exit(0);
+}
+
 const scenario = process.env.MERGE_GOD_FAULT_SCENARIO ?? "success";
 const extensionIndex = process.argv.indexOf("--extension");
 if (extensionIndex === -1 || !process.argv[extensionIndex + 1]) {
@@ -97,10 +102,30 @@ extension({
   getActiveTools() {
     return ["bash", ...tools.keys()];
   },
+  getThinkingLevel() {
+    return "high";
+  },
 });
 
+const extensionContext = {
+  cwd: process.cwd(),
+  model: {
+    id: "fake-pi-model",
+    name: "Fake Pi Model",
+    api: "fake-messages",
+    provider: "fake-provider",
+    baseUrl: "https://agent:secret@example.test/v1?token=hidden",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 1, output: 2 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+    headers: { Authorization: "Bearer should-not-appear" },
+  },
+};
+
 async function emit(event, payload) {
-  for (const handler of handlers.get(event) ?? []) await handler(payload);
+  for (const handler of handlers.get(event) ?? []) await handler(payload, extensionContext);
 }
 
 async function callTool(name, params = {}) {

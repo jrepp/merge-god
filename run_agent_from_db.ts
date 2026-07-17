@@ -335,6 +335,7 @@ export async function runAgentFromDb(
     const piResult = await runPiAgent(workItem, repoPath ?? process.cwd(), {
       timeout: timeoutSeconds,
       trajectory: trajectoryIds ? trajectoryRuntime.bridgeForPiAgent(trajectoryIds) : undefined,
+      startupObserver: (startup) => logJson("pi_startup", { pr_number: prNumber, ...startup }),
     });
     const resultStatus = typeof piResult.result?.["status"] === "string" ? piResult.result["status"] : null;
     const success = piResult.returncode === 0 && resultStatus !== "failure";

@@ -1933,6 +1933,7 @@ export async function processPr(
       gitObserver: createGitOpsObserver(),
       agentObserver: createAgentObservationObserver(),
       progressObserver: (progress) => logJson("agent_progress", { pr_number: prNumber, ...progress }),
+      startupObserver: (startup) => logJson("pi_startup", { pr_number: prNumber, ...startup }),
       trajectory: trajectoryRuntime && trajectoryStart
         ? trajectoryRuntime.bridgeForPiAgent(trajectoryStart.ids)
         : undefined,
@@ -2258,6 +2259,7 @@ export async function processIssue(
     timeout: 3600,
     gitObserver: createGitOpsObserver(),
     agentObserver: createAgentObservationObserver(),
+    startupObserver: (startup) => logJson("pi_startup", { issue_number: issueNumber, ...startup }),
   }, dependencies);
   if (agentExecution.outcome === "would_execute") {
     span.setAttributes({
