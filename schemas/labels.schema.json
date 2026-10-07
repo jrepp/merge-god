@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jrepp.github.io/merge-god/schemas/labels.schema.json",
+  "title": "merge-god Label Catalog",
+  "description": "Portable catalog of the merge-god labeling schema. The root document is a bare array of label entries in github-label-sync format (name, color, description) so it can be consumed directly by label-sync tooling. The '$defs' validate both catalog entries and individual label occurrences (e.g. labels attached to a PR or issue). The 'x-merge-god' extension carries the semantic model: families, directions, cardinality constraints, state transitions, and merge-gate patterns. Extension keywords are ignored by validators but are the machine-readable contract for connecting other tools.",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/labelEntry"
+  },
+  "minItems": 1,
+  "uniqueItems": true,
+  "$defs": {
+    "hexColor": {
+      "type": "string",
+      "description": "GitHub label color: six hex digits, no leading '#'.",
+      "pattern": "^[0-9a-fA-F]{6}$"
+    },
+    "labelName": {
+      "type": "string",
+      "description": "Canonical merge-god label names. Comparison is case-insensitive and whitespace-normalized (spaces fold to dashes) in merge-god, but these are the exact spellings used by automation.",
+      "enum": [
+        "for-landing",
+        "for-review",
+        "for-impl",
+        "duplicate",
+        "merge:ready",
+        "merge:processing",
+        "merge:embarked",
+        "merge:blocked",
+        "merge:failed",
+        "merge:complete",
+        "remediation:observe-only",
+        "remediation:validate-only",
+        "remediation:mechanical-fixes",
+        "remediation:bounded-fixes",
+        "remediation:maintainer-approved",
+        "large",
+        "too-large",
+        "unaligned",
+        "needs-split",
+        "needs-ci",
+        "needs-rebase",
+        "needs-conflict-resolution",
+        "needs-review",
+        "needs-design",
+        "high-risk",
+        "low-risk",
+        "docs-only",
+        "test-only",
+        "embark-candidate",
+        "underlying-needed"
+      ]
+    },
+    "labelEntry": {
+      "type": "object",
+      "description": "One label definition, github-label-sync compatible.",
+      "required": ["name", "color", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/labelName"
+        },
+        "color": {
+          "$ref": "#/$defs/hexColor"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable meaning shown on the forge. GitHub limits this to 200 characters.",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "labelReference": {
+      "type": "string",
+      "description": "A label observed on a PR or issue, normalized the way merge-god normalizes it: trimmed, lowercased, internal whitespace folded to dashes.",
+      "pattern": "^[a-z0-9][a-z0-9:.-]*$",
+      "enum": [
+        "for-landing",
+        "for-review",
+        "for-impl",
+        "duplicate",
+        "merge:ready",
+        "merge:processing",
+        "merge:embarked",
+        "merge:blocked",
+        "merge:failed",
+        "merge:complete",
+        "remediation:observe-only",
+        "remediation:validate-only",
+        "remediation:mechanical-fixes",
+        "remediation:bounded-fixes",
+        "remediation:maintainer-approved",
+        "large",
+        "too-large",
+        "unaligned",
+        "needs-split",
+        "needs-ci",
+        "needs-rebase",
+        "needs-conflict-resolution",
+        "needs-review",
+        "needs-design",
+        "high-risk",
+        "low-risk",
+        "docs-only",
+        "test-only",
+        "embark-candidate",
+        "underlying-needed"
+      ]
+    }
+  },
+  "x-merge-god": {
+    "version": "1.0.0",
+    "normalization": "Labels are compared after trim + lowercase; internal whitespace and underscores fold to dashes for remediation modes and annotation labels.",
+    "families": [
+      {
+        "id": "intent",
+        "labels": ["for-landing", "for-review", "for-impl", "duplicate"],
+        "direction": "operator-input",
+        "written_by": "humans or external tools; automation never removes or rewrites these (new-pr may repair a contradictory for-review/for-landing pair)",
+        "applies_to": {
+          "default": "pull_request",
+          "for-impl": "issue"
+        },
+        "cardinality": "at most one processing mode (for-review or for-landing) per PR; for-review wins if both are present",
+        "priority": "for-review is processed before for-landing",
+        "no_label_behavior": "PRs and issues with none of these labels are skipped",
+        "exclusions": {
+          "wip_substrings": ["wip", "work-in-process", "work in process"],
+          "match": "substring, case-insensitive",
+          "behavior": "skip"
+        },
+        "semantics": {
+          "for-landing": "basic processing toward merge: conflicts, review feedback, CI",
+          "for-review": "for-landing behavior plus a second quality/security/performance pass",
+          "for-impl": "implement the issue on branch issue-{n}-{title} and open a linked PR; requires watch_issues enabled",
+          "duplicate": "hold, not a verdict: removes the PR from the agent queue pending evidence-based patch-equivalence analysis; only auto-closeable when every retained patch is already on base"
+        }
+      },
+      {
+        "id": "state",
+        "labels": ["merge:ready", "merge:processing", "merge:embarked", "merge:blocked", "merge:failed", "merge:complete"],
+        "direction": "automation-output",
+        "written_by": "merge-god",
+        "applies_to": "pull_request",
+        "cardinality": "exactly one per PR at all times; automation adds the target then removes all others",
+        "active_states": ["processing", "embarked", "blocked", "failed", "complete"],
+        "active_state_behavior": "an active state label is a re-entry lock: discovery skips the PR until a human or tool clears it (merge:ready is not active and does not block)",
+        "transitions": {
+          "merge:ready": "initial/retry state; also restored when a run fails without a human-blocker signal",
+          "merge:processing": "set when the agent starts working the PR",
+          "merge:embarked": "set when the PR joins a grouped embark cohort",
+          "merge:blocked": "set on user decline, empty PR details, read-only remediation runtime, or failure text matching blocked/need/manual/human/approval/permission/credential/rate-limit signals",
+          "merge:failed": "set when a run fails without a human-blocker signal",
+          "merge:complete": "set on agent success plus a verified merge, or when duplicate analysis confirms the PR already landed"
+        },
+        "retry_rule": "clear the terminal state label (merge:blocked, merge:failed, merge:complete) to let merge-god retry a PR"
+      },
+      {
+        "id": "remediation",
+        "labels": ["remediation:observe-only", "remediation:validate-only", "remediation:mechanical-fixes", "remediation:bounded-fixes", "remediation:maintainer-approved"],
+        "direction": "operator-input",
+        "written_by": "created by automation at loop start; attached by operators/tools to cap autonomy",
+        "applies_to": "pull_request",
+        "cardinality": "at most one per PR; two different remediation labels fail closed to observe-only and block the run",
+        "autonomy_order_asc": ["observe-only", "validate-only", "mechanical-fixes", "bounded-fixes", "maintainer-approved"],
+        "cap_rule": "a PR label can only lower autonomy relative to repository/risk/global ceilings, never raise it",
+        "aliases": {
+          "observe": "observe-only",
+          "validate": "validate-only",
+          "mechanical": "mechanical-fixes",
+          "bounded": "bounded-fixes"
+        },
+        "special_rules": [
+          "remediation:maintainer-approved requires verified maintainer provenance; unverified, it is blocked and capped at bounded-fixes",
+          "missing or invalid repository default falls back to bounded-fixes",
+          "read-only effective modes (observe-only, validate-only) block the mutating PR agent"
+        ]
+      },
+      {
+        "id": "annotation",
+        "labels": ["large", "too-large", "unaligned", "needs-split", "needs-ci", "needs-rebase", "needs-conflict-resolution", "needs-review", "needs-design", "high-risk", "low-risk", "docs-only", "test-only", "embark-candidate", "underlying-needed"],
+        "direction": "annotation",
+        "written_by": "the coding agent (declared via mg_complete annotations.labels, extracted from agent results, or inferred from failure text)",
+        "applies_to": "pull_request",
+        "cardinality": "zero or more; strictly allowlisted and add-only; never removed by automation",
+        "inference_note": "on failure, automation may infer needs-split, needs-ci, needs-rebase, needs-conflict-resolution, needs-review, needs-design, or underlying-needed from failure text"
+      },
+      {
+        "id": "gate",
+        "labels": [],
+        "direction": "external-gate",
+        "written_by": "any GitHub participant",
+        "applies_to": "pull_request",
+        "cardinality": "pattern-matched, not enumerated: any label matching the patterns below becomes an external_gate merge blocker",
+        "patterns": [
+          "do not merge|dnm|do not land|do not submit",
+          "blocked|blocking|blocker",
+          "on hold|hold merge|merge hold",
+          "needs rebase|rebase required|must rebase|merge conflicts|has conflicts|conflicts",
+          "needs ci|ci remediation|remediate ci|validation remediation|needs validation",
+          "needs review|review required|requires review|changes requested|address review",
+          "ci failing|failing ci|tests failing|failing tests|checks failing|failing checks",
+          "(manual|human|external) (gate|approval|signoff|required)",
+          "(needs|requires|awaiting|waiting on) (human|approval|signoff|release|security|legal|product|dependency|dependencies|credentials)"
+        ],
+        "pattern_matching": "case-insensitive word-boundary match after normalization (separators [_:/-] fold to spaces)",
+        "ignored_labels": ["for review", "for landing", "for impl", "merge:* state labels"]
+      }
+    ]
+  }
+}
