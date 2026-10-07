@@ -93,6 +93,14 @@ import {
 } from "./telemetry";
 import { TrajectoryRuntime, type RuntimeStartResult } from "./trajectory_runtime";
 import {
+  MetricsRegistry,
+  registerLoopMetrics,
+  registerProcessMetrics,
+  startMetricsServer,
+  type LoopMetrics,
+  type MetricsServer,
+} from "./metrics_server";
+import {
   parseRepositoryIdentity,
   repositoryIdentityMatches,
   type RepositoryIdentity,
@@ -2460,6 +2468,8 @@ interface CliArgs {
   idleSleepSeconds: number;
   syncFailureSleepSeconds: number;
   betweenItemsSleepSeconds: number;
+  metricsPort: number | null;
+  metricsHost: string;
 }
 
 function positiveIntegerOption(value: unknown, optionName: string): number | null {
@@ -2484,6 +2494,8 @@ export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
       "idle-sleep-seconds": { type: "string" },
       "sync-failure-sleep-seconds": { type: "string" },
       "between-items-sleep-seconds": { type: "string" },
+      "metrics-port": { type: "string" },
+      "metrics-host": { type: "string" },
       repo: { type: "string" },
       db: { type: "string" },
     },
@@ -2509,6 +2521,10 @@ export function parseCliArgs(argv = process.argv.slice(2)): CliArgs {
     idleSleepSeconds: positiveIntegerOption(parsed.values["idle-sleep-seconds"], "--idle-sleep-seconds") ?? 300,
     syncFailureSleepSeconds: positiveIntegerOption(parsed.values["sync-failure-sleep-seconds"], "--sync-failure-sleep-seconds") ?? 60,
     betweenItemsSleepSeconds: positiveIntegerOption(parsed.values["between-items-sleep-seconds"], "--between-items-sleep-seconds") ?? 10,
+    metricsPort: positiveIntegerOption(parsed.values["metrics-port"], "--metrics-port") ?? metricsPortFromEnv(),
+    metricsHost: typeof parsed.values["metrics-host"] === "string" && parsed.values["metrics-host"].trim().length > 0
+      ? parsed.values["metrics-host"].trim()
+      : "127.0.0.1",
   };
 }
 
@@ -2516,10 +2532,22 @@ function shouldStopLoop(iteration: number, args: CliArgs): boolean {
   return args.maxIterations !== null && iteration >= args.maxIterations;
 }
 
+function metricsPortFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env["MERGE_GOD_METRICS_PORT"];
+  if (raw === undefined || raw.trim().length === 0) return null;
+  const number = Number(raw);
+  if (!Number.isInteger(number) || number <= 0 || number > 65535) {
+    throw new Error("MERGE_GOD_METRICS_PORT must be an integer between 1 and 65535");
+  }
+  return number;
+}
+
 /** Main loop — process PRs (and optionally issues) forever. */
 export async function main(): Promise<void> {
+  let metrics: MetricsServer | null = null;
   process.on("SIGINT", () => {
     logJson("shutdown", { reason: "keyboard_interrupt" });
+    void metrics?.stop().catch(() => {});
     void shutdownTelemetry().finally(() => process.exit(0));
   });
 
@@ -2529,12 +2557,37 @@ export async function main(): Promise<void> {
   } catch (e) {
     console.error(`Error: ${errMsg(e)}`);
     console.error(
-      "Usage: pr-loop <repo_path> [--watch-issues] [--interactive] [--once|--max-iterations N] [--dry-run]",
+      "Usage: pr-loop <repo_path> [--watch-issues] [--interactive] [--once|--max-iterations N] [--dry-run] [--metrics-port N] [--metrics-host HOST]",
     );
     process.exit(2);
   }
   if (args.dryRun) enableDryRun();
   initializeTelemetry(undefined, logJson);
+  let loopMetrics: LoopMetrics | null = null;
+  if (args.metricsPort !== null) {
+    const registry = new MetricsRegistry();
+    registerProcessMetrics(registry);
+    loopMetrics = registerLoopMetrics(registry);
+    try {
+      metrics = await startMetricsServer({
+        registry,
+        host: args.metricsHost,
+        port: args.metricsPort,
+        serviceName: "merge-god-pr-loop",
+      });
+      logJson("startup", {
+        metrics_endpoint: `http://${metrics.host}:${metrics.port}/metrics`,
+        health_endpoint: `http://${metrics.host}:${metrics.port}/healthz`,
+      });
+    } catch (e) {
+      logJson("startup", {
+        metrics_error: errMsg(e),
+        warning: "Continuing without the observability endpoint",
+      });
+      metrics = null;
+      loopMetrics = null;
+    }
+  }
   const processingDependencies: ProcessingDependencies = {
     executionPolicy: currentExecutionPolicy(),
   };
@@ -2625,9 +2678,12 @@ export async function main(): Promise<void> {
 
   for (;;) {
     iteration++;
+    loopMetrics?.iterations();
     logJson("iteration", { number: iteration, action: "start" });
 
     if (!syncRepo(defaultBranch)) {
+      loopMetrics?.syncFailure();
+      loopMetrics?.active(processingPrs.size, processingIssues.size);
       logJson("iteration", { number: iteration, action: "sync_failed", sleep_seconds: args.syncFailureSleepSeconds });
       if (shouldStopLoop(iteration, args)) {
         logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });
@@ -2652,11 +2708,13 @@ export async function main(): Promise<void> {
           const issueNumber = issue["number"] as number | undefined;
 
           if (issueNumber && processingIssues.has(issueNumber)) {
+            loopMetrics?.issueProcessed("skipped");
             logJson("process_issue", { action: "skip_duplicate", issue_number: issueNumber });
             continue;
           }
 
           if (issueNumber) processingIssues.add(issueNumber);
+          loopMetrics?.active(processingPrs.size, processingIssues.size);
 
           try {
             const success = await processIssue(
@@ -2668,9 +2726,11 @@ export async function main(): Promise<void> {
               mergeRules,
               processingDependencies,
             );
+            loopMetrics?.issueProcessed(success ? "success" : "failure");
             if (success && issueNumber) processingIssues.delete(issueNumber);
             issuesProcessed++;
           } catch (e) {
+            loopMetrics?.issueProcessed("failure");
             logJson("process_issue", {
               action: "exception",
               issue_number: issueNumber,
@@ -2688,6 +2748,10 @@ export async function main(): Promise<void> {
     processingIssues.clear();
 
     const categorizedPrs = getOpenPrs();
+
+    loopMetrics?.queueSize("for-review", categorizedPrs["for-review"].length);
+    loopMetrics?.queueSize("for-landing", categorizedPrs["for-landing"].length);
+    loopMetrics?.queueSize("untagged", categorizedPrs["untagged"].length);
 
     const totalProcessable = categorizedPrs["for-review"].length + categorizedPrs["for-landing"].length;
 
@@ -2753,11 +2817,13 @@ export async function main(): Promise<void> {
       const prNumber = prDetailsNumber(pr) ?? undefined;
 
       if (prNumber && processingPrs.has(prNumber)) {
+        loopMetrics?.prProcessed("skipped");
         logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
         continue;
       }
 
       if (prNumber) processingPrs.add(prNumber);
+      loopMetrics?.active(processingPrs.size, processingIssues.size);
 
       try {
         const success = await processPr(
@@ -2773,10 +2839,12 @@ export async function main(): Promise<void> {
           appStore,
           processingDependencies,
         );
+        loopMetrics?.prProcessed(success ? "success" : "failure");
         if (success && prNumber) processingPrs.delete(prNumber);
         totalProcessed++;
       } catch (e) {
         const reason = errMsg(e);
+        loopMetrics?.prProcessed("failure");
         logJson("process_pr", {
           action: "exception",
           pr_number: prNumber,
@@ -2805,6 +2873,7 @@ export async function main(): Promise<void> {
 
     await sleep(args.idleSleepSeconds * 1000);
   }
+  await metrics?.stop().catch(() => {});
   await shutdownTelemetry();
 }
 

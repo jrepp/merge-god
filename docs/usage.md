@@ -274,6 +274,31 @@ This lets you turn a backlog issue into a landed change end-to-end.
 
 ## Observability
 
+- **Metrics endpoint** — `pr-loop` can serve Prometheus text-format metrics and
+  a JSON liveness probe from a loopback HTTP listener for internal scraping:
+
+  ```bash
+  npx tsx pr-loop.ts /path/to/repo --metrics-port 9102
+  # or: MERGE_GOD_METRICS_PORT=9102 npx tsx pr-loop.ts /path/to/repo
+  ```
+
+  - `GET /metrics` — Prometheus exposition (`text/plain; version=0.0.4`) with
+    loop iterations, sync failures, PR/issue outcomes (`success`, `failure`,
+    `skipped`), queue sizes per label, active work, and process gauges.
+  - `GET /healthz` — JSON `{ok, service, uptime_seconds}` for probes.
+  - `--metrics-host` narrows or widens the bind address (default
+    `127.0.0.1`; keep it off shared interfaces).
+
+  Scrape snippet:
+
+  ```yaml
+  scrape_configs:
+    - job_name: merge-god
+      metrics_path: /metrics
+      static_configs:
+        - targets: ["127.0.0.1:9102"]
+  ```
+
 - **Trajectory history** — inspect elapsed time, exact Pi-reported cost, token
   usage, turn count, and tool reliability without polling the database:
 

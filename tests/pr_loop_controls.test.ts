@@ -38,6 +38,8 @@ describe("PR loop controls", () => {
         idleSleepSeconds: 5,
         syncFailureSleepSeconds: 2,
         betweenItemsSleepSeconds: 1,
+        metricsPort: null,
+        metricsHost: "127.0.0.1",
       },
     );
   });
@@ -55,8 +57,33 @@ describe("PR loop controls", () => {
         idleSleepSeconds: 300,
         syncFailureSleepSeconds: 60,
         betweenItemsSleepSeconds: 10,
+        metricsPort: null,
+        metricsHost: "127.0.0.1",
       },
     );
+  });
+
+  test("parses metrics endpoint options and rejects invalid ports", () => {
+    const args = parseCliArgs(["/repo", "--metrics-port", "9102", "--metrics-host", "0.0.0.0"]);
+    assert.equal(args.metricsPort, 9102);
+    assert.equal(args.metricsHost, "0.0.0.0");
+    assert.throws(() => parseCliArgs(["/repo", "--metrics-port", "0"]), /positive integer/);
+  });
+
+  test("reads the metrics port from the environment", () => {
+    const previous = process.env["MERGE_GOD_METRICS_PORT"];
+    try {
+      process.env["MERGE_GOD_METRICS_PORT"] = "9103";
+      assert.equal(parseCliArgs(["/repo"]).metricsPort, 9103);
+      assert.equal(
+        parseCliArgs(["/repo", "--metrics-port", "9102"]).metricsPort,
+        9102,
+        "the flag wins over the environment",
+      );
+    } finally {
+      if (previous === undefined) delete process.env["MERGE_GOD_METRICS_PORT"];
+      else process.env["MERGE_GOD_METRICS_PORT"] = previous;
+    }
   });
 
   test("rejects missing repo path and invalid integer controls", () => {

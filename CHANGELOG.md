@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-07 - Loop Metrics Endpoint for Internal Scraping
+
+### New Feature: Prometheus observability endpoint
+
+`pr-loop` can now serve a Prometheus text-format metrics endpoint and a JSON
+liveness probe from a loopback HTTP listener, intended for internal scraping by
+Prometheus.
+
+- `--metrics-port <port>` (or `MERGE_GOD_METRICS_PORT`) enables the endpoint;
+  `--metrics-host` overrides the default `127.0.0.1` bind address.
+- `GET /metrics` exposes loop iterations, repo sync failures, PR/issue
+  outcomes (`success`/`failure`/`skipped`), queue sizes per intent label,
+  active work, and process gauges (uptime, RSS, heap).
+- `GET /healthz` returns `{ok, service, uptime_seconds}` for probes.
+
 ## 2025-11-21 - Add Issue Watching Feature (for-impl)
 
 ### New Feature: Issue Monitoring and Implementation
