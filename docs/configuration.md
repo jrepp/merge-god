@@ -164,6 +164,24 @@ Key metrics:
 | `merge_god.pi.tool_call` | Pi extension tool-call count tagged by tool and result. |
 | `merge_god.pi.tool_call.duration` | Pi extension tool-call duration histogram in milliseconds. |
 
+## Metrics endpoint
+
+Beyond push-based OTLP telemetry, `pr-loop` can expose a pull-based Prometheus
+endpoint for internal scraping. Start the loop with `--metrics-port <port>`
+(or set `MERGE_GOD_METRICS_PORT`); it binds `127.0.0.1` by default and serves:
+
+- `GET /metrics` — Prometheus text format: `merge_god_loop_iterations_total`,
+  `merge_god_repo_sync_failures_total`, `merge_god_prs_processed_total` /
+  `merge_god_issues_processed_total` (labeled `result=success|failure|skipped`),
+  `merge_god_queue_size` (labeled `queue=for-review|for-landing|untagged`),
+  `merge_god_active_prs` / `merge_god_active_issues`, and process gauges
+  (uptime, RSS, heap).
+- `GET /healthz` — JSON liveness probe.
+
+`--metrics-host` overrides the bind address when a scraper cannot reach
+loopback. Keep the endpoint off public interfaces; it exposes operational
+metadata only, but it is unauthenticated.
+
 ## Merge rules
 
 Each repository can define root-level merge policy in `commandments.yaml`. Keep
