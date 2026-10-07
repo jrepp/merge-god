@@ -1,0 +1,152 @@
+[
+  {
+    "name": "for-landing",
+    "color": "0e8a16",
+    "description": "Operator intent: run basic PR processing toward merge (conflicts, reviews, CI)"
+  },
+  {
+    "name": "for-review",
+    "color": "fbca04",
+    "description": "Operator intent: landing processing plus a second quality, security, and performance review pass (higher priority than for-landing)"
+  },
+  {
+    "name": "for-impl",
+    "color": "1d76db",
+    "description": "Operator intent: implement this issue and open a linked PR (requires watch_issues)"
+  },
+  {
+    "name": "duplicate",
+    "color": "ededed",
+    "description": "Hold: suspected duplicate; verify patch equivalence and base containment before closing"
+  },
+  {
+    "name": "merge:ready",
+    "color": "0e8a16",
+    "description": "merge-god may process or embark this PR"
+  },
+  {
+    "name": "merge:processing",
+    "color": "1d76db",
+    "description": "merge-god is actively processing this PR"
+  },
+  {
+    "name": "merge:embarked",
+    "color": "5319e7",
+    "description": "merge-god included this PR in an embark cohort"
+  },
+  {
+    "name": "merge:blocked",
+    "color": "d93f0b",
+    "description": "merge-god is blocked and needs human input or external state"
+  },
+  {
+    "name": "merge:failed",
+    "color": "b60205",
+    "description": "merge-god processing failed"
+  },
+  {
+    "name": "merge:complete",
+    "color": "0e8a16",
+    "description": "merge-god completed processing for this PR"
+  },
+  {
+    "name": "remediation:observe-only",
+    "color": "6e7781",
+    "description": "Gather evidence only; do not run mutating remediation"
+  },
+  {
+    "name": "remediation:validate-only",
+    "color": "0e8a16",
+    "description": "Run validation and report fixes without changing the branch"
+  },
+  {
+    "name": "remediation:mechanical-fixes",
+    "color": "fbca04",
+    "description": "Allow bounded generated, formatting, and mechanical fixes"
+  },
+  {
+    "name": "remediation:bounded-fixes",
+    "color": "1d76db",
+    "description": "Allow fixes that preserve the PR's retained scope"
+  },
+  {
+    "name": "remediation:maintainer-approved",
+    "color": "5319e7",
+    "description": "Allow broader remediation after verified maintainer approval"
+  },
+  {
+    "name": "large",
+    "color": "d4c5f9",
+    "description": "Agent annotation: broad PR with many files or substantial review surface"
+  },
+  {
+    "name": "too-large",
+    "color": "b60205",
+    "description": "Agent annotation: PR is too large to safely process as one landing unit"
+  },
+  {
+    "name": "unaligned",
+    "color": "fbca04",
+    "description": "Agent annotation: implementation appears unaligned with design, requirements, or merge rules"
+  },
+  {
+    "name": "needs-split",
+    "color": "d93f0b",
+    "description": "Agent annotation: PR should be split into smaller or underlying PRs"
+  },
+  {
+    "name": "needs-ci",
+    "color": "d93f0b",
+    "description": "Agent annotation: CI or validation failures need remediation"
+  },
+  {
+    "name": "needs-rebase",
+    "color": "fbca04",
+    "description": "Agent annotation: PR needs to be updated from its base branch"
+  },
+  {
+    "name": "needs-conflict-resolution",
+    "color": "d93f0b",
+    "description": "Agent annotation: PR needs merge conflict resolution"
+  },
+  {
+    "name": "needs-review",
+    "color": "fbca04",
+    "description": "Agent annotation: PR needs review feedback addressed or approval"
+  },
+  {
+    "name": "needs-design",
+    "color": "fbca04",
+    "description": "Agent annotation: design or requirements clarification is needed before landing"
+  },
+  {
+    "name": "high-risk",
+    "color": "b60205",
+    "description": "Agent annotation: higher merge risk due to scope, architecture, or validation uncertainty"
+  },
+  {
+    "name": "low-risk",
+    "color": "0e8a16",
+    "description": "Agent annotation: low-risk change with narrow scope"
+  },
+  {
+    "name": "docs-only",
+    "color": "0075ca",
+    "description": "Agent annotation: documentation-only change"
+  },
+  {
+    "name": "test-only",
+    "color": "1d76db",
+    "description": "Agent annotation: test-only change"
+  },
+  {
+    "name": "embark-candidate",
+    "color": "5319e7",
+    "description": "Agent annotation: candidate for grouped embark validation"
+  },
+  {
+    "name": "underlying-needed",
+    "color": "d93f0b",
+    "description": "Agent annotation: needs an underlying remediation PR or set before landing"
+  }
+]
