@@ -286,6 +286,7 @@ This lets you turn a backlog issue into a landed change end-to-end.
     loop iterations, sync failures, PR/issue outcomes (`success`, `failure`,
     `skipped`), queue sizes per label, active work, and process gauges.
   - `GET /healthz` — JSON `{ok, service, uptime_seconds}` for probes.
+  - `GET /` — JSON service index (service name, uptime, endpoint map).
   - `--metrics-host` narrows or widens the bind address (default
     `127.0.0.1`; keep it off shared interfaces).
 
