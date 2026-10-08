@@ -35,7 +35,8 @@ See **[How it works](docs/how-it-works.md)** for the gather -> prompt -> act pip
 # Prerequisites: Node.js 22+, gh, and `pi` on PATH
 npx merge-god@latest init
 npx merge-god@latest doctor
-npx merge-god@latest dashboard
+npx merge-god@latest scan /path/to/your/repo   # process that repo's PRs continuously
+npx merge-god@latest dashboard                 # monitor many repos at once
 ```
 
 `doctor` accepts existing GitHub auth from `GITHUB_TOKEN`, `GH_TOKEN`, or
