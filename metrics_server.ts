@@ -202,6 +202,16 @@ export function startMetricsServer(options: MetricsServerOptions): Promise<Metri
   const startedAt = Date.now();
   const server = http.createServer((req, res) => {
     const url = req.url ?? "/";
+    if (req.method === "GET" && (url === "/" || url === "/?")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        ok: true,
+        service: serviceName,
+        uptime_seconds: Math.max(0, (Date.now() - startedAt) / 1000),
+        endpoints: { metrics: "/metrics", health: "/healthz" },
+      }));
+      return;
+    }
     if (req.method === "GET" && (url === "/metrics" || url.startsWith("/metrics?"))) {
       let body: string;
       try {

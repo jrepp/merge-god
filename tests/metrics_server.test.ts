@@ -148,6 +148,12 @@ test("metrics server serves /metrics and /healthz on loopback", async () => {
     assert.equal(health["ok"], true);
     assert.equal(health["service"], "merge-god-pr-loop");
 
+    const rootRes = await fetch(`http://127.0.0.1:${server.port}/`);
+    assert.equal(rootRes.status, 200);
+    const root = (await rootRes.json()) as Record<string, unknown>;
+    assert.equal(root["ok"], true);
+    assert.deepEqual(root["endpoints"], { metrics: "/metrics", health: "/healthz" });
+
     const missingRes = await fetch(`http://127.0.0.1:${server.port}/nope`);
     assert.equal(missingRes.status, 404);
   } finally {
