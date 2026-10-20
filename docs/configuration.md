@@ -175,8 +175,33 @@ endpoint for internal scraping. Start the loop with `--metrics-port <port>`
   `merge_god_issues_processed_total` (labeled `result=success|failure|skipped`),
   `merge_god_queue_size` (labeled `queue=for-review|for-landing|untagged`),
   `merge_god_active_prs` / `merge_god_active_issues`, and process gauges
-  (uptime, RSS, heap).
+  (uptime, RSS, heap). When the loop is started with a repository identity
+  (`--repo OWNER/REPO`), every loop metric also carries a `repo` label, so a
+  single Prometheus can distinguish multiple loop targets.
+- `GET /events` — JSON ring of recent PR lifecycle events
+  (`merge_god_pr_events_total`-shaped records with `pr`, `event`, `result`,
+  `seconds`, and an ISO `timestamp`); `?limit=N` caps the response (default
+  100, maximum 500). Useful for dashboards and annotations that want
+  per-PR detail beyond aggregated counters. The same events also feed the
+  `merge_god_pr_events_total` counter (labeled `repo`, `pr`, `event`,
+  `result`), the `merge_god_loop_state` phase gauge (`syncing`, `processing`,
+  `idle`; `1` marks the active series), and the
+  `merge_god_pr_processing_seconds` last-duration gauge.
+- Agent-level instruments, sourced from persisted trajectory data: counters
+  `merge_god_agent_tokens_total` (labeled `direction=input|output|cache_creation|cache_read|total`),
+  `merge_god_agent_turns_total` (labeled `status`), `merge_god_agent_api_calls_total`
+  (one model request per turn in the pi runtime; reported directly by the
+  Claude runtime), `merge_god_agent_tool_calls_total` (labeled `tool`, `status`),
+  `merge_god_agent_workflows_total` (labeled `result`), `merge_god_agent_runs_total`
+  (labeled `status`), `merge_god_agent_tasks_total` (labeled `result`; the pi
+  runtime does not emit per-task breakdowns), plus the
+  `merge_god_agent_run_duration_seconds` gauge for the most recent run.
 - `GET /healthz` — JSON liveness probe.
+
+A ready-made Grafana dashboard consuming these metrics lives at
+`ops/grafana/merge-god.json`; it defaults to a 24-hour window and includes
+queue depth, per-PR event rates, live loop phase, and processing duration
+panels. Import it and point it at your Prometheus scrape of the loop targets.
 
 `--metrics-host` overrides the bind address when a scraper cannot reach
 loopback. Keep the endpoint off public interfaces; it exposes operational

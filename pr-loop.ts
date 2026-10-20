@@ -24,6 +24,7 @@ import * as readline from "node:readline";
 import YAML from "yaml";
 import { runPiAgent, type AgentObservation, type PiAgentResult, type WorkItem } from "./coordination";
 import { AppStore } from "./app_store";
+import { registerAgentMetrics } from "./agent_metrics";
 import { PI_TOOL_NAMES } from "./pi/tool_contract";
 import {
   evidenceSummaryFromPrDetailsAndContext,
@@ -2564,16 +2565,19 @@ export async function main(): Promise<void> {
   if (args.dryRun) enableDryRun();
   initializeTelemetry(undefined, logJson);
   let loopMetrics: LoopMetrics | null = null;
+  let metricsRegistry: MetricsRegistry | null = null;
   if (args.metricsPort !== null) {
     const registry = new MetricsRegistry();
+    metricsRegistry = registry;
     registerProcessMetrics(registry);
-    loopMetrics = registerLoopMetrics(registry);
+    loopMetrics = registerLoopMetrics(registry, { repo: args.repo });
     try {
       metrics = await startMetricsServer({
         registry,
         host: args.metricsHost,
         port: args.metricsPort,
         serviceName: "merge-god-pr-loop",
+        eventsProvider: (limit) => loopMetrics?.events(limit) ?? [],
       });
       logJson("startup", {
         metrics_endpoint: `http://${metrics.host}:${metrics.port}/metrics`,
@@ -2641,7 +2645,9 @@ export async function main(): Promise<void> {
       await db.initialize();
       appStore = new AppStore(dbPath);
       repoName = basename(repoPath);
-      logJson("startup", { database_enabled: true, db_path: dbPath, repo_name: repoName });
+      if (metricsRegistry) {
+        registerAgentMetrics(metricsRegistry, { dbPath, repo: args.repo, repoName });
+      }      logJson("startup", { database_enabled: true, db_path: dbPath, repo_name: repoName });
     } catch (e) {
       logJson("startup", {
         database_error: errMsg(e),
@@ -2679,6 +2685,7 @@ export async function main(): Promise<void> {
   for (;;) {
     iteration++;
     loopMetrics?.iterations();
+    loopMetrics?.phase("syncing");
     logJson("iteration", { number: iteration, action: "start" });
 
     if (!syncRepo(defaultBranch)) {
@@ -2762,6 +2769,7 @@ export async function main(): Promise<void> {
         untagged_count: categorizedPrs["untagged"].length,
         sleep_seconds: args.idleSleepSeconds,
       });
+      loopMetrics?.phase("idle");
       processingPrs.clear();
       if (shouldStopLoop(iteration, args)) {
         logJson("iteration", { number: iteration, action: "stop", reason: "max_iterations_reached" });
@@ -2818,12 +2826,15 @@ export async function main(): Promise<void> {
 
       if (prNumber && processingPrs.has(prNumber)) {
         loopMetrics?.prProcessed("skipped");
+        if (prNumber) loopMetrics?.prEvent(prNumber, "skipped", "skipped");
         logJson("process_pr", { action: "skip_duplicate", pr_number: prNumber, mode });
         continue;
       }
 
       if (prNumber) processingPrs.add(prNumber);
       loopMetrics?.active(processingPrs.size, processingIssues.size);
+      loopMetrics?.phase("processing", prNumber);
+      const prStartedAt = Date.now();
 
       try {
         const success = await processPr(
@@ -2840,11 +2851,22 @@ export async function main(): Promise<void> {
           processingDependencies,
         );
         loopMetrics?.prProcessed(success ? "success" : "failure");
+        if (prNumber) {
+          loopMetrics?.prEvent(
+            prNumber,
+            "completed",
+            success ? "success" : "failure",
+            (Date.now() - prStartedAt) / 1000,
+          );
+        }
         if (success && prNumber) processingPrs.delete(prNumber);
         totalProcessed++;
       } catch (e) {
         const reason = errMsg(e);
         loopMetrics?.prProcessed("failure");
+        if (prNumber) {
+          loopMetrics?.prEvent(prNumber, "completed", "failure", (Date.now() - prStartedAt) / 1000);
+        }
         logJson("process_pr", {
           action: "exception",
           pr_number: prNumber,
@@ -2857,6 +2879,7 @@ export async function main(): Promise<void> {
       await sleep(args.betweenItemsSleepSeconds * 1000);
     }
     processingPrs.clear();
+    loopMetrics?.phase("idle");
 
     logJson("iteration", {
       number: iteration,
