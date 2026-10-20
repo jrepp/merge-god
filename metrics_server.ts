@@ -138,6 +138,21 @@ export function registerProcessMetrics(registry: MetricsRegistry, options: Proce
   });
 }
 
+export type PrEventResult = "success" | "failure" | "skipped";
+
+export interface PrEventRecord {
+  timestamp: string;
+  pr: number;
+  event: string;
+  result: PrEventResult | null;
+  seconds: number | null;
+}
+
+export interface LoopMetricsOptions {
+  /** Repository identity (e.g. OWNER/REPO) stamped onto every emitted sample. */
+  repo?: string;
+}
+
 export interface LoopMetrics {
   iterations: () => void;
   syncFailure: () => void;
@@ -145,10 +160,17 @@ export interface LoopMetrics {
   issueProcessed: (result: "success" | "failure" | "skipped") => void;
   queueSize: (queue: "for-review" | "for-landing" | "untagged", size: number) => void;
   active: (prs: number, issues: number) => void;
+  prEvent: (pr: number, event: string, result?: PrEventResult, seconds?: number) => void;
+  phase: (phase: string, pr?: number) => void;
+  events: (limit?: number) => PrEventRecord[];
   render: () => string;
 }
 
-export function registerLoopMetrics(registry: MetricsRegistry): LoopMetrics {
+const PR_EVENT_RING_CAPACITY = 200;
+
+export function registerLoopMetrics(registry: MetricsRegistry, options: LoopMetricsOptions = {}): LoopMetrics {
+  const repo = options.repo;
+  const stamp = (labels: MetricLabels): MetricLabels => (repo ? { repo, ...labels } : labels);
   registry.define("merge_god_loop_iterations_total", "Processing loop iterations started", "counter");
   registry.define("merge_god_repo_sync_failures_total", "Failed repository sync passes", "counter");
   registry.define(
@@ -168,15 +190,64 @@ export function registerLoopMetrics(registry: MetricsRegistry): LoopMetrics {
   );
   registry.define("merge_god_active_prs", "PRs currently held by the loop", "gauge");
   registry.define("merge_god_active_issues", "Issues currently held by the loop", "gauge");
+  registry.define(
+    "merge_god_pr_events_total",
+    "PR lifecycle events (skipped, completed) per PR and outcome",
+    "counter",
+  );
+  registry.define(
+    "merge_god_loop_state",
+    "Current loop phase (syncing, processing, idle); 1 marks the active series",
+    "gauge",
+  );
+  registry.define(
+    "merge_god_pr_processing_seconds",
+    "Wall-clock seconds of the most recent processing run per PR",
+    "gauge",
+  );
+
+  const eventRing: PrEventRecord[] = [];
+  let lastStateKey: string | null = null;
+  let lastStateLabels: MetricLabels | null = null;
+
   return {
-    iterations: () => registry.inc("merge_god_loop_iterations_total"),
-    syncFailure: () => registry.inc("merge_god_repo_sync_failures_total"),
-    prProcessed: (result) => registry.inc("merge_god_prs_processed_total", { result }),
-    issueProcessed: (result) => registry.inc("merge_god_issues_processed_total", { result }),
-    queueSize: (queue, size) => registry.set("merge_god_queue_size", size, { queue }),
+    iterations: () => registry.inc("merge_god_loop_iterations_total", stamp({})),
+    syncFailure: () => registry.inc("merge_god_repo_sync_failures_total", stamp({})),
+    prProcessed: (result) => registry.inc("merge_god_prs_processed_total", stamp({ result })),
+    issueProcessed: (result) => registry.inc("merge_god_issues_processed_total", stamp({ result })),
+    queueSize: (queue, size) => registry.set("merge_god_queue_size", size, stamp({ queue })),
     active: (prs, issues) => {
-      registry.set("merge_god_active_prs", prs);
-      registry.set("merge_god_active_issues", issues);
+      registry.set("merge_god_active_prs", prs, stamp({}));
+      registry.set("merge_god_active_issues", issues, stamp({}));
+    },
+    prEvent: (pr, event, result = "success", seconds) => {
+      const labels = stamp({ pr, event, result });
+      registry.inc("merge_god_pr_events_total", labels);
+      if (seconds !== undefined) {
+        registry.set("merge_god_pr_processing_seconds", seconds, stamp({ pr }));
+      }
+      eventRing.push({
+        timestamp: new Date().toISOString(),
+        pr,
+        event,
+        result,
+        seconds: seconds ?? null,
+      });
+      if (eventRing.length > PR_EVENT_RING_CAPACITY) eventRing.shift();
+    },
+    phase: (phase, pr) => {
+      const labels = stamp({ pr: pr ?? "", phase });
+      const key = metricLabelKey(labels);
+      if (key === lastStateKey) return;
+      if (lastStateLabels) registry.set("merge_god_loop_state", 0, lastStateLabels);
+      registry.set("merge_god_loop_state", 1, labels);
+      lastStateKey = key;
+      lastStateLabels = labels;
+    },
+    events: (limit) => {
+      if (limit === undefined) return eventRing.slice();
+      const count = Math.min(Math.max(limit, 0), eventRing.length);
+      return eventRing.slice(eventRing.length - count);
     },
     render: () => registry.render(),
   };
@@ -194,6 +265,19 @@ export interface MetricsServerOptions {
   host?: string;
   port?: number;
   serviceName?: string;
+  /** Serves GET /events with a JSON ring of recent PR events when provided. */
+  eventsProvider?: (limit: number) => unknown[];
+}
+
+const EVENTS_DEFAULT_LIMIT = 100;
+const EVENTS_MAX_LIMIT = 500;
+
+function parseEventsLimit(url: URL): number {
+  const raw = url.searchParams.get("limit");
+  if (raw === null) return EVENTS_DEFAULT_LIMIT;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return EVENTS_DEFAULT_LIMIT;
+  return Math.min(parsed, EVENTS_MAX_LIMIT);
 }
 
 export function startMetricsServer(options: MetricsServerOptions): Promise<MetricsServer> {
@@ -208,8 +292,14 @@ export function startMetricsServer(options: MetricsServerOptions): Promise<Metri
         ok: true,
         service: serviceName,
         uptime_seconds: Math.max(0, (Date.now() - startedAt) / 1000),
-        endpoints: { metrics: "/metrics", health: "/healthz" },
+        endpoints: { metrics: "/metrics", health: "/healthz", events: "/events" },
       }));
+      return;
+    }
+    if (req.method === "GET" && (url === "/events" || url.startsWith("/events?"))) {
+      const events = options.eventsProvider?.(parseEventsLimit(new URL(`http://localhost${url}`))) ?? [];
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, service: serviceName, events }));
       return;
     }
     if (req.method === "GET" && (url === "/metrics" || url.startsWith("/metrics?"))) {

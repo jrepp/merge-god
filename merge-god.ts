@@ -387,6 +387,17 @@ function cmdPrLoop(g: GlobalArgs): number {
   return runChild("pr-loop.ts", args);
 }
 
+function cmdWorkers(g: GlobalArgs): number {
+  const args = [...g.rest];
+  if (!hasCliOption(args, "--config") && !args.some((arg) => arg.startsWith("--config="))) {
+    args.push("--config", resolvePath(g.config, "config.yaml"));
+  }
+  if (!hasCliOption(args, "--db") && !args.some((arg) => arg.startsWith("--db="))) {
+    args.push("--db", resolvePath(g.db, "merge-god-state.db"));
+  }
+  return runChild("worker_pool.ts", args);
+}
+
 function cmdDuplicates(g: GlobalArgs): number {
   let args: string[];
   try {
@@ -561,6 +572,7 @@ const COMMANDS: ReadonlyArray<readonly [string, string, CommandHandler]> = [
   ["dashboard", "Run the World HUD TUI dashboard", cmdDashboard],
   ["duplicates", "Analyze duplicate pull requests", cmdDuplicates],
   ["run", "Run the configured repository queue", cmdPrLoop],
+  ["workers", "Run the striped multi-repo worker pool", cmdWorkers],
   ["scan", "Scan PRs and sync their context", cmdScan],
   ["agent", "Run the agent on cached PR data", cmdAgent],
   ["pr-loop", "Run the bounded or continuous PR loop", cmdPrLoop],

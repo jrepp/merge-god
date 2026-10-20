@@ -1,0 +1,458 @@
+{
+  "uid": "merge-god",
+  "title": "Merge God",
+  "description": "PR loop throughput, queue depth, per-PR lifecycle events, and loop phase across all merge-god pr-loop scrape targets.",
+  "tags": ["merge-god"],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["10s", "30s", "1m", "5m", "15m"],
+    "quick_ranges": [
+      { "from": "now-15m", "to": "now", "display": "Last 15 minutes" },
+      { "from": "now-1h", "to": "now", "display": "Last 1 hour" },
+      { "from": "now-6h", "to": "now", "display": "Last 6 hours" },
+      { "from": "now-24h", "to": "now", "display": "Last 24 hours" },
+      { "from": "now-2d", "to": "now", "display": "Last 2 days" },
+      { "from": "now-7d", "to": "now", "display": "Last 7 days" },
+      { "from": "now-30d", "to": "now", "display": "Last 30 days" }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "hide": 2,
+        "current": {},
+        "options": []
+      },
+      {
+        "name": "repo",
+        "label": "Repository",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(merge_god_pr_events_total, repo)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "options": []
+      },
+      {
+        "name": "pr",
+        "label": "PR",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(merge_god_pr_events_total{repo=~\"$repo\"}, pr)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 3,
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Queue depth by queue",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "stacking": { "mode": "normal", "group": "A" },
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "merge_god_queue_size{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}} {{queue}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "PR processing outcomes (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": { "mode": "continuous-GrYlRd" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merge_god_prs_processed_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Current loop phase (live)",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true, "__name__": true, "job": true, "instance": true },
+            "indexByName": { "repo": 0, "phase": 1, "pr": 2 },
+            "renameByName": {}
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "merge_god_loop_state{repo=~\"$repo\"} == 1",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "PR lifecycle events by PR (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merge_god_pr_events_total{repo=~\"$repo\",pr=~\"$pr\"}[5m])",
+          "legendFormat": "{{repo}} #{{pr}} {{event}} ({{result}})"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Last PR processing duration",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "auto"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 300 },
+              { "color": "red", "value": 900 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "merge_god_pr_processing_seconds{repo=~\"$repo\",pr=~\"$pr\"}",
+          "legendFormat": "{{repo}} #{{pr}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Active work held by loops",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "merge_god_active_prs{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}} active PRs"
+        },
+        {
+          "refId": "B",
+          "expr": "merge_god_active_issues{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}} active issues"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Loop iterations and sync failures (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merge_god_loop_iterations_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} iterations"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(merge_god_repo_sync_failures_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} sync failures"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Loop process memory (RSS)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 21 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "merge_god_process_resident_memory_bytes{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}} RSS"
+        },
+        {
+          "refId": "B",
+          "expr": "merge_god_process_heap_used_bytes{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}} heap used"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Loop uptime",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 21 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "merge_god_process_uptime_seconds{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Agent token throughput by direction (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 27 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merge_god_agent_tokens_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} {{direction}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Agent turns and API calls (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 27 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merge_god_agent_turns_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} turns ({{status}})"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(merge_god_agent_api_calls_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} api calls"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Agent tool call outcomes (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 34 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, rate(merge_god_agent_tool_calls_total{repo=~\"$repo\"}[5m]))",
+          "legendFormat": "{{repo}} {{tool}} ({{status}})"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Agent workflow results and task outcomes (per second, 5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 34 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(merge_god_agent_workflows_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} workflows ({{result}})"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(merge_god_agent_tasks_total{repo=~\"$repo\"}[5m])",
+          "legendFormat": "{{repo}} tasks ({{result}})"
+        },
+        {
+          "refId": "C",
+          "expr": "merge_god_agent_run_duration_seconds{repo=~\"$repo\"}",
+          "legendFormat": "{{repo}} last run duration"
+        }
+      ]
+    }
+  ]
+}
